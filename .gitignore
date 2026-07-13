@@ -1,0 +1,27 @@
+# Secrets
+.env
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Client build artifacts
+client/build/
+client/dist/
+client/*.spec.bak
+server/dist/
+*.pdb
+
+# Node / misc
+node_modules/
+.DS_Store
+Thumbs.db
+
+# Large local sample slides (keep the repo light)
+*.svs
+samples/*.tif
+samples/*.tiff

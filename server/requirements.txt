@@ -1,0 +1,10 @@
+# ImageSL backend dependencies
+fastapi>=0.111,<1.0
+uvicorn[standard]>=0.30,<1.0
+python-multipart>=0.0.9
+numpy>=1.26,<3.0
+Pillow>=10.3
+scikit-image>=0.22,<1.0
+tifffile>=2024.5.10
+imagecodecs>=2024.1.1        # decoders for compressed / pyramidal histology TIFFs
+anthropic>=0.40              # Claude vision + chat

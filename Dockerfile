@@ -1,0 +1,29 @@
+# ImageSL backend — deployed on Railway.
+# Slim Python base + the few system libs scikit-image / imagecodecs need.
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
+
+# System libraries for image decoding (JPEG, PNG, TIFF, OpenMP for skimage).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libjpeg62-turbo \
+        zlib1g \
+        libtiff6 \
+        libopenjp2-7 \
+        libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY server/requirements.txt ./requirements.txt
+RUN pip install --upgrade pip && pip install -r requirements.txt
+
+COPY server/ ./
+
+# Railway provides $PORT. Bind to it; default to 8000 for local runs.
+ENV PORT=8000
+EXPOSE 8000
+
+CMD ["sh", "-c", "uvicorn app:app --host 0.0.0.0 --port ${PORT:-8000}"]
