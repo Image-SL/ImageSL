@@ -326,6 +326,7 @@ def analyze(
     *,
     target_index: Optional[int] = None,
     background_threshold: float = BACKGROUND_OD_THRESHOLD,
+    threshold_scale: float = 1.0,
     stain_override_od: Optional[list[list[float]]] = None,
 ) -> tuple[AnalysisResult, dict[str, np.ndarray]]:
     """
@@ -391,6 +392,9 @@ def analyze(
             threshold = float(threshold_otsu(target_in_tissue))
         except Exception:
             threshold = float(np.percentile(target_in_tissue, 75))
+        # threshold_scale lets the assistant tune sensitivity: >1 is stricter
+        # (fewer positive pixels), <1 is looser (more positive pixels).
+        threshold = max(0.0, threshold * float(threshold_scale))
         positive = tissue_mask & (target_map >= threshold)
 
     positive_pixels = int(positive.sum())

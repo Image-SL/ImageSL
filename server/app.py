@@ -1,16 +1,13 @@
 """
-ImageSL backend — FastAPI application.
+ImageSL backend — FastAPI application (fully online, single-page web tool).
 
-Serves the premium marketing site and the in-app analyzer, exposes the IHC
-analysis / variant / chat APIs, and offers the desktop client for download.
-
-All proprietary analysis and the Claude API key live here on Railway. The
-desktop client is a thin shell that only calls these endpoints.
+All analysis and the Claude API key live here. The browser is the only client.
+The built-in assistant can call tools that RE-RUN the analysis, so the user can
+improve results conversationally and see the numbers/images update.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import time
 import threading
@@ -19,12 +16,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
-from fastapi.responses import (
-    FileResponse,
-    HTMLResponse,
-    JSONResponse,
-    StreamingResponse,
-)
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from ihc import engine
@@ -37,15 +29,12 @@ from ai import claude_client
 BASE_DIR = Path(__file__).resolve().parent
 WEB_DIR = BASE_DIR / "web"
 ASSETS_DIR = WEB_DIR / "assets"
-# Where the built Windows client is placed for download.
-CLIENT_EXE = Path(os.environ.get("IMAGESL_CLIENT_EXE", str(BASE_DIR / "dist" / "ImageSL.exe")))
 
 MAX_UPLOAD_BYTES = int(os.environ.get("IMAGESL_MAX_UPLOAD_MB", "256")) * 1024 * 1024
-APP_VERSION = os.environ.get("IMAGESL_VERSION", "1.0.0")
+APP_VERSION = os.environ.get("IMAGESL_VERSION", "2.0.0")
 
 # Optional access control. If IMAGESL_ACCESS_TOKENS is set (comma-separated),
-# every /api/* call must carry a matching X-ImageSL-Key header. Unset => open
-# (useful for local dev; set it in production).
+# every /api/* call must carry a matching X-ImageSL-Key header. Unset => open.
 _TOKENS = {t.strip() for t in os.environ.get("IMAGESL_ACCESS_TOKENS", "").split(",") if t.strip()}
 
 app = FastAPI(title="ImageSL", version=APP_VERSION, docs_url=None, redoc_url=None)
@@ -55,11 +44,11 @@ if ASSETS_DIR.is_dir():
 
 
 # --------------------------------------------------------------------------- #
-# In-memory analysis cache (per instance) so slider tweaks don't re-upload.
+# In-memory analysis cache (per instance)
 # --------------------------------------------------------------------------- #
 
 class _AnalysisCache:
-    def __init__(self, max_items: int = 32, ttl_seconds: int = 900):
+    def __init__(self, max_items: int = 32, ttl_seconds: int = 1800):
         self._data: dict[str, tuple[float, dict]] = {}
         self._lock = threading.Lock()
         self._max = max_items
@@ -79,13 +68,12 @@ class _AnalysisCache:
             if time.time() - ts > self._ttl:
                 self._data.pop(key, None)
                 return None
-            self._data[key] = (time.time(), value)  # refresh LRU
+            self._data[key] = (time.time(), value)
             return value
 
     def _evict(self) -> None:
         now = time.time()
-        stale = [k for k, (ts, _) in self._data.items() if now - ts > self._ttl]
-        for k in stale:
+        for k in [k for k, (ts, _) in self._data.items() if now - ts > self._ttl]:
             self._data.pop(k, None)
         while len(self._data) >= self._max:
             oldest = min(self._data.items(), key=lambda kv: kv[1][0])[0]
@@ -96,7 +84,7 @@ _CACHE = _AnalysisCache()
 
 
 # --------------------------------------------------------------------------- #
-# Auth helper
+# Auth
 # --------------------------------------------------------------------------- #
 
 def _require_key(x_imagesl_key: Optional[str]) -> None:
@@ -104,6 +92,100 @@ def _require_key(x_imagesl_key: Optional[str]) -> None:
         return
     if not x_imagesl_key or x_imagesl_key not in _TOKENS:
         raise HTTPException(status_code=401, detail="Invalid or missing ImageSL access key.")
+
+
+# --------------------------------------------------------------------------- #
+# Analysis state helpers
+# --------------------------------------------------------------------------- #
+
+def _default_params() -> dict:
+    return {
+        "background_threshold": engine.BACKGROUND_OD_THRESHOLD,
+        "target_index": 1,
+        "threshold_scale": 1.0,
+        "target_gain": 1.0,
+        "counterstain_gain": 1.0,
+        "background_hex": None,
+    }
+
+
+def _hex_to_rgb(h: Optional[str]) -> Optional[tuple[int, int, int]]:
+    if not h:
+        return None
+    h = h.strip().lstrip("#")
+    if len(h) != 6:
+        return None
+    try:
+        return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+    except ValueError:
+        return None
+
+
+def _render_images(entry: dict) -> None:
+    rgb, maps, p = entry["rgb"], entry["maps"], entry["params"]
+    overlay = engine.render_overlay(rgb, maps)
+    variant = engine.render_variant(
+        rgb, maps,
+        target_gain=p["target_gain"],
+        counterstain_gain=p["counterstain_gain"],
+        background_rgb=_hex_to_rgb(p["background_hex"]),
+        target_index=entry["result"].target_index,
+    )
+    entry["images"] = {
+        "original": entry["images"].get("original") if entry.get("images") else engine.to_data_uri(rgb),
+        "overlay": engine.to_data_uri(overlay),
+        "variant": engine.to_data_uri(variant),
+    }
+
+
+def _recompute(entry: dict, **updates) -> dict:
+    """Apply analysis-parameter updates, re-run analyze, re-render images."""
+    p = entry["params"]
+    for k in ("background_threshold", "target_index", "threshold_scale"):
+        if k in updates and updates[k] is not None:
+            p[k] = updates[k]
+    p["target_index"] = int(max(0, min(int(p["target_index"]), 1)))
+    result, maps = engine.analyze(
+        entry["rgb"],
+        entry["source_size"],
+        target_index=p["target_index"],
+        background_threshold=float(p["background_threshold"]),
+        threshold_scale=float(p["threshold_scale"]),
+    )
+    entry["result"], entry["maps"] = result, maps
+    _render_images(entry)
+    return entry
+
+
+def _rerender(entry: dict, **updates) -> dict:
+    """Apply appearance-only updates and re-render the preview image."""
+    p = entry["params"]
+    for k in ("target_gain", "counterstain_gain", "background_hex"):
+        if k in updates and updates[k] is not None:
+            p[k] = updates[k]
+    _render_images(entry)
+    return entry
+
+
+def _state_summary(entry: dict) -> str:
+    r = entry["result"]
+    return (
+        f"positive area {r.positive_percent:.2f}% of tissue "
+        f"({r.positive_pixels:,} positive / {r.tissue_pixels:,} tissue px); "
+        f"threshold {r.threshold:.3f}; target stain index {r.target_index} "
+        f"(0=counterstain, 1=chromogen); background_threshold "
+        f"{entry['params']['background_threshold']:.3f}; "
+        f"threshold_scale {entry['params']['threshold_scale']:.2f}; "
+        f"stain estimation '{r.method}'."
+    )
+
+
+def _public(entry: dict) -> dict:
+    return {
+        "result": entry["result"].to_dict(),
+        "images": entry["images"],
+        "params": entry["params"],
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -118,13 +200,8 @@ def _serve_html(name: str) -> HTMLResponse:
 
 
 @app.get("/", response_class=HTMLResponse)
-def landing() -> HTMLResponse:
+def home() -> HTMLResponse:
     return _serve_html("index.html")
-
-
-@app.get("/app", response_class=HTMLResponse)
-def analyzer_app() -> HTMLResponse:
-    return _serve_html("app.html")
 
 
 @app.get("/styles.css")
@@ -141,30 +218,7 @@ def app_js():
 
 @app.get("/api/health")
 def health() -> JSONResponse:
-    return JSONResponse(
-        {
-            "status": "ok",
-            "version": APP_VERSION,
-            "ai_configured": claude_client.is_configured(),
-            "client_available": CLIENT_EXE.is_file(),
-        }
-    )
-
-
-@app.get("/download/windows")
-def download_windows():
-    if not CLIENT_EXE.is_file():
-        return HTMLResponse(
-            "<h1>Client not built yet</h1>"
-            "<p>The Windows client has not been published to this deployment. "
-            "See <code>docs/DEPLOY.md</code>.</p>",
-            status_code=404,
-        )
-    return FileResponse(
-        str(CLIENT_EXE),
-        media_type="application/vnd.microsoft.portable-executable",
-        filename=CLIENT_EXE.name,
-    )
+    return JSONResponse({"status": "ok", "version": APP_VERSION, "ai_configured": claude_client.is_configured()})
 
 
 # --------------------------------------------------------------------------- #
@@ -174,16 +228,14 @@ def download_windows():
 @app.post("/api/analyze")
 async def api_analyze(
     file: UploadFile = File(...),
-    max_edge: int = Form(engine.DEFAULT_MAX_EDGE),
     use_ai: bool = Form(True),
-    background_threshold: float = Form(engine.BACKGROUND_OD_THRESHOLD),
     x_imagesl_key: Optional[str] = Header(default=None),
 ):
     _require_key(x_imagesl_key)
     data = await _read_upload(file)
 
     try:
-        rgb, source_size = engine.load_rgb(data, max_edge=int(max_edge))
+        rgb, source_size = engine.load_rgb(data)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Could not decode image: {exc}")
 
@@ -191,79 +243,60 @@ async def api_analyze(
     if use_ai and claude_client.is_configured():
         vision = claude_client.vision_stain_report(engine.thumbnail_jpeg_b64(rgb))
 
-    result, maps = engine.analyze(rgb, source_size, background_threshold=float(background_threshold))
+    params = _default_params()
+    result, maps = engine.analyze(
+        rgb, source_size,
+        target_index=params["target_index"],
+        background_threshold=params["background_threshold"],
+        threshold_scale=params["threshold_scale"],
+    )
+    entry = {
+        "rgb": rgb, "source_size": source_size, "maps": maps, "result": result,
+        "params": params, "images": {"original": engine.to_data_uri(rgb)},
+    }
+    _render_images(entry)
 
     analysis_id = uuid.uuid4().hex
-    _CACHE.put(analysis_id, {"rgb": rgb, "maps": maps, "result": result})
+    _CACHE.put(analysis_id, entry)
 
-    overlay = engine.render_overlay(rgb, maps)
-
-    payload = {
-        "analysis_id": analysis_id,
-        "result": result.to_dict(),
-        "vision": vision,
-        "images": {
-            "original": engine.to_data_uri(rgb),
-            "overlay": engine.to_data_uri(overlay),
-        },
-    }
+    payload = {"analysis_id": analysis_id, "vision": vision, **_public(entry)}
     return JSONResponse(payload)
 
 
-@app.post("/api/variant")
-async def api_variant(request: Request, x_imagesl_key: Optional[str] = Header(default=None)):
+@app.post("/api/recalculate")
+async def api_recalculate(request: Request, x_imagesl_key: Optional[str] = Header(default=None)):
     _require_key(x_imagesl_key)
     body = await request.json()
-    analysis_id = body.get("analysis_id")
-    cached = _CACHE.get(analysis_id) if analysis_id else None
-    if not cached:
-        raise HTTPException(status_code=404, detail="Analysis expired or not found; re-run analysis.")
-
-    target_gain = float(body.get("target_gain", 1.0))
-    counterstain_gain = float(body.get("counterstain_gain", 1.0))
-    bg = body.get("background_rgb")
-    bg_rgb = tuple(int(c) for c in bg) if bg else None
-    target_index = int(cached["result"].target_index)
-
-    variant = engine.render_variant(
-        cached["rgb"],
-        cached["maps"],
-        target_gain=target_gain,
-        counterstain_gain=counterstain_gain,
-        background_rgb=bg_rgb,
-        target_index=target_index,
+    entry = _CACHE.get(body.get("analysis_id"))
+    if not entry:
+        raise HTTPException(status_code=404, detail="Analysis expired; re-run analysis.")
+    _recompute(
+        entry,
+        background_threshold=body.get("background_threshold"),
+        target_index=body.get("target_index"),
+        threshold_scale=body.get("threshold_scale"),
     )
-    return JSONResponse({"image": engine.to_data_uri(variant)})
+    return JSONResponse(_public(entry))
 
 
-@app.post("/api/set-target")
-async def api_set_target(request: Request, x_imagesl_key: Optional[str] = Header(default=None)):
-    """Re-quantify treating the other separated stain as the target."""
+@app.post("/api/appearance")
+async def api_appearance(request: Request, x_imagesl_key: Optional[str] = Header(default=None)):
     _require_key(x_imagesl_key)
     body = await request.json()
-    analysis_id = body.get("analysis_id")
-    cached = _CACHE.get(analysis_id) if analysis_id else None
-    if not cached:
-        raise HTTPException(status_code=404, detail="Analysis expired or not found; re-run analysis.")
-
-    target_index = int(body.get("target_index", 1))
-    result, maps = engine.analyze(
-        cached["rgb"],
-        (cached["result"].source_width, cached["result"].source_height),
-        target_index=target_index,
+    entry = _CACHE.get(body.get("analysis_id"))
+    if not entry:
+        raise HTTPException(status_code=404, detail="Analysis expired; re-run analysis.")
+    _rerender(
+        entry,
+        target_gain=body.get("target_gain"),
+        counterstain_gain=body.get("counterstain_gain"),
+        background_hex=body.get("background_hex"),
     )
-    _CACHE.put(analysis_id, {"rgb": cached["rgb"], "maps": maps, "result": result})
-    overlay = engine.render_overlay(cached["rgb"], maps)
-    return JSONResponse(
-        {
-            "result": result.to_dict(),
-            "images": {"overlay": engine.to_data_uri(overlay)},
-        }
-    )
+    return JSONResponse(_public(entry))
 
 
 # --------------------------------------------------------------------------- #
-# Chat API (SSE stream)
+# Chat API — agentic, can recalculate
 # --------------------------------------------------------------------------- #
 
 @app.post("/api/chat")
@@ -271,33 +304,34 @@ async def api_chat(request: Request, x_imagesl_key: Optional[str] = Header(defau
     _require_key(x_imagesl_key)
     body = await request.json()
     messages = body.get("messages", [])
-    analysis_id = body.get("analysis_id")
+    entry = _CACHE.get(body.get("analysis_id"))
 
-    context = None
-    cached = _CACHE.get(analysis_id) if analysis_id else None
-    if cached:
-        r = cached["result"]
-        context = (
-            "The user is viewing a slide with these current results: "
-            f"positive area {r.positive_percent:.2f}% of tissue "
-            f"({r.positive_pixels:,} of {r.tissue_pixels:,} tissue pixels), "
-            f"mean target optical density {r.mean_positive_intensity:.3f}, "
-            f"Otsu threshold {r.threshold:.3f}, stain estimation method '{r.method}'."
-        )
+    if not entry:
+        # Chat still works without a loaded slide (general questions).
+        out = claude_client.chat_agentic(messages, context=None, executor=lambda n, i: "No slide is loaded.")
+        return JSONResponse({"reply": out["reply"], "updated": False})
 
-    def event_stream():
-        try:
-            for chunk in claude_client.chat_stream(messages, context=context):
-                yield f"data: {json.dumps({'delta': chunk})}\n\n"
-        except Exception as exc:  # pragma: no cover
-            yield f"data: {json.dumps({'delta': f'[error: {exc}]'})}\n\n"
-        yield "data: {\"done\": true}\n\n"
+    def executor(name: str, args: dict) -> str:
+        if name == "recalculate_analysis":
+            _recompute(
+                entry,
+                background_threshold=args.get("background_threshold"),
+                target_index=args.get("target_index"),
+                threshold_scale=args.get("threshold_scale"),
+            )
+            return "Recalculated. New state: " + _state_summary(entry)
+        if name == "set_appearance":
+            _rerender(
+                entry,
+                target_gain=args.get("target_gain"),
+                counterstain_gain=args.get("counterstain_gain"),
+                background_hex=args.get("background_hex"),
+            )
+            return "Preview appearance updated."
+        return f"Unknown tool: {name}"
 
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    out = claude_client.chat_agentic(messages, context=_state_summary(entry), executor=executor)
+    return JSONResponse({"reply": out["reply"], "updated": out["used_tools"], **_public(entry)})
 
 
 # --------------------------------------------------------------------------- #
@@ -309,14 +343,11 @@ async def _read_upload(file: UploadFile) -> bytes:
     if not data:
         raise HTTPException(status_code=400, detail="Empty upload.")
     if len(data) > MAX_UPLOAD_BYTES:
-        raise HTTPException(
-            status_code=413,
-            detail=f"File exceeds the {MAX_UPLOAD_BYTES // (1024*1024)} MB limit.",
-        )
+        raise HTTPException(status_code=413, detail=f"File exceeds the {MAX_UPLOAD_BYTES // (1024*1024)} MB limit.")
     return data
 
 
-if __name__ == "__main__":  # local dev convenience
+if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("app:app", host="0.0.0.0", port=int(os.environ.get("PORT", "8000")), reload=True)
+    uvicorn.run("app:app", host="0.0.0.0", port=int(os.environ.get("PORT", "8000")))

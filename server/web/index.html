@@ -1,163 +1,70 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>ImageSL — AI-Powered IHC Histology Analysis</title>
-  <meta name="description" content="ImageSL decodes heavy .tif immunohistochemistry slides with deep vision reasoning, separating true IHC stains from background for any color — with a built-in AI assistant." />
-  <link rel="icon" type="image/png" href="/assets/logo.png" />
-  <link rel="stylesheet" href="/styles.css" />
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ImageSL</title>
+<link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-  <nav class="nav">
-    <div class="container nav-inner">
-      <a class="brand" href="/">
-        <img src="/assets/logo.png" alt="ImageSL logo" />
-        <div>
-          <span>ImageSL</span>
-          <small>Histology&nbsp;AI</small>
-        </div>
-      </a>
-      <div class="nav-links">
-        <a href="#features">Features</a>
-        <a href="#how">How it works</a>
-        <a href="#security">Security</a>
-        <a class="btn btn-ghost" href="/app">Launch Web App</a>
-      </div>
-    </div>
-  </nav>
+<main>
+  <h1>ImageSL</h1>
+  <p class="sub">IHC stain quantification. Upload a slide, then use the assistant to improve the result.</p>
 
-  <header class="hero">
-    <div class="container">
-      <div class="hero-badge"><span class="dot"></span> Deep-vision IHC engine · live on Railway</div>
-      <img class="hero-logo" src="/assets/logo.png" alt="ImageSL" />
-      <h1>See the stain.<br />Not the noise.</h1>
-      <p class="lead">
-        ImageSL analyzes heavy <code>.tif</code> immunohistochemistry slides pixel-by-pixel —
-        automatically separating true chromogenic staining from background for <em>any</em> color,
-        quantifying it, and letting you re-render the image exactly how you want to see it.
-      </p>
-      <div class="hero-actions">
-        <a class="btn btn-primary" id="downloadBtn" href="/download/windows">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 21h16"/></svg>
-          Download for Windows
-        </a>
-        <a class="btn btn-ghost" href="/app">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
-          Try it in the browser
-        </a>
-      </div>
-      <p class="hero-note" id="dlNote">Free desktop client · your slides are analyzed securely on our servers.</p>
+  <section class="box">
+    <div class="row">
+      <input type="file" id="file" accept=".tif,.tiff,.png,.jpg,.jpeg">
+      <button id="analyze">Analyze</button>
+      <label class="inline"><input type="checkbox" id="useAi" checked> Use AI vision</label>
+      <span id="status" class="status"></span>
     </div>
-  </header>
-
-  <section class="section" id="features">
-    <div class="container">
-      <div class="section-head">
-        <div class="eyebrow">Built for pathology</div>
-        <h2>A microscope for your microscope</h2>
-        <p>Everything ImageSL does is grounded in real digital-pathology math — then made effortless with AI.</p>
-      </div>
-      <div class="grid">
-        <div class="card">
-          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg></div>
-          <h3>True stain separation</h3>
-          <p>Color deconvolution with automatic Macenko stain-vector estimation isolates the chromogen from the counterstain and glass — for brown DAB or any custom color.</p>
-        </div>
-        <div class="card">
-          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg></div>
-          <h3>Deep vision reasoning</h3>
-          <p>A Claude vision model inspects each slide, identifies the staining, judges tissue quality, and tunes the analysis — reasoning layered on top of exact pixel math.</p>
-        </div>
-        <div class="card">
-          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16v16H4z"/><path d="M4 9h16M9 4v16"/></svg></div>
-          <h3>Customizable renders</h3>
-          <p>Generate multiple versions on demand — recolor the background to any code, and make the target staining darker or lighter with a slider.</p>
-        </div>
-        <div class="card">
-          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 10h8M8 14h5"/><path d="M21 12a9 9 0 11-3.2-6.9L21 4v5h-5"/></svg></div>
-          <h3>Built-in AI assistant</h3>
-          <p>Ask the ImageSL Assistant anything about your results — it knows your slide's positive-area percentage, thresholds, and optical density, and explains them in plain language.</p>
-        </div>
-        <div class="card">
-          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>
-          <h3>Heavy .tif, no sweat</h3>
-          <p>Pyramidal and multi-page TIFFs are decoded server-side and intelligently downsampled, so multi-gigabyte slides analyze in seconds.</p>
-        </div>
-        <div class="card">
-          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg></div>
-          <h3>Source stays server-side</h3>
-          <p>The desktop app is a thin, signed shell. All proprietary logic and keys run remotely — nothing sensitive ever ships inside the download.</p>
-        </div>
-      </div>
+    <div class="row">
+      <label class="inline">Access key (optional):
+        <input type="text" id="key" placeholder="X-ImageSL-Key" size="18">
+      </label>
     </div>
   </section>
 
-  <section class="section" id="how">
-    <div class="container">
-      <div class="section-head">
-        <div class="eyebrow">Workflow</div>
-        <h2>From slide to answer in four steps</h2>
-      </div>
-      <div class="steps">
-        <div class="step"><div class="num"></div><h4>Load your slide</h4><p>Drop a <code>.tif</code>, <code>.tiff</code>, PNG, or JPEG into the app or the web console.</p></div>
-        <div class="step"><div class="num"></div><h4>AI reads it</h4><p>Vision reasoning identifies the stain and the engine separates it pixel-by-pixel.</p></div>
-        <div class="step"><div class="num"></div><h4>Quantify</h4><p>Get positive-area %, optical density, and an overlay of exactly what was counted.</p></div>
-        <div class="step"><div class="num"></div><h4>Render & discuss</h4><p>Recolor, brighten or darken the stain, and ask the assistant to interpret.</p></div>
-      </div>
+  <section id="results" class="box hidden">
+    <div class="images">
+      <figure><figcaption>Original</figcaption><img id="imgOriginal" alt=""></figure>
+      <figure><figcaption>Positive overlay</figcaption><img id="imgOverlay" alt=""></figure>
+      <figure><figcaption>Recolored preview</figcaption><img id="imgVariant" alt=""></figure>
+    </div>
+
+    <div class="metrics">
+      <div><b id="mPercent">&ndash;</b><span>positive area</span></div>
+      <div><b id="mPositive">&ndash;</b><span>positive px</span></div>
+      <div><b id="mTissue">&ndash;</b><span>tissue px</span></div>
+      <div><b id="mThreshold">&ndash;</b><span>threshold</span></div>
+      <div><b id="mMethod">&ndash;</b><span>stain method</span></div>
+    </div>
+    <p id="visionNote" class="note"></p>
+
+    <div class="controls">
+      <label>Background threshold <input type="range" id="cBg" min="0.05" max="0.5" step="0.01"><span id="vBg"></span></label>
+      <label>Sensitivity (strict &rarr; loose) <input type="range" id="cScale" min="0.5" max="1.8" step="0.05"><span id="vScale"></span></label>
+      <label>Target stain
+        <select id="cTarget">
+          <option value="1">Chromogen (e.g. brown)</option>
+          <option value="0">Counterstain (nuclei)</option>
+        </select>
+      </label>
+      <label>Preview target darkness <input type="range" id="cGain" min="0.3" max="2.5" step="0.05"><span id="vGain"></span></label>
+      <label>Preview background <input type="color" id="cColor" value="#ffffff"> <button id="clearColor" class="link">reset</button></label>
     </div>
   </section>
 
-  <section class="section" id="security">
-    <div class="container">
-      <div class="callout">
-        <div>
-          <h2>Your logic, protected by design</h2>
-          <p>ImageSL uses a thin-client architecture. The Windows app you download is a small native shell — it uploads a slide and displays results. Every algorithm and every API key lives on the backend.</p>
-          <ul>
-            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg> No analysis source code ships in the executable.</li>
-            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg> Deconvolution, AI, and secrets run only on Railway.</li>
-            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg> Access is gated by per-user license keys.</li>
-          </ul>
-        </div>
-        <div class="diagram">
-          <b>ImageSL.exe</b> (thin shell)<br />
-          &nbsp;&nbsp;│ upload slide + license key<br />
-          &nbsp;&nbsp;▼<br />
-          <b>Railway backend</b><br />
-          &nbsp;&nbsp;├─ IHC deconvolution engine<br />
-          &nbsp;&nbsp;├─ Claude vision + chat<br />
-          &nbsp;&nbsp;└─ your API keys 🔒<br />
-          &nbsp;&nbsp;│ results + renders<br />
-          &nbsp;&nbsp;▼<br />
-          <b>ImageSL.exe</b> (display)
-        </div>
-      </div>
-    </div>
+  <section class="box">
+    <h2>Assistant</h2>
+    <p class="sub">Ask it to fix or improve the analysis &mdash; e.g. &ldquo;you&rsquo;re counting too much background, be stricter&rdquo; or &ldquo;the target is the blue stain&rdquo;. It recalculates automatically.</p>
+    <div id="chat" class="chat"></div>
+    <form id="chatForm" class="row">
+      <input type="text" id="chatInput" placeholder="Tell the assistant what to change&hellip;" autocomplete="off">
+      <button type="submit">Send</button>
+    </form>
   </section>
-
-  <footer class="footer">
-    <div class="container footer-inner">
-      <a class="brand" href="/">
-        <img src="/assets/logo.png" alt="ImageSL" />
-        <div><span>ImageSL</span><small>Histology&nbsp;AI</small></div>
-      </a>
-      <p>© <span id="year"></span> ImageSL · Analysis assists interpretation and is not a clinical diagnosis.</p>
-    </div>
-  </footer>
-
-  <script>
-    document.getElementById("year").textContent = new Date().getFullYear();
-    // Reflect client availability from the backend health check.
-    fetch("/api/health").then(r => r.json()).then(h => {
-      const btn = document.getElementById("downloadBtn");
-      const note = document.getElementById("dlNote");
-      if (!h.client_available) {
-        btn.setAttribute("aria-disabled", "true");
-        btn.style.opacity = "0.6";
-        note.textContent = "Desktop client is being published — use “Try it in the browser” for now.";
-      }
-    }).catch(() => {});
-  </script>
+</main>
+<script src="/app.js"></script>
 </body>
 </html>
