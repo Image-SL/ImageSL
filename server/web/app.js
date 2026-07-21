@@ -212,3 +212,18 @@ $("chatForm").addEventListener("submit", async (e) => {
     addMsg("Assistant", "Error: " + e2.message);
   }
 });
+
+// --------------------------------------------------------------------------
+// Lightbox
+// --------------------------------------------------------------------------
+function showLightbox(src) {
+  if (!src) return;
+  $("lightboxImg").src = src;
+  $("lightbox").classList.remove("hidden");
+}
+$("imgOriginal").addEventListener("click", () => showLightbox($("imgOriginal").src));
+$("imgOverlay").addEventListener("click", () => showLightbox($("imgOverlay").src));
+$("imgVariant").addEventListener("click", () => showLightbox($("imgVariant").src));
+$("lightbox").addEventListener("click", () => {
+  $("lightbox").classList.add("hidden");
+});

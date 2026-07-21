@@ -395,10 +395,12 @@ def analyze(
         # Otsu on the target concentration restricted to tissue.
         try:
             if stain_strictness == "strong":
-                # Multi-Otsu splits into 3 classes: background, light stain, dark stain.
-                # The upper threshold isolates only the very dark/strong stains.
-                thresholds = threshold_multiotsu(target_in_tissue, classes=3)
-                threshold = float(thresholds[-1])
+                try:
+                    thresholds = threshold_multiotsu(target_in_tissue, classes=4)
+                    threshold = float(thresholds[-1])
+                except ValueError:
+                    thresholds = threshold_multiotsu(target_in_tissue, classes=3)
+                    threshold = float(thresholds[-1])
             else:
                 threshold = float(threshold_otsu(target_in_tissue))
         except Exception:

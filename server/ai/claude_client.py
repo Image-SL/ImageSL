@@ -154,7 +154,10 @@ def is_configured() -> bool:
 
 
 def _client() -> "anthropic.Anthropic":
-    return anthropic.Anthropic()
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if key:
+        key = key.encode("ascii", "ignore").decode("ascii").strip()
+    return anthropic.Anthropic(api_key=key if key else None)
 
 
 # --------------------------------------------------------------------------- #
