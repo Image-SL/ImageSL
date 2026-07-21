@@ -327,7 +327,8 @@ def analyze(
     target_index: Optional[int] = None,
     background_threshold: float = BACKGROUND_OD_THRESHOLD,
     threshold_scale: float = 1.0,
-    stain_strictness: str = "all",
+    stain_strictness: str = "strong",
+    stain_method: str = "hdab",
     stain_override_od: Optional[list[list[float]]] = None,
 ) -> tuple[AnalysisResult, dict[str, np.ndarray]]:
     """
@@ -347,6 +348,9 @@ def analyze(
     if stain_override_od:
         stains2 = _normalize_rows(np.array(stain_override_od, dtype=np.float64)[:2])
         method = "override"
+    elif stain_method == "hdab":
+        stains2 = _hdab_matrix()[:2]
+        method = "hdab-fixed"
     else:
         stains2 = estimate_stains_macenko(od, beta=background_threshold)
         if stains2 is None:

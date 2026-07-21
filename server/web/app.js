@@ -2,6 +2,8 @@
 
 const $ = (id) => document.getElementById(id);
 let analysisId = null;
+let analyses = [];
+let currentAnalysisIndex = -1;
 const messages = [];
 
 // --- access key persistence ---
@@ -22,28 +24,63 @@ function setStatus(msg) { $("status").textContent = msg || ""; }
 // Analyze
 // --------------------------------------------------------------------------
 $("analyze").addEventListener("click", async () => {
-  const f = $("file").files[0];
-  if (!f) { setStatus("Choose a file first."); return; }
-  const fd = new FormData();
-  fd.append("file", f);
-  fd.append("use_ai", $("useAi").checked ? "true" : "false");
-
+  const files = $("file").files;
+  if (!files.length) { setStatus("Choose files first."); return; }
+  
   $("analyze").disabled = true;
-  setStatus("Analyzing…");
-  try {
-    const res = await fetch("/api/analyze", { method: "POST", headers: headers(false), body: fd });
-    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
-    const data = await res.json();
-    analysisId = data.analysis_id;
-    $("results").classList.remove("hidden");
-    render(data, true);
-    renderVision(data.vision);
-    setStatus("Done.");
-  } catch (e) {
-    setStatus("Error: " + e.message);
-  } finally {
-    $("analyze").disabled = false;
+  $("results").classList.add("hidden");
+  $("imageSelectorRow").classList.add("hidden");
+  $("imageSelect").innerHTML = "";
+  analyses = [];
+  currentAnalysisIndex = -1;
+  messages.length = 0;
+  $("chat").innerHTML = "";
+
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i];
+    setStatus(`Analyzing ${i + 1} of ${files.length} (${f.name})…`);
+    const fd = new FormData();
+    fd.append("file", f);
+    fd.append("use_ai", $("useAi").checked ? "true" : "false");
+
+    try {
+      const res = await fetch("/api/analyze", { method: "POST", headers: headers(false), body: fd });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
+      const data = await res.json();
+      data._filename = f.name;
+      analyses.push(data);
+      
+      const opt = document.createElement("option");
+      opt.value = analyses.length - 1;
+      opt.textContent = `${f.name} - ${data.result.positive_percent.toFixed(2)}%`;
+      $("imageSelect").appendChild(opt);
+    } catch (e) {
+      console.error(`Error on ${f.name}:`, e);
+      setStatus("Error: " + e.message);
+    }
   }
+
+  if (analyses.length > 0) {
+    $("results").classList.remove("hidden");
+    if (analyses.length > 1) $("imageSelectorRow").classList.remove("hidden");
+    selectAnalysis(0);
+    setStatus(`Done analyzing ${analyses.length} image(s).`);
+  }
+  $("analyze").disabled = false;
+});
+
+function selectAnalysis(index) {
+  if (index < 0 || index >= analyses.length) return;
+  currentAnalysisIndex = index;
+  const data = analyses[index];
+  analysisId = data.analysis_id;
+  $("imageSelect").value = index;
+  render(data, true);
+  renderVision(data.vision);
+}
+
+$("imageSelect").addEventListener("change", (e) => {
+  selectAnalysis(parseInt(e.target.value, 10));
 });
 
 // --------------------------------------------------------------------------
@@ -97,7 +134,12 @@ function recalc() {
       target_index: parseInt($("cTarget").value, 10),
     };
     const res = await fetch("/api/recalculate", { method: "POST", headers: headers(true), body: JSON.stringify(body) });
-    if (res.ok) render(await res.json(), false);
+    if (res.ok) {
+      const newData = await res.json();
+      Object.assign(analyses[currentAnalysisIndex], newData);
+      $("imageSelect").options[currentAnalysisIndex].textContent = `${analyses[currentAnalysisIndex]._filename} - ${newData.result.positive_percent.toFixed(2)}%`;
+      render(newData, false);
+    }
   }, 220);
 }
 function appearance() {
@@ -110,7 +152,11 @@ function appearance() {
       background_hex: $("cColor").dataset.cleared ? null : $("cColor").value,
     };
     const res = await fetch("/api/appearance", { method: "POST", headers: headers(true), body: JSON.stringify(body) });
-    if (res.ok) render(await res.json(), false);
+    if (res.ok) {
+      const newData = await res.json();
+      Object.assign(analyses[currentAnalysisIndex], newData);
+      render(newData, false);
+    }
   }, 150);
 }
 
@@ -156,6 +202,8 @@ $("chatForm").addEventListener("submit", async (e) => {
     messages.push({ role: "assistant", content: reply });
     addMsg("Assistant", reply);
     if (data.updated) {
+      Object.assign(analyses[currentAnalysisIndex], data);
+      $("imageSelect").options[currentAnalysisIndex].textContent = `${analyses[currentAnalysisIndex]._filename} - ${data.result.positive_percent.toFixed(2)}%`;
       render(data, true);
       addMsg("System", "↳ analysis recalculated", "recalc");
     }

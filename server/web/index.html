@@ -13,7 +13,7 @@
 
   <section class="box">
     <div class="row">
-      <input type="file" id="file" accept=".tif,.tiff,.png,.jpg,.jpeg">
+      <input type="file" id="file" multiple accept=".tif,.tiff,.png,.jpg,.jpeg">
       <button id="analyze">Analyze</button>
       <label class="inline"><input type="checkbox" id="useAi" checked> Use AI vision</label>
       <span id="status" class="status"></span>
@@ -26,6 +26,11 @@
   </section>
 
   <section id="results" class="box hidden">
+    <div class="row hidden" id="imageSelectorRow" style="margin-bottom: 15px;">
+      <label class="inline" style="font-weight:bold;">Currently Viewing:
+        <select id="imageSelect" style="max-width: 350px;"></select>
+      </label>
+    </div>
     <div class="images">
       <figure><figcaption>Original</figcaption><img id="imgOriginal" alt=""></figure>
       <figure><figcaption>Positive overlay</figcaption><img id="imgOverlay" alt=""></figure>

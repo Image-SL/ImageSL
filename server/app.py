@@ -48,7 +48,7 @@ if ASSETS_DIR.is_dir():
 # --------------------------------------------------------------------------- #
 
 class _AnalysisCache:
-    def __init__(self, max_items: int = 32, ttl_seconds: int = 1800):
+    def __init__(self, max_items: int = 128, ttl_seconds: int = 1800):
         self._data: dict[str, tuple[float, dict]] = {}
         self._lock = threading.Lock()
         self._max = max_items
@@ -104,6 +104,7 @@ def _default_params() -> dict:
         "target_index": 1,
         "threshold_scale": 1.0,
         "stain_strictness": "strong",
+        "stain_method": "hdab",
         "target_gain": 1.0,
         "counterstain_gain": 1.0,
         "background_hex": None,
@@ -142,7 +143,7 @@ def _render_images(entry: dict) -> None:
 def _recompute(entry: dict, **updates) -> dict:
     """Apply analysis-parameter updates, re-run analyze, re-render images."""
     p = entry["params"]
-    for k in ("background_threshold", "target_index", "threshold_scale", "stain_strictness"):
+    for k in ("background_threshold", "target_index", "threshold_scale", "stain_strictness", "stain_method"):
         if k in updates and updates[k] is not None:
             p[k] = updates[k]
     p["target_index"] = int(max(0, min(int(p["target_index"]), 1)))
@@ -152,7 +153,8 @@ def _recompute(entry: dict, **updates) -> dict:
         target_index=p["target_index"],
         background_threshold=float(p["background_threshold"]),
         threshold_scale=float(p["threshold_scale"]),
-        stain_strictness=p.get("stain_strictness", "all"),
+        stain_strictness=p.get("stain_strictness", "strong"),
+        stain_method=p.get("stain_method", "hdab"),
     )
     entry["result"], entry["maps"] = result, maps
     _render_images(entry)
@@ -177,7 +179,8 @@ def _state_summary(entry: dict) -> str:
         f"threshold {r.threshold:.3f}; target stain index {r.target_index} "
         f"background_threshold {entry['params']['background_threshold']:.3f}; "
         f"threshold_scale {entry['params']['threshold_scale']:.2f}; "
-        f"stain_strictness '{entry['params'].get('stain_strictness', 'all')}'; "
+        f"stain_strictness '{entry['params'].get('stain_strictness', 'strong')}'; "
+        f"stain_method '{entry['params'].get('stain_method', 'hdab')}'; "
         f"stain estimation '{r.method}'."
     )
 
@@ -252,6 +255,7 @@ async def api_analyze(
         background_threshold=params["background_threshold"],
         threshold_scale=params["threshold_scale"],
         stain_strictness=params["stain_strictness"],
+        stain_method=params["stain_method"],
     )
     entry = {
         "rgb": rgb, "source_size": source_size, "maps": maps, "result": result,
@@ -279,6 +283,7 @@ async def api_recalculate(request: Request, x_imagesl_key: Optional[str] = Heade
         target_index=body.get("target_index"),
         threshold_scale=body.get("threshold_scale"),
         stain_strictness=body.get("stain_strictness"),
+        stain_method=body.get("stain_method"),
     )
     return JSONResponse(_public(entry))
 
@@ -323,6 +328,7 @@ async def api_chat(request: Request, x_imagesl_key: Optional[str] = Header(defau
                 target_index=args.get("target_index"),
                 threshold_scale=args.get("threshold_scale"),
                 stain_strictness=args.get("stain_strictness"),
+                stain_method=args.get("stain_method"),
             )
             return "Recalculated. New state: " + _state_summary(entry)
         if name == "set_appearance":
