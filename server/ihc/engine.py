@@ -41,6 +41,7 @@ except Exception:  # pragma: no cover - tifffile is a hard dep in prod
     _HAVE_TIFFFILE = False
 
 from skimage.filters import threshold_otsu, threshold_multiotsu
+from skimage.morphology import white_tophat, disk
 
 
 # --------------------------------------------------------------------------- #
@@ -385,6 +386,12 @@ def analyze(
     target_index = int(max(0, min(target_index, 1)))
 
     target_map = conc[..., target_index]
+    
+    if stain_strictness == "strong":
+        # Advanced spatial logic: Morphological White Top-Hat Transform
+        # Erases large background areas of the same color, keeping only small stain spots
+        target_map = white_tophat(target_map, disk(10))
+
     target_in_tissue = target_map[tissue_mask]
 
     if target_in_tissue.size == 0:

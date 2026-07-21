@@ -94,3 +94,26 @@ input[type="text"] { font: inherit; padding: 6px 8px; border: 1px solid #999; }
   border: 2px solid #fff; box-shadow: 0 0 20px rgba(0,0,0,0.5);
 }
 .images img { cursor: zoom-in; }
+
+/* Dropzone */
+.dropzone {
+  border: 3px dashed #ccc;
+  border-radius: 12px;
+  padding: 40px 20px;
+  text-align: center;
+  background: #fafafa;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.dropzone:hover {
+  background: #f0f0f0;
+  border-color: #999;
+}
+.dropzone.dragover {
+  background: #e6f7ff;
+  border-color: #1890ff;
+}
+.dropzone-text {
+  color: #666;
+  pointer-events: none;
+}

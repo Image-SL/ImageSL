@@ -12,11 +12,16 @@
   <p class="sub">IHC stain quantification. Upload a slide, then use the assistant to improve the result.</p>
 
   <section class="box">
-    <div class="row">
-      <input type="file" id="file" multiple accept=".tif,.tiff,.png,.jpg,.jpeg">
-      <button id="analyze">Analyze</button>
+    <div id="dropzone" class="dropzone">
+      <div class="dropzone-text">
+        <span style="font-size: 20px; font-weight: bold; display: block; margin-bottom: 8px;">Drag & Drop Images Here</span>
+        <span>or click to choose from your library</span>
+      </div>
+      <input type="file" id="file" multiple accept=".tif,.tiff,.png,.jpg,.jpeg" style="display:none;">
+    </div>
+    <div class="row" style="margin-top: 12px;">
       <label class="inline"><input type="checkbox" id="useAi" checked> Use AI vision</label>
-      <span id="status" class="status"></span>
+      <span id="status" class="status" style="margin-left: 15px;"></span>
     </div>
     <div class="row">
       <label class="inline">Access key (optional):

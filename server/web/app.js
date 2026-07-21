@@ -23,11 +23,9 @@ function setStatus(msg) { $("status").textContent = msg || ""; }
 // --------------------------------------------------------------------------
 // Analyze
 // --------------------------------------------------------------------------
-$("analyze").addEventListener("click", async () => {
-  const files = $("file").files;
-  if (!files.length) { setStatus("Choose files first."); return; }
+async function runAnalysis(files) {
+  if (!files || !files.length) { setStatus("Choose files first."); return; }
   
-  $("analyze").disabled = true;
   $("results").classList.add("hidden");
   $("imageSelectorRow").classList.add("hidden");
   $("imageSelect").innerHTML = "";
@@ -66,7 +64,32 @@ $("analyze").addEventListener("click", async () => {
     selectAnalysis(0);
     setStatus(`Done analyzing ${analyses.length} image(s).`);
   }
-  $("analyze").disabled = false;
+}
+
+// Drag & Drop Listeners
+const dropzone = $("dropzone");
+const fileInput = $("file");
+
+dropzone.addEventListener("click", () => fileInput.click());
+fileInput.addEventListener("change", (e) => {
+  runAnalysis(e.target.files);
+  e.target.value = ""; // reset
+});
+
+dropzone.addEventListener("dragover", (e) => {
+  e.preventDefault();
+  dropzone.classList.add("dragover");
+});
+dropzone.addEventListener("dragleave", (e) => {
+  e.preventDefault();
+  dropzone.classList.remove("dragover");
+});
+dropzone.addEventListener("drop", (e) => {
+  e.preventDefault();
+  dropzone.classList.remove("dragover");
+  if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+    runAnalysis(e.dataTransfer.files);
+  }
 });
 
 function selectAnalysis(index) {
