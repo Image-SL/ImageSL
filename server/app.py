@@ -103,6 +103,7 @@ def _default_params() -> dict:
         "background_threshold": engine.BACKGROUND_OD_THRESHOLD,
         "target_index": 1,
         "threshold_scale": 1.0,
+        "stain_strictness": "all",
         "target_gain": 1.0,
         "counterstain_gain": 1.0,
         "background_hex": None,
@@ -141,7 +142,7 @@ def _render_images(entry: dict) -> None:
 def _recompute(entry: dict, **updates) -> dict:
     """Apply analysis-parameter updates, re-run analyze, re-render images."""
     p = entry["params"]
-    for k in ("background_threshold", "target_index", "threshold_scale"):
+    for k in ("background_threshold", "target_index", "threshold_scale", "stain_strictness"):
         if k in updates and updates[k] is not None:
             p[k] = updates[k]
     p["target_index"] = int(max(0, min(int(p["target_index"]), 1)))
@@ -151,6 +152,7 @@ def _recompute(entry: dict, **updates) -> dict:
         target_index=p["target_index"],
         background_threshold=float(p["background_threshold"]),
         threshold_scale=float(p["threshold_scale"]),
+        stain_strictness=p.get("stain_strictness", "all"),
     )
     entry["result"], entry["maps"] = result, maps
     _render_images(entry)
@@ -173,9 +175,9 @@ def _state_summary(entry: dict) -> str:
         f"positive area {r.positive_percent:.2f}% of tissue "
         f"({r.positive_pixels:,} positive / {r.tissue_pixels:,} tissue px); "
         f"threshold {r.threshold:.3f}; target stain index {r.target_index} "
-        f"(0=counterstain, 1=chromogen); background_threshold "
-        f"{entry['params']['background_threshold']:.3f}; "
+        f"background_threshold {entry['params']['background_threshold']:.3f}; "
         f"threshold_scale {entry['params']['threshold_scale']:.2f}; "
+        f"stain_strictness '{entry['params'].get('stain_strictness', 'all')}'; "
         f"stain estimation '{r.method}'."
     )
 
@@ -249,6 +251,7 @@ async def api_analyze(
         target_index=params["target_index"],
         background_threshold=params["background_threshold"],
         threshold_scale=params["threshold_scale"],
+        stain_strictness=params["stain_strictness"],
     )
     entry = {
         "rgb": rgb, "source_size": source_size, "maps": maps, "result": result,
@@ -275,6 +278,7 @@ async def api_recalculate(request: Request, x_imagesl_key: Optional[str] = Heade
         background_threshold=body.get("background_threshold"),
         target_index=body.get("target_index"),
         threshold_scale=body.get("threshold_scale"),
+        stain_strictness=body.get("stain_strictness"),
     )
     return JSONResponse(_public(entry))
 
@@ -318,6 +322,7 @@ async def api_chat(request: Request, x_imagesl_key: Optional[str] = Header(defau
                 background_threshold=args.get("background_threshold"),
                 target_index=args.get("target_index"),
                 threshold_scale=args.get("threshold_scale"),
+                stain_strictness=args.get("stain_strictness"),
             )
             return "Recalculated. New state: " + _state_summary(entry)
         if name == "set_appearance":

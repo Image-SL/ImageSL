@@ -40,7 +40,7 @@ try:  # tifffile + imagecodecs handle compressed / pyramidal histology TIFs
 except Exception:  # pragma: no cover - tifffile is a hard dep in prod
     _HAVE_TIFFFILE = False
 
-from skimage.filters import threshold_otsu
+from skimage.filters import threshold_otsu, threshold_multiotsu
 
 
 # --------------------------------------------------------------------------- #
@@ -327,6 +327,7 @@ def analyze(
     target_index: Optional[int] = None,
     background_threshold: float = BACKGROUND_OD_THRESHOLD,
     threshold_scale: float = 1.0,
+    stain_strictness: str = "all",
     stain_override_od: Optional[list[list[float]]] = None,
 ) -> tuple[AnalysisResult, dict[str, np.ndarray]]:
     """
@@ -389,7 +390,13 @@ def analyze(
     else:
         # Otsu on the target concentration restricted to tissue.
         try:
-            threshold = float(threshold_otsu(target_in_tissue))
+            if stain_strictness == "strong":
+                # Multi-Otsu splits into 3 classes: background, light stain, dark stain.
+                # The upper threshold isolates only the very dark/strong stains.
+                thresholds = threshold_multiotsu(target_in_tissue, classes=3)
+                threshold = float(thresholds[-1])
+            else:
+                threshold = float(threshold_otsu(target_in_tissue))
         except Exception:
             threshold = float(np.percentile(target_in_tissue, 75))
         # threshold_scale lets the assistant tune sensitivity: >1 is stricter
@@ -436,7 +443,7 @@ def analyze(
 # Public: rendering (overlays + customizable variants)
 # --------------------------------------------------------------------------- #
 
-def render_overlay(rgb: np.ndarray, maps: dict[str, np.ndarray], color=(0, 255, 128), alpha=0.45) -> np.ndarray:
+def render_overlay(rgb: np.ndarray, maps: dict[str, np.ndarray], color=(255, 0, 0), alpha=0.45) -> np.ndarray:
     """Highlight positive pixels on the original image."""
     out = rgb.astype(np.float64).copy()
     pos = maps["positive"]

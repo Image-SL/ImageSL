@@ -87,6 +87,16 @@ TOOLS = [
                         "<1 (e.g. 0.8) is looser = more positive pixels. Default 1.0."
                     ),
                 },
+                "stain_strictness": {
+                    "type": "string",
+                    "enum": ["all", "strong"],
+                    "description": (
+                        "Whether to count all stains or only the strong/dark ones. "
+                        "'all' = standard thresholding. 'strong' = Multi-Otsu isolation "
+                        "of only the darkest stains (use when the user asks to ignore "
+                        "faint/light stains, or only count the very dark stains)."
+                    ),
+                },
             },
         },
     },
