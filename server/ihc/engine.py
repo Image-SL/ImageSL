@@ -41,7 +41,7 @@ except Exception:  # pragma: no cover - tifffile is a hard dep in prod
     _HAVE_TIFFFILE = False
 
 from skimage.filters import threshold_otsu, threshold_multiotsu
-from skimage.morphology import white_tophat, disk
+from skimage.morphology import white_tophat, disk, opening
 
 
 # --------------------------------------------------------------------------- #
@@ -388,9 +388,11 @@ def analyze(
     target_map = conc[..., target_index]
     
     if stain_strictness == "strong":
-        # Advanced spatial logic: Morphological White Top-Hat Transform
-        # Erases large background areas of the same color, keeping only small stain spots
-        target_map = white_tophat(target_map, disk(10))
+        # Advanced spatial logic: Morphological Bandpass Filter
+        # 1. Erase microscopic tissue granules (false positive speckles)
+        target_map = opening(target_map, disk(3))
+        # 2. Erase massive continuous background smears, keeping only medium spots
+        target_map = white_tophat(target_map, disk(20))
 
     target_in_tissue = target_map[tissue_mask]
 
@@ -406,8 +408,11 @@ def analyze(
                     thresholds = threshold_multiotsu(target_in_tissue, classes=4)
                     threshold = float(thresholds[-1])
                 except ValueError:
-                    thresholds = threshold_multiotsu(target_in_tissue, classes=3)
-                    threshold = float(thresholds[-1])
+                    try:
+                        thresholds = threshold_multiotsu(target_in_tissue, classes=3)
+                        threshold = float(thresholds[-1])
+                    except ValueError:
+                        threshold = float(threshold_otsu(target_in_tissue))
             else:
                 threshold = float(threshold_otsu(target_in_tissue))
         except Exception:
