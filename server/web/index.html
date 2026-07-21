@@ -30,50 +30,51 @@
     </div>
   </section>
 
-  <section id="results" class="box hidden">
-    <div class="row hidden" id="imageSelectorRow" style="margin-bottom: 15px;">
-      <label class="inline" style="font-weight:bold;">Currently Viewing:
-        <select id="imageSelect" style="max-width: 350px;"></select>
-      </label>
-    </div>
-    <div class="images">
-      <figure><figcaption>Original</figcaption><img id="imgOriginal" alt=""></figure>
-      <figure><figcaption>Positive overlay</figcaption><img id="imgOverlay" alt=""></figure>
-      <figure><figcaption>Recolored preview</figcaption><img id="imgVariant" alt=""></figure>
-    </div>
+  <div id="resultsContainer"></div>
 
-    <div class="metrics">
-      <div><b id="mPercent">&ndash;</b><span>positive area</span></div>
-      <div><b id="mPositive">&ndash;</b><span>positive px</span></div>
-      <div><b id="mTissue">&ndash;</b><span>tissue px</span></div>
-      <div><b id="mThreshold">&ndash;</b><span>threshold</span></div>
-      <div><b id="mMethod">&ndash;</b><span>stain method</span></div>
-    </div>
-    <p id="visionNote" class="note"></p>
+  <template id="resultTemplate">
+    <section class="box result-card" style="margin-bottom: 30px;">
+      <h2 class="filename-header" style="border-bottom: 1px solid #eee; padding-bottom: 8px; margin-bottom: 16px; font-size: 18px; color: #333;"></h2>
+      
+      <div class="images">
+        <figure><figcaption>Original</figcaption><img class="imgOriginal" alt=""></figure>
+        <figure><figcaption>Positive overlay</figcaption><img class="imgOverlay" alt=""></figure>
+        <figure><figcaption>Recolored preview</figcaption><img class="imgVariant" alt=""></figure>
+      </div>
 
-    <div class="controls">
-      <label>Background threshold <input type="range" id="cBg" min="0.05" max="0.5" step="0.01"><span id="vBg"></span></label>
-      <label>Sensitivity (strict &rarr; loose) <input type="range" id="cScale" min="0.5" max="1.8" step="0.05"><span id="vScale"></span></label>
-      <label>Target stain
-        <select id="cTarget">
-          <option value="1">Chromogen (e.g. brown)</option>
-          <option value="0">Counterstain (nuclei)</option>
-        </select>
-      </label>
-      <label>Preview target darkness <input type="range" id="cGain" min="0.3" max="2.5" step="0.05"><span id="vGain"></span></label>
-      <label>Preview background <input type="color" id="cColor" value="#ffffff"> <button id="clearColor" class="link">reset</button></label>
-    </div>
-  </section>
+      <div class="metrics">
+        <div><b class="mPercent">&ndash;</b><span>positive area</span></div>
+        <div><b class="mPositive">&ndash;</b><span>positive px</span></div>
+        <div><b class="mTissue">&ndash;</b><span>tissue px</span></div>
+        <div><b class="mThreshold">&ndash;</b><span>threshold</span></div>
+        <div><b class="mMethod">&ndash;</b><span>stain method</span></div>
+      </div>
+      <p class="visionNote note"></p>
 
-  <section class="box">
-    <h2>Assistant</h2>
-    <p class="sub">Ask it to fix or improve the analysis &mdash; e.g. &ldquo;you&rsquo;re counting too much background, be stricter&rdquo; or &ldquo;the target is the blue stain&rdquo;. It recalculates automatically.</p>
-    <div id="chat" class="chat"></div>
-    <form id="chatForm" class="row">
-      <input type="text" id="chatInput" placeholder="Tell the assistant what to change&hellip;" autocomplete="off">
-      <button type="submit">Send</button>
-    </form>
-  </section>
+      <div class="controls">
+        <label>Background threshold <input type="range" class="cBg" min="0.05" max="0.5" step="0.01"><span class="vBg"></span></label>
+        <label>Sensitivity (strict &rarr; loose) <input type="range" class="cScale" min="0.5" max="1.8" step="0.05"><span class="vScale"></span></label>
+        <label>Target stain
+          <select class="cTarget">
+            <option value="1">Chromogen (e.g. brown)</option>
+            <option value="0">Counterstain (nuclei)</option>
+          </select>
+        </label>
+        <label>Preview target darkness <input type="range" class="cGain" min="0.3" max="2.5" step="0.05"><span class="vGain"></span></label>
+        <label>Preview background <input type="color" class="cColor" value="#ffffff"> <button class="clearColor link">reset</button></label>
+      </div>
+
+      <div style="margin-top: 20px; border-top: 1px solid #eee; padding-top: 15px;">
+        <h3 style="font-size: 15px; margin: 0 0 8px;">Assistant</h3>
+        <p class="sub" style="font-size: 13px;">Ask it to fix or improve this specific image's analysis.</p>
+        <div class="chat" style="height: 180px;"></div>
+        <form class="chatForm row">
+          <input type="text" class="chatInput" placeholder="Tell the assistant what to change&hellip;" autocomplete="off" style="flex:1;">
+          <button type="submit">Send</button>
+        </form>
+      </div>
+    </section>
+  </template>
 </main>
 <div id="lightbox" class="lightbox hidden">
   <img id="lightboxImg" src="" alt="Expanded Image">
