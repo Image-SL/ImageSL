@@ -103,7 +103,7 @@ def _default_params() -> dict:
         "background_threshold": engine.BACKGROUND_OD_THRESHOLD,
         "target_index": 1,
         "threshold_scale": 1.0,
-        "stain_strictness": "all",
+        "stain_strictness": "strong",
         "target_gain": 1.0,
         "counterstain_gain": 1.0,
         "background_hex": None,
