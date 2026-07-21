@@ -48,7 +48,7 @@ if ASSETS_DIR.is_dir():
 # --------------------------------------------------------------------------- #
 
 class _AnalysisCache:
-    def __init__(self, max_items: int = 128, ttl_seconds: int = 1800):
+    def __init__(self, max_items: int = 15, ttl_seconds: int = 3600):
         self._data: dict[str, tuple[float, dict]] = {}
         self._lock = threading.Lock()
         self._max = max_items

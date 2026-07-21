@@ -41,6 +41,9 @@ async function runAnalysis(files) {
       analyses.push(data);
       
       createCard(data);
+      
+      // Force browser to repaint so the user sees the card instantly
+      await new Promise(r => setTimeout(r, 100));
     } catch (e) {
       console.error(`Error on ${f.name}:`, e);
       setStatus("Error: " + e.message);

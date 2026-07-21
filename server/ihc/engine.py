@@ -52,8 +52,8 @@ from skimage.morphology import white_tophat, disk, opening
 # pixels per side; processing at full resolution would exhaust Railway RAM and
 # give the user no extra biological signal at this magnification. Downsampling
 # to a bounded edge keeps memory + latency predictable. Tunable via the API.
-DEFAULT_MAX_EDGE = 2048
-HARD_MAX_EDGE = 6000
+DEFAULT_MAX_EDGE = 1024
+HARD_MAX_EDGE = 2048
 
 # Background is "bright" tissue-free glass. A pixel whose optical density is
 # below this in every channel is treated as background before deconvolution.
@@ -304,7 +304,7 @@ def _deconvolve(od: np.ndarray, stain_matrix_3x3: np.ndarray) -> np.ndarray:
     flat = od.reshape(-1, 3).T                     # 3 x N
     inv = np.linalg.pinv(stain_matrix_3x3.T)        # 3 x 3
     conc = inv @ flat                               # 3 x N
-    conc = np.clip(conc, 0, None)
+    conc = np.clip(conc, 0, None).astype(np.float32)
     return conc.T.reshape(od.shape)
 
 
