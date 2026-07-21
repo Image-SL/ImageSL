@@ -40,8 +40,8 @@ try:  # tifffile + imagecodecs handle compressed / pyramidal histology TIFs
 except Exception:  # pragma: no cover - tifffile is a hard dep in prod
     _HAVE_TIFFFILE = False
 
-from skimage.filters import threshold_otsu, threshold_multiotsu
-from skimage.morphology import white_tophat, disk, opening
+from skimage.filters import threshold_otsu, threshold_multiotsu, gaussian
+from skimage.morphology import disk
 
 
 # --------------------------------------------------------------------------- #
@@ -388,11 +388,11 @@ def analyze(
     target_map = conc[..., target_index]
     
     if stain_strictness == "strong":
-        # Advanced spatial logic: Morphological Bandpass Filter
-        # 1. Erase microscopic tissue granules (false positive speckles)
-        target_map = opening(target_map, disk(3))
-        # 2. Erase massive continuous background smears, keeping only medium spots
-        target_map = white_tophat(target_map, disk(20))
+        # Adaptive Gaussian High-Pass Filter
+        # Subtracts the low-frequency background (local baseline color)
+        # while preserving local contrast (stains of ALL sizes!)
+        bg = gaussian(target_map, sigma=15)
+        target_map = np.clip(target_map - bg, 0, None)
 
     target_in_tissue = target_map[tissue_mask]
 

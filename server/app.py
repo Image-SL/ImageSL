@@ -126,17 +126,25 @@ def _hex_to_rgb(h: Optional[str]) -> Optional[tuple[int, int, int]]:
 def _render_images(entry: dict) -> None:
     rgb, maps, p = entry["rgb"], entry["maps"], entry["params"]
     overlay = engine.render_overlay(rgb, maps)
-    variant = engine.render_variant(
+    stainA = engine.render_variant(
         rgb, maps,
-        target_gain=p["target_gain"],
-        counterstain_gain=p["counterstain_gain"],
+        target_gain=1.0,
+        counterstain_gain=0.0,
         background_rgb=_hex_to_rgb(p["background_hex"]),
-        target_index=entry["result"].target_index,
+        target_index=0,  # Stain A (usually nuclei)
+    )
+    stainB = engine.render_variant(
+        rgb, maps,
+        target_gain=1.0,
+        counterstain_gain=0.0,
+        background_rgb=_hex_to_rgb(p["background_hex"]),
+        target_index=1,  # Stain B (usually target)
     )
     entry["images"] = {
         "original": entry["images"].get("original") if entry.get("images") else engine.to_data_uri(rgb),
         "overlay": engine.to_data_uri(overlay),
-        "variant": engine.to_data_uri(variant),
+        "stainA": engine.to_data_uri(stainA),
+        "stainB": engine.to_data_uri(stainB),
     }
 
 

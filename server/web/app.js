@@ -102,7 +102,8 @@ function createCard(data) {
     if (d.images) {
       if (d.images.original) qs(".imgOriginal").src = d.images.original;
       if (d.images.overlay) qs(".imgOverlay").src = d.images.overlay;
-      if (d.images.variant) qs(".imgVariant").src = d.images.variant;
+      if (d.images.stainA) qs(".imgStainA").src = d.images.stainA;
+      if (d.images.stainB) qs(".imgStainB").src = d.images.stainB;
     }
     if (d.result) {
       const r = d.result;
@@ -136,7 +137,8 @@ function createCard(data) {
   // Lightbox bindings
   qs(".imgOriginal").addEventListener("click", (e) => showLightbox(e.target.src));
   qs(".imgOverlay").addEventListener("click", (e) => showLightbox(e.target.src));
-  qs(".imgVariant").addEventListener("click", (e) => showLightbox(e.target.src));
+  qs(".imgStainA").addEventListener("click", (e) => showLightbox(e.target.src));
+  qs(".imgStainB").addEventListener("click", (e) => showLightbox(e.target.src));
 
   // Controls logic
   let debounce;
