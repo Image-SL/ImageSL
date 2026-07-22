@@ -16,8 +16,11 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+import io
+from PIL import Image
+import numpy as np
 
 from ihc import engine
 from ai import claude_client
@@ -276,6 +279,45 @@ async def api_analyze(
 
     payload = {"analysis_id": analysis_id, "vision": vision, **_public(entry)}
     return JSONResponse(payload)
+
+
+@app.get("/api/download_tif")
+def api_download_tif(analysis_id: str, image_type: str):
+    entry = _CACHE.get(analysis_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Analysis expired")
+    
+    rgb, maps, p = entry["rgb"], entry["maps"], entry["params"]
+    
+    if image_type == "original":
+        out_rgb = rgb
+    elif image_type == "overlay":
+        out_rgb = engine.render_overlay(rgb, maps)
+    elif image_type == "stainA":
+        out_rgb = engine.render_variant(
+            rgb, maps, target_gain=1.0, counterstain_gain=0.0,
+            background_rgb=_hex_to_rgb(p.get("background_hex")), target_index=0
+        )
+    elif image_type == "stainB":
+        out_rgb = engine.render_variant(
+            rgb, maps, target_gain=1.0, counterstain_gain=0.0,
+            background_rgb=_hex_to_rgb(p.get("background_hex")), target_index=1
+        )
+    elif image_type == "comparison":
+        overlay = engine.render_overlay(rgb, maps)
+        out_rgb = np.hstack([rgb, overlay])
+    else:
+        raise HTTPException(status_code=400, detail="Invalid image type")
+        
+    buf = io.BytesIO()
+    Image.fromarray(out_rgb).save(buf, format="TIFF")
+    buf.seek(0)
+    
+    return StreamingResponse(
+        buf, 
+        media_type="image/tiff", 
+        headers={"Content-Disposition": f'attachment; filename="ImageSL_{image_type}.tif"'}
+    )
 
 
 @app.post("/api/recalculate")

@@ -182,6 +182,14 @@ function createCard(data) {
   qs(".cColor").addEventListener("input", () => { qs(".cColor").dataset.cleared = ""; appearance(); });
   qs(".clearColor").addEventListener("click", (e) => { e.preventDefault(); qs(".cColor").dataset.cleared = "1"; appearance(); });
 
+  // Download bindings
+  const download = (type) => { window.location.href = `/api/download_tif?analysis_id=${analysisId}&image_type=${type}`; };
+  qs(".dl-original").addEventListener("click", () => download("original"));
+  qs(".dl-stainA").addEventListener("click", () => download("stainA"));
+  qs(".dl-stainB").addEventListener("click", () => download("stainB"));
+  qs(".dl-overlay").addEventListener("click", () => download("overlay"));
+  qs(".dl-comparison").addEventListener("click", () => download("comparison"));
+
   // Chat logic
   const chatBox = qs(".chat");
   function addMsg(who, text, cls) {
