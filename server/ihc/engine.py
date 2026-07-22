@@ -32,7 +32,7 @@ from dataclasses import dataclass, field, asdict
 from typing import Optional
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 try:  # tifffile + imagecodecs handle compressed / pyramidal histology TIFs
     import tifffile
@@ -507,6 +507,74 @@ def render_variant(
         bg = ~maps["tissue_mask"]
         out[bg] = np.array(background_rgb, dtype=np.uint8)
     return out
+
+
+# --------------------------------------------------------------------------- #
+# Labeled side-by-side comparison (for export)
+# --------------------------------------------------------------------------- #
+
+def _load_font(size: int) -> ImageFont.ImageFont:
+    """Best scalable font available; Pillow's sized default is fine everywhere."""
+    size = max(10, int(size))
+    for name in ("DejaVuSans-Bold.ttf", "DejaVuSans.ttf", "Arial.ttf"):
+        try:
+            return ImageFont.truetype(name, size)
+        except Exception:
+            continue
+    try:
+        return ImageFont.load_default(size=size)  # Pillow >= 10.1: scalable
+    except Exception:
+        return ImageFont.load_default()
+
+
+def _draw_centered(draw: ImageDraw.ImageDraw, text: str, x0: int, x1: int,
+                   band_h: int, font, fill) -> None:
+    bbox = draw.textbbox((0, 0), text, font=font)
+    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    cx = x0 + (x1 - x0 - tw) / 2.0 - bbox[0]
+    cy = (band_h - th) / 2.0 - bbox[1]
+    draw.text((cx, cy), text, fill=fill, font=font)
+
+
+def compose_comparison(
+    left_rgb: np.ndarray,
+    right_rgb: np.ndarray,
+    left_label: str = "Original",
+    right_label: str = "Detection Overlay",
+    *,
+    sep_w: int = 4,
+    band_bg: tuple[int, int, int] = (248, 247, 252),
+    band_fg: tuple[int, int, int] = (32, 24, 54),
+    sep_color: tuple[int, int, int] = (124, 92, 214),
+) -> np.ndarray:
+    """
+    Two images side by side under a clean header band that labels each panel
+    (text never overlaps the imagery), with a solid separator line between them.
+    """
+    lh, lw = left_rgb.shape[:2]
+    rh, rw = right_rgb.shape[:2]
+    h = max(lh, rh)
+
+    # Header band scales with image size, clamped to something readable.
+    band_h = int(min(90, max(34, round(h * 0.065))))
+    total_w = lw + sep_w + rw
+    total_h = band_h + h
+
+    canvas = Image.new("RGB", (total_w, total_h), band_bg)
+    canvas.paste(Image.fromarray(np.ascontiguousarray(left_rgb)), (0, band_h))
+    canvas.paste(Image.fromarray(np.ascontiguousarray(right_rgb)), (lw + sep_w, band_h))
+
+    draw = ImageDraw.Draw(canvas)
+    # Vertical separator spanning the full height (band + images).
+    draw.rectangle([lw, 0, lw + sep_w - 1, total_h], fill=sep_color)
+    # Hairline under the header band.
+    draw.line([(0, band_h - 1), (total_w, band_h - 1)], fill=(225, 220, 238), width=1)
+
+    font = _load_font(int(band_h * 0.46))
+    _draw_centered(draw, left_label, 0, lw, band_h, font, band_fg)
+    _draw_centered(draw, right_label, lw + sep_w, total_w, band_h, font, band_fg)
+
+    return np.asarray(canvas)
 
 
 # --------------------------------------------------------------------------- #

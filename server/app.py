@@ -16,8 +16,11 @@ from pathlib import Path
 from typing import Optional
 import tempfile
 import pickle
+import csv
+import zipfile
+import re
 
-from fastapi import FastAPI, File, Header, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 import io
@@ -140,6 +143,7 @@ def _default_params() -> dict:
         "target_gain": 1.0,
         "counterstain_gain": 1.0,
         "background_hex": None,
+        "overlay_hex": "#ff2d55",
     }
 
 
@@ -155,9 +159,13 @@ def _hex_to_rgb(h: Optional[str]) -> Optional[tuple[int, int, int]]:
         return None
 
 
+def _overlay_color(p: dict) -> tuple[int, int, int]:
+    return _hex_to_rgb(p.get("overlay_hex")) or (255, 45, 85)
+
+
 def _render_images(entry: dict) -> None:
     rgb, maps, p = entry["rgb"], entry["maps"], entry["params"]
-    overlay = engine.render_overlay(rgb, maps)
+    overlay = engine.render_overlay(rgb, maps, color=_overlay_color(p))
     stainA = engine.render_variant(
         rgb, maps,
         target_gain=1.0,
@@ -204,7 +212,7 @@ def _recompute(entry: dict, **updates) -> dict:
 def _rerender(entry: dict, **updates) -> dict:
     """Apply appearance-only updates and re-render the preview image."""
     p = entry["params"]
-    for k in ("target_gain", "counterstain_gain", "background_hex"):
+    for k in ("target_gain", "counterstain_gain", "background_hex", "overlay_hex"):
         if k in updates and updates[k] is not None:
             p[k] = updates[k]
     _render_images(entry)
@@ -230,6 +238,7 @@ def _public(entry: dict) -> dict:
         "result": entry["result"].to_dict(),
         "images": entry["images"],
         "params": entry["params"],
+        "filename": entry.get("filename", ""),
     }
 
 
@@ -273,6 +282,7 @@ def health() -> JSONResponse:
 @app.post("/api/analyze")
 async def api_analyze(
     file: UploadFile = File(...),
+    filename: Optional[str] = Form(default=None),
     x_imagesl_key: Optional[str] = Header(default=None),
 ):
     _require_key(x_imagesl_key)
@@ -295,6 +305,7 @@ async def api_analyze(
     entry = {
         "rgb": rgb, "source_size": source_size, "maps": maps, "result": result,
         "params": params, "images": {"original": engine.to_data_uri(rgb)},
+        "filename": (filename or file.filename or "image"),
     }
     _render_images(entry)
 
@@ -305,42 +316,53 @@ async def api_analyze(
     return JSONResponse(payload)
 
 
+def _render_type(entry: dict, image_type: str) -> np.ndarray:
+    """Produce the RGB array for a requested image variant (shared by download + zip)."""
+    rgb, maps, p = entry["rgb"], entry["maps"], entry["params"]
+    bg = _hex_to_rgb(p.get("background_hex"))
+
+    if image_type == "original":
+        return rgb
+    if image_type == "overlay":
+        return engine.render_overlay(rgb, maps, color=_overlay_color(p))
+    if image_type == "stainA":
+        return engine.render_variant(
+            rgb, maps, target_gain=1.0, counterstain_gain=0.0,
+            background_rgb=bg, target_index=0,
+        )
+    if image_type == "stainB":
+        return engine.render_variant(
+            rgb, maps, target_gain=1.0, counterstain_gain=0.0,
+            background_rgb=bg, target_index=1,
+        )
+    if image_type == "comparison":
+        overlay = engine.render_overlay(rgb, maps, color=_overlay_color(p))
+        return engine.compose_comparison(rgb, overlay, "Original", "Detection Overlay")
+    raise HTTPException(status_code=400, detail="Invalid image type")
+
+
+def _safe_name(name: str) -> str:
+    stem = re.sub(r"\.[^.]*$", "", name or "image")
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._") or "image"
+    return stem
+
+
 @app.get("/api/download_tif")
 def api_download_tif(analysis_id: str, image_type: str):
     entry = _CACHE.get(analysis_id)
     if not entry:
         raise HTTPException(status_code=404, detail="Analysis expired")
-    
-    rgb, maps, p = entry["rgb"], entry["maps"], entry["params"]
-    
-    if image_type == "original":
-        out_rgb = rgb
-    elif image_type == "overlay":
-        out_rgb = engine.render_overlay(rgb, maps)
-    elif image_type == "stainA":
-        out_rgb = engine.render_variant(
-            rgb, maps, target_gain=1.0, counterstain_gain=0.0,
-            background_rgb=_hex_to_rgb(p.get("background_hex")), target_index=0
-        )
-    elif image_type == "stainB":
-        out_rgb = engine.render_variant(
-            rgb, maps, target_gain=1.0, counterstain_gain=0.0,
-            background_rgb=_hex_to_rgb(p.get("background_hex")), target_index=1
-        )
-    elif image_type == "comparison":
-        overlay = engine.render_overlay(rgb, maps)
-        out_rgb = np.hstack([rgb, overlay])
-    else:
-        raise HTTPException(status_code=400, detail="Invalid image type")
-        
+
+    out_rgb = _render_type(entry, image_type)
     buf = io.BytesIO()
     Image.fromarray(out_rgb).save(buf, format="TIFF")
     buf.seek(0)
-    
+
+    stem = _safe_name(entry.get("filename", "image"))
     return StreamingResponse(
-        buf, 
-        media_type="image/tiff", 
-        headers={"Content-Disposition": f'attachment; filename="ImageSL_{image_type}.tif"'}
+        buf,
+        media_type="image/tiff",
+        headers={"Content-Disposition": f'attachment; filename="{stem}_{image_type}.tif"'},
     )
 
 
@@ -374,8 +396,123 @@ async def api_appearance(request: Request, x_imagesl_key: Optional[str] = Header
         target_gain=body.get("target_gain"),
         counterstain_gain=body.get("counterstain_gain"),
         background_hex=body.get("background_hex"),
+        overlay_hex=body.get("overlay_hex"),
     )
     return JSONResponse(_public(entry))
+
+
+# --------------------------------------------------------------------------- #
+# Data export (CSV spreadsheet + ZIP of images) — single or batch
+# --------------------------------------------------------------------------- #
+
+_CSV_COLUMNS = [
+    "filename",
+    "positive_area_percent_of_tissue",
+    "positive_pixels",
+    "tissue_pixels",
+    "total_image_pixels",
+    "positive_percent_of_image",
+    "otsu_threshold",
+    "mean_positive_intensity",
+    "stain_method",
+    "target_stain_index",
+    "analysis_width_px",
+    "analysis_height_px",
+    "source_width_px",
+    "source_height_px",
+]
+
+
+def _csv_row(entry: dict) -> dict:
+    r = entry["result"]
+    total_px = int(r.width) * int(r.height)
+    pct_of_image = round((r.positive_pixels / total_px * 100.0), 3) if total_px else 0.0
+    return {
+        "filename": entry.get("filename", "image"),
+        "positive_area_percent_of_tissue": r.positive_percent,
+        "positive_pixels": r.positive_pixels,
+        "tissue_pixels": r.tissue_pixels,
+        "total_image_pixels": total_px,
+        "positive_percent_of_image": pct_of_image,
+        "otsu_threshold": r.threshold,
+        "mean_positive_intensity": r.mean_positive_intensity,
+        "stain_method": r.method,
+        "target_stain_index": r.target_index,
+        "analysis_width_px": r.width,
+        "analysis_height_px": r.height,
+        "source_width_px": r.source_width,
+        "source_height_px": r.source_height,
+    }
+
+
+def _build_csv(entries: list[dict]) -> str:
+    out = io.StringIO()
+    writer = csv.DictWriter(out, fieldnames=_CSV_COLUMNS)
+    writer.writeheader()
+    for entry in entries:
+        writer.writerow(_csv_row(entry))
+    return out.getvalue()
+
+
+def _collect_entries(analysis_ids) -> list[dict]:
+    if not isinstance(analysis_ids, list) or not analysis_ids:
+        raise HTTPException(status_code=400, detail="No analysis_ids provided.")
+    entries = []
+    for aid in analysis_ids:
+        entry = _CACHE.get(aid)
+        if entry:
+            entries.append(entry)
+    if not entries:
+        raise HTTPException(status_code=404, detail="All analyses expired; re-run analysis.")
+    return entries
+
+
+@app.post("/api/export_csv")
+async def api_export_csv(request: Request, x_imagesl_key: Optional[str] = Header(default=None)):
+    _require_key(x_imagesl_key)
+    body = await request.json()
+    entries = _collect_entries(body.get("analysis_ids"))
+    csv_text = _build_csv(entries)
+    fname = "ImageSL_results.csv" if len(entries) > 1 else f"{_safe_name(entries[0].get('filename'))}_data.csv"
+    return StreamingResponse(
+        io.BytesIO(csv_text.encode("utf-8-sig")),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+@app.post("/api/export_zip")
+async def api_export_zip(request: Request, x_imagesl_key: Optional[str] = Header(default=None)):
+    _require_key(x_imagesl_key)
+    body = await request.json()
+    entries = _collect_entries(body.get("analysis_ids"))
+
+    valid = {"original", "overlay", "stainA", "stainB", "comparison"}
+    images = [t for t in (body.get("images") or ["comparison"]) if t in valid] or ["comparison"]
+    include_csv = body.get("include_csv", True)
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        used: dict[str, int] = {}
+        for entry in entries:
+            stem = _safe_name(entry.get("filename", "image"))
+            # de-duplicate identical stems across the batch
+            n = used.get(stem, 0)
+            used[stem] = n + 1
+            folder = stem if n == 0 else f"{stem}_{n+1}"
+            for image_type in images:
+                arr = _render_type(entry, image_type)
+                img_buf = io.BytesIO()
+                Image.fromarray(arr).save(img_buf, format="TIFF")
+                zf.writestr(f"{folder}/{stem}_{image_type}.tif", img_buf.getvalue())
+        if include_csv:
+            zf.writestr("ImageSL_results.csv", _build_csv(entries))
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="ImageSL_export.zip"'},
+    )
 
 
 # --------------------------------------------------------------------------- #

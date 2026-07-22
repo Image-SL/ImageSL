@@ -1,202 +1,263 @@
 "use strict";
 
+/* ============================== helpers ============================== */
 const $ = (id) => document.getElementById(id);
-let analyses = [];
+const RING_C = 2 * Math.PI * 52; // circumference of the progress ring
 
-// --- access key persistence ---
-$("key").value = localStorage.getItem("imagesl_key") || "";
-$("key").addEventListener("change", () => localStorage.setItem("imagesl_key", $("key").value.trim()));
-
+function getKey() { return ($("key").value || "").trim(); }
 function headers(json) {
   const h = {};
-  const k = $("key").value.trim();
+  const k = getKey();
   if (k) h["X-ImageSL-Key"] = k;
   if (json) h["Content-Type"] = "application/json";
   return h;
 }
-
-function setStatus(msg) { $("status").textContent = msg || ""; }
-
-// --------------------------------------------------------------------------
-// Analyze & Dashboard Rendering
-// --------------------------------------------------------------------------
-async function runAnalysis(files) {
-  if (!files || !files.length) { setStatus("Choose files first."); return; }
-  
-  $("resultsContainer").innerHTML = ""; // clear previous
-  analyses = [];
-
-  for (let i = 0; i < files.length; i++) {
-    const f = files[i];
-    setStatus(`Analyzing ${i + 1} of ${files.length} (${f.name})…`);
-    const fd = new FormData();
-    fd.append("file", f);
-
-    try {
-      const res = await fetch("/api/analyze", { method: "POST", headers: headers(false), body: fd });
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
-      const data = await res.json();
-      data._filename = f.name;
-      analyses.push(data);
-      
-      createCard(data);
-      
-      // Force browser to repaint so the user sees the card instantly
-      await new Promise(r => setTimeout(r, 100));
-    } catch (e) {
-      console.error(`Error on ${f.name}:`, e);
-      setStatus("Error: " + e.message);
-    }
+function safeStem(name) {
+  return (name || "image").replace(/\.[^.]+$/, "").replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^[._]+|[._]+$/g, "") || "image";
+}
+function showView(id) {
+  ["uploadView", "loadingView", "resultsView"].forEach((v) => $(v).classList.toggle("hidden", v !== id));
+}
+async function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+async function fetchBlob(url, opts) {
+  const res = await fetch(url, opts);
+  if (!res.ok) {
+    let msg = res.statusText;
+    try { msg = (await res.json()).detail || msg; } catch (e) {}
+    throw new Error(msg);
   }
-
-  if (analyses.length > 0) {
-    setStatus(`Done analyzing ${analyses.length} image(s).`);
-  }
+  return res.blob();
 }
 
-// Drag & Drop Listeners
+/* ============================== state ============================== */
+let analyses = []; // [{ id, filename }]
+
+// persist access key
+$("key").value = localStorage.getItem("imagesl_key") || "";
+$("key").addEventListener("change", () => localStorage.setItem("imagesl_key", getKey()));
+
+/* ============================== upload ============================== */
 const dropzone = $("dropzone");
 const fileInput = $("file");
 
 dropzone.addEventListener("click", () => fileInput.click());
-fileInput.addEventListener("change", (e) => {
-  runAnalysis(e.target.files);
-  e.target.value = ""; // reset
-});
-
-dropzone.addEventListener("dragover", (e) => {
-  e.preventDefault();
-  dropzone.classList.add("dragover");
-});
-dropzone.addEventListener("dragleave", (e) => {
-  e.preventDefault();
-  dropzone.classList.remove("dragover");
-});
+fileInput.addEventListener("change", (e) => { const f = e.target.files; e.target.value = ""; if (f.length) runBatch(f); });
+["dragover", "dragenter"].forEach((ev) => dropzone.addEventListener(ev, (e) => { e.preventDefault(); dropzone.classList.add("dragover"); }));
+["dragleave", "dragend"].forEach((ev) => dropzone.addEventListener(ev, (e) => { e.preventDefault(); dropzone.classList.remove("dragover"); }));
 dropzone.addEventListener("drop", (e) => {
-  e.preventDefault();
-  dropzone.classList.remove("dragover");
-  if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-    runAnalysis(e.dataTransfer.files);
-  }
+  e.preventDefault(); dropzone.classList.remove("dragover");
+  const f = e.dataTransfer.files;
+  if (f && f.length) runBatch(f);
 });
 
-// --------------------------------------------------------------------------
-// Card Creation Logic
-// --------------------------------------------------------------------------
+/* ============================== batch analyze ============================== */
+function setRing(fraction) {
+  $("ringFill").style.strokeDashoffset = String(RING_C * (1 - fraction));
+  $("ringPct").innerHTML = Math.round(fraction * 100) + "<small>%</small>";
+}
+
+async function analyzeOne(file) {
+  const fd = new FormData();
+  fd.append("file", file);
+  fd.append("filename", file.name);
+  const res = await fetch("/api/analyze", { method: "POST", headers: headers(false), body: fd });
+  if (!res.ok) {
+    let msg = res.statusText;
+    try { msg = (await res.json()).detail || msg; } catch (e) {}
+    throw new Error(msg);
+  }
+  const data = await res.json();
+  data.filename = data.filename || file.name;
+  return data;
+}
+
+async function runBatch(fileList) {
+  const files = Array.from(fileList);
+  $("uploadError").classList.add("hidden");
+  showView("loadingView");
+  setRing(0);
+  $("loaderSub").textContent = "Preparing…";
+
+  const done = [];
+  const errors = [];
+  for (let i = 0; i < files.length; i++) {
+    $("loaderSub").textContent = `Analyzing ${i + 1} of ${files.length} — ${files[i].name}`;
+    try {
+      const data = await analyzeOne(files[i]);
+      done.push(data);
+    } catch (e) {
+      errors.push(`${files[i].name}: ${e.message}`);
+    }
+    setRing((i + 1) / files.length);
+  }
+
+  if (!done.length) {
+    showView("uploadView");
+    const box = $("uploadError");
+    box.textContent = "Could not analyze: " + errors.join(" · ");
+    box.classList.remove("hidden");
+    return;
+  }
+  // brief beat so the ring reads 100% before the reveal
+  await new Promise((r) => setTimeout(r, 350));
+  renderResults(done, errors);
+}
+
+/* ============================== results ============================== */
+function renderResults(list, errors) {
+  analyses = list.map((d) => ({ id: d.analysis_id, filename: d.filename }));
+  const container = $("resultsContainer");
+  container.innerHTML = "";
+
+  const n = list.length;
+  const errNote = errors && errors.length ? ` <span class="sub">· ${errors.length} skipped</span>` : "";
+  $("resultsCount").innerHTML = `${n} slide${n === 1 ? "" : "s"} analyzed${errNote}`;
+
+  list.forEach((data, i) => {
+    const card = createCard(data);
+    card.style.animationDelay = (i * 90) + "ms";
+    container.appendChild(card);
+  });
+  showView("resultsView");
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
 function createCard(data) {
-  const template = $("resultTemplate");
-  const clone = template.content.cloneNode(true);
-  
-  // Scoped querying function
-  const qs = (sel) => clone.querySelector(sel);
-  
-  qs(".filename-header").textContent = data._filename;
+  const node = $("resultTemplate").content.firstElementChild.cloneNode(true);
+  const q = (sel) => node.querySelector(sel);
+  const analysisId = data.analysis_id;
+  const filename = data.filename;
+  const stem = safeStem(filename);
+  let current = data;
 
-  let currentData = data;
-  let analysisId = data.analysis_id;
+  q(".fname").textContent = filename;
 
-  // Render function
-  function renderState(d, setControls) {
-    if (d.images) {
-      if (d.images.original) qs(".imgOriginal").src = d.images.original;
-      if (d.images.overlay) qs(".imgOverlay").src = d.images.overlay;
-      if (d.images.stainA) qs(".imgStainA").src = d.images.stainA;
-      if (d.images.stainB) qs(".imgStainB").src = d.images.stainB;
-    }
-    if (d.result) {
-      const r = d.result;
-      qs(".mPercent").textContent = r.positive_percent.toFixed(2) + "%";
-      qs(".mPositive").textContent = r.positive_pixels.toLocaleString();
-      qs(".mTissue").textContent = r.tissue_pixels.toLocaleString();
-      qs(".mThreshold").textContent = r.threshold.toFixed(3);
-      qs(".mMethod").textContent = r.method;
-    }
-    if (d.params) {
-      const p = d.params;
-      if (setControls) {
-        qs(".cBg").value = p.background_threshold;
-        qs(".cScale").value = p.threshold_scale;
-        qs(".cTarget").value = String(d.result ? d.result.target_index : p.target_index);
-        qs(".cGain").value = p.target_gain;
-        qs(".cColor").value = p.background_hex || "#ffffff";
-      }
-      qs(".vBg").textContent = (+p.background_threshold).toFixed(2);
-      qs(".vScale").textContent = (+p.threshold_scale).toFixed(2);
-      qs(".vGain").textContent = (+p.target_gain).toFixed(2);
+  // ---- render current state into the DOM ----
+  function paint(d) {
+    current = d;
+    const img = d.images || {};
+    if (img.original) { q(".imgOriginal").src = img.original; q(".imgOriginal2").src = img.original; }
+    if (img.overlay) { q(".imgOverlayFront").src = img.overlay; q(".imgOverlay").src = img.overlay; }
+    if (img.stainA) q(".imgStainA").src = img.stainA;
+    if (img.stainB) q(".imgStainB").src = img.stainB;
+
+    const r = d.result;
+    if (r) {
+      q(".mPercent").textContent = r.positive_percent.toFixed(2) + "%";
+      q(".mPositive").textContent = r.positive_pixels.toLocaleString();
+      q(".mTissue").textContent = r.tissue_pixels.toLocaleString();
+      q(".mThreshold").textContent = r.threshold.toFixed(3);
+      q(".badge").textContent = r.method;
     }
   }
+  function paintControls(d) {
+    const p = d.params, r = d.result;
+    q(".cBg").value = p.background_threshold; q(".vBg").textContent = (+p.background_threshold).toFixed(2);
+    q(".cScale").value = p.threshold_scale; q(".vScale").textContent = (+p.threshold_scale).toFixed(2);
+    q(".cGain").value = p.target_gain; q(".vGain").textContent = (+p.target_gain).toFixed(1);
+    q(".cTarget").value = String(r ? r.target_index : p.target_index);
+    if (p.overlay_hex) q(".cOverlay").value = p.overlay_hex;
+    q(".cBgColor").value = p.background_hex || "#ffffff";
+  }
+  paint(data); paintControls(data);
 
-  // Initial render
-  renderState(currentData, true);
+  // ---- comparison slider ----
+  const vp = q(".cmp-viewport");
+  let dragging = false;
+  function setSplit(clientX) {
+    const rect = vp.getBoundingClientRect();
+    let pct = ((clientX - rect.left) / rect.width) * 100;
+    pct = Math.max(0, Math.min(100, pct));
+    vp.style.setProperty("--split", pct + "%");
+  }
+  vp.addEventListener("pointerdown", (e) => { dragging = true; vp.setPointerCapture(e.pointerId); setSplit(e.clientX); });
+  vp.addEventListener("pointermove", (e) => { if (dragging) setSplit(e.clientX); });
+  vp.addEventListener("pointerup", (e) => { dragging = false; try { vp.releasePointerCapture(e.pointerId); } catch (x) {} });
+  vp.addEventListener("pointercancel", () => { dragging = false; });
 
-  // Lightbox bindings
-  qs(".imgOriginal").addEventListener("click", (e) => showLightbox(e.target.src));
-  qs(".imgOverlay").addEventListener("click", (e) => showLightbox(e.target.src));
-  qs(".imgStainA").addEventListener("click", (e) => showLightbox(e.target.src));
-  qs(".imgStainB").addEventListener("click", (e) => showLightbox(e.target.src));
+  // ---- lightbox on variant thumbnails ----
+  node.querySelectorAll(".vImg").forEach((im) => im.addEventListener("click", () => showLightbox(im.src)));
 
-  // Controls logic
-  let debounce;
+  // ---- recalculation / appearance ----
+  let deb;
+  function debounce(fn, ms) { clearTimeout(deb); deb = setTimeout(fn, ms); }
+  async function post(url, body) {
+    const res = await fetch(url, { method: "POST", headers: headers(true), body: JSON.stringify(Object.assign({ analysis_id: analysisId }, body)) });
+    if (res.ok) paint(await res.json());
+  }
   function recalc() {
-    clearTimeout(debounce);
-    debounce = setTimeout(async () => {
-      const body = {
-        analysis_id: analysisId,
-        background_threshold: parseFloat(qs(".cBg").value),
-        threshold_scale: parseFloat(qs(".cScale").value),
-        target_index: parseInt(qs(".cTarget").value, 10),
-      };
-      const res = await fetch("/api/recalculate", { method: "POST", headers: headers(true), body: JSON.stringify(body) });
-      if (res.ok) {
-        currentData = await res.json();
-        renderState(currentData, false);
-      }
-    }, 220);
+    debounce(() => post("/api/recalculate", {
+      background_threshold: parseFloat(q(".cBg").value),
+      threshold_scale: parseFloat(q(".cScale").value),
+      target_index: parseInt(q(".cTarget").value, 10),
+    }), 240);
   }
-  
-  function appearance() {
-    clearTimeout(debounce);
-    debounce = setTimeout(async () => {
-      const body = {
-        analysis_id: analysisId,
-        target_gain: parseFloat(qs(".cGain").value),
-        background_hex: qs(".cColor").dataset.cleared ? null : qs(".cColor").value,
-      };
-      const res = await fetch("/api/appearance", { method: "POST", headers: headers(true), body: JSON.stringify(body) });
-      if (res.ok) {
-        currentData = await res.json();
-        renderState(currentData, false);
-      }
-    }, 150);
+  function appearance(extra) {
+    debounce(() => post("/api/appearance", Object.assign({
+      target_gain: parseFloat(q(".cGain").value),
+      overlay_hex: q(".cOverlay").value,
+    }, extra)), 150);
   }
 
-  qs(".cBg").addEventListener("input", () => { qs(".vBg").textContent = (+qs(".cBg").value).toFixed(2); recalc(); });
-  qs(".cScale").addEventListener("input", () => { qs(".vScale").textContent = (+qs(".cScale").value).toFixed(2); recalc(); });
-  qs(".cTarget").addEventListener("change", recalc);
-  qs(".cGain").addEventListener("input", () => { qs(".vGain").textContent = (+qs(".cGain").value).toFixed(2); appearance(); });
-  qs(".cColor").addEventListener("input", () => { qs(".cColor").dataset.cleared = ""; appearance(); });
-  qs(".clearColor").addEventListener("click", (e) => { e.preventDefault(); qs(".cColor").dataset.cleared = "1"; appearance(); });
+  q(".cBg").addEventListener("input", () => { q(".vBg").textContent = (+q(".cBg").value).toFixed(2); recalc(); });
+  q(".cScale").addEventListener("input", () => { q(".vScale").textContent = (+q(".cScale").value).toFixed(2); recalc(); });
+  q(".cTarget").addEventListener("change", recalc);
+  q(".cGain").addEventListener("input", () => { q(".vGain").textContent = (+q(".cGain").value).toFixed(1); appearance(); });
+  q(".cOverlay").addEventListener("input", () => appearance());
+  q(".cBgColor").addEventListener("input", () => appearance({ background_hex: q(".cBgColor").value }));
+  q(".clearBg").addEventListener("click", (e) => { e.preventDefault(); q(".cBgColor").value = "#ffffff"; appearance({ background_hex: "" }); });
 
-  // Download bindings
-  const download = (type) => { window.location.href = `/api/download_tif?analysis_id=${analysisId}&image_type=${type}`; };
-  qs(".dl-original").addEventListener("click", () => download("original"));
-  qs(".dl-stainA").addEventListener("click", () => download("stainA"));
-  qs(".dl-stainB").addEventListener("click", () => download("stainB"));
-  qs(".dl-overlay").addEventListener("click", () => download("overlay"));
-  qs(".dl-comparison").addEventListener("click", () => download("comparison"));
+  // ---- downloads ----
+  async function dlTif(type) {
+    try {
+      const blob = await fetchBlob(`/api/download_tif?analysis_id=${analysisId}&image_type=${type}`, { headers: headers(false) });
+      downloadBlob(blob, `${stem}_${type}.tif`);
+    } catch (e) { alert("Download failed: " + e.message); }
+  }
+  node.querySelectorAll(".dl-btn").forEach((b) => b.addEventListener("click", () => dlTif(b.dataset.type)));
+  node.querySelectorAll(".vdl").forEach((b) => b.addEventListener("click", (e) => { e.stopPropagation(); dlTif(b.dataset.type); }));
 
-  // Append card
-  $("resultsContainer").appendChild(clone);
+  q(".export-one").addEventListener("click", async () => {
+    try {
+      const blob = await fetchBlob("/api/export_csv", { method: "POST", headers: headers(true), body: JSON.stringify({ analysis_ids: [analysisId] }) });
+      downloadBlob(blob, `${stem}_data.csv`);
+    } catch (e) { alert("Export failed: " + e.message); }
+  });
+
+  return node;
 }
 
-// --------------------------------------------------------------------------
-// Lightbox Global
-// --------------------------------------------------------------------------
-function showLightbox(src) {
-  if (!src) return;
-  $("lightboxImg").src = src;
-  $("lightbox").classList.remove("hidden");
-}
-$("lightbox").addEventListener("click", () => {
-  $("lightbox").classList.add("hidden");
+/* ============================== mass export ============================== */
+$("btnExportCsv").addEventListener("click", async function () {
+  const ids = analyses.map((a) => a.id);
+  if (!ids.length) return;
+  this.disabled = true;
+  try {
+    const blob = await fetchBlob("/api/export_csv", { method: "POST", headers: headers(true), body: JSON.stringify({ analysis_ids: ids }) });
+    downloadBlob(blob, "ImageSL_results.csv");
+  } catch (e) { alert("Export failed: " + e.message); }
+  this.disabled = false;
 });
+
+$("btnDownloadZip").addEventListener("click", async function () {
+  const ids = analyses.map((a) => a.id);
+  if (!ids.length) return;
+  const label = this.innerHTML; this.disabled = true; this.textContent = "Packaging…";
+  try {
+    const blob = await fetchBlob("/api/export_zip", { method: "POST", headers: headers(true), body: JSON.stringify({ analysis_ids: ids, images: ["comparison"], include_csv: true }) });
+    downloadBlob(blob, "ImageSL_export.zip");
+  } catch (e) { alert("Download failed: " + e.message); }
+  this.disabled = false; this.innerHTML = label;
+});
+
+$("btnNew").addEventListener("click", () => { analyses = []; $("resultsContainer").innerHTML = ""; showView("uploadView"); window.scrollTo({ top: 0, behavior: "smooth" }); });
+
+/* ============================== lightbox ============================== */
+function showLightbox(src) { if (!src) return; $("lightboxImg").src = src; $("lightbox").classList.remove("hidden"); }
+$("lightbox").addEventListener("click", () => $("lightbox").classList.add("hidden"));

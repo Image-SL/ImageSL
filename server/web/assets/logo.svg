@@ -1,0 +1,13 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="ImageSL logo">
+  <defs>
+    <linearGradient id="isl-g" x1="8" y1="6" x2="56" y2="58" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#8b5cf6"/>
+      <stop offset="1" stop-color="#6d28d9"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="17" fill="url(#isl-g)"/>
+  <g stroke="#ffffff" stroke-width="2.4">
+    <circle cx="26" cy="30" r="13.5" fill="#ffffff" fill-opacity="0.42"/>
+    <circle cx="39" cy="35.5" r="13.5" fill="#ffffff" fill-opacity="0.42"/>
+  </g>
+</svg>
