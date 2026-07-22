@@ -56,7 +56,7 @@ CACHE_DIR = Path("/data") if Path("/data").exists() else Path(tempfile.gettempdi
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 class _DiskCache:
-    def __init__(self, max_items: int = 50, ttl_seconds: int = 86400):
+    def __init__(self, max_items: int = 50, ttl_seconds: int = 300):
         self._dir = CACHE_DIR
         self._lock = threading.Lock()
         self._max = max_items
