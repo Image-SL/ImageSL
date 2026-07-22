@@ -1,9 +1,9 @@
 """
 ImageSL backend — FastAPI application (fully online, single-page web tool).
 
-All analysis and the Claude API key live here. The browser is the only client.
-The built-in assistant can call tools that RE-RUN the analysis, so the user can
-improve results conversationally and see the numbers/images update.
+All analysis lives here; the browser is the only client. Upload a slide to get
+IHC stain quantification (color deconvolution + Macenko + Otsu), then adjust the
+analysis parameters to re-run the measurement and re-render the preview.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from typing import Optional
 import tempfile
 import pickle
 
-from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 import io
@@ -25,7 +25,6 @@ from PIL import Image
 import numpy as np
 
 from ihc import engine
-from ai import claude_client
 
 # --------------------------------------------------------------------------- #
 # Config
@@ -264,7 +263,7 @@ def app_js():
 
 @app.get("/api/health")
 def health() -> JSONResponse:
-    return JSONResponse({"status": "ok", "version": APP_VERSION, "ai_configured": claude_client.is_configured()})
+    return JSONResponse({"status": "ok", "version": APP_VERSION})
 
 
 # --------------------------------------------------------------------------- #
@@ -274,7 +273,6 @@ def health() -> JSONResponse:
 @app.post("/api/analyze")
 async def api_analyze(
     file: UploadFile = File(...),
-    use_ai: bool = Form(True),
     x_imagesl_key: Optional[str] = Header(default=None),
 ):
     _require_key(x_imagesl_key)
@@ -284,10 +282,6 @@ async def api_analyze(
         rgb, source_size = engine.load_rgb(data)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Could not decode image: {exc}")
-
-    vision: dict = {"available": False}
-    if use_ai and claude_client.is_configured():
-        vision = claude_client.vision_stain_report(engine.thumbnail_jpeg_b64(rgb))
 
     params = _default_params()
     result, maps = engine.analyze(
@@ -307,7 +301,7 @@ async def api_analyze(
     analysis_id = uuid.uuid4().hex
     _CACHE.put(analysis_id, entry)
 
-    payload = {"analysis_id": analysis_id, "vision": vision, **_public(entry)}
+    payload = {"analysis_id": analysis_id, **_public(entry)}
     return JSONResponse(payload)
 
 
@@ -382,47 +376,6 @@ async def api_appearance(request: Request, x_imagesl_key: Optional[str] = Header
         background_hex=body.get("background_hex"),
     )
     return JSONResponse(_public(entry))
-
-
-# --------------------------------------------------------------------------- #
-# Chat API — agentic, can recalculate
-# --------------------------------------------------------------------------- #
-
-@app.post("/api/chat")
-async def api_chat(request: Request, x_imagesl_key: Optional[str] = Header(default=None)):
-    _require_key(x_imagesl_key)
-    body = await request.json()
-    messages = body.get("messages", [])
-    entry = _CACHE.get(body.get("analysis_id"))
-
-    if not entry:
-        # Chat still works without a loaded slide (general questions).
-        out = claude_client.chat_agentic(messages, context=None, executor=lambda n, i: "No slide is loaded.")
-        return JSONResponse({"reply": out["reply"], "updated": False})
-
-    def executor(name: str, args: dict) -> str:
-        if name == "recalculate_analysis":
-            _recompute(
-                entry,
-                background_threshold=args.get("background_threshold"),
-                target_index=args.get("target_index"),
-                threshold_scale=args.get("threshold_scale"),
-                stain_strictness=args.get("stain_strictness"),
-                stain_method=args.get("stain_method"),
-            )
-            return "Recalculated. New state: " + _state_summary(entry)
-        if name == "set_appearance":
-            _rerender(
-                entry,
-                target_gain=args.get("target_gain"),
-                counterstain_gain=args.get("counterstain_gain"),
-                background_hex=args.get("background_hex"),
-            )
-            return "Preview appearance updated."
-        return f"Unknown tool: {name}"
-
-    out = claude_client.chat_agentic(messages, context=_state_summary(entry), executor=executor)
-    return JSONResponse({"reply": out["reply"], "updated": out["used_tools"], **_public(entry)})
 
 
 # --------------------------------------------------------------------------- #

@@ -9,7 +9,7 @@
 <body>
 <main>
   <h1>ImageSL</h1>
-  <p class="sub">IHC stain quantification. Upload a slide, then use the assistant to improve the result.</p>
+  <p class="sub">IHC stain quantification. Upload a slide to analyze it, then fine-tune with the controls.</p>
 
   <section class="box">
     <div id="dropzone" class="dropzone">
@@ -20,8 +20,7 @@
       <input type="file" id="file" multiple accept=".tif,.tiff,.png,.jpg,.jpeg" style="display:none;">
     </div>
     <div class="row" style="margin-top: 12px;">
-      <label class="inline"><input type="checkbox" id="useAi" checked> Use AI vision</label>
-      <span id="status" class="status" style="margin-left: 15px;"></span>
+      <span id="status" class="status"></span>
     </div>
     <div class="row">
       <label class="inline">Access key (optional):
@@ -50,8 +49,6 @@
         <div><b class="mThreshold">&ndash;</b><span>threshold</span></div>
         <div><b class="mMethod">&ndash;</b><span>stain method</span></div>
       </div>
-      <p class="visionNote note"></p>
-
       <div class="controls">
         <label>Background threshold <input type="range" class="cBg" min="0.05" max="0.5" step="0.01"><span class="vBg"></span></label>
         <label>Sensitivity (strict &rarr; loose) <input type="range" class="cScale" min="0.5" max="1.8" step="0.05"><span class="vScale"></span></label>
@@ -73,21 +70,12 @@
         <button class="dl-btn dl-comparison" style="background-color: #2c3e50; color: white;">⬇ Comparison (.tif)</button>
       </div>
 
-      <div style="margin-top: 20px; border-top: 1px solid #eee; padding-top: 15px;">
-        <h3 style="font-size: 15px; margin: 0 0 8px;">Assistant</h3>
-        <p class="sub" style="font-size: 13px;">Ask it to fix or improve this specific image's analysis.</p>
-        <div class="chat" style="height: 180px;"></div>
-        <form class="chatForm row">
-          <input type="text" class="chatInput" placeholder="Tell the assistant what to change&hellip;" autocomplete="off" style="flex:1;">
-          <button type="submit">Send</button>
-        </form>
-      </div>
     </section>
   </template>
 </main>
 <div id="lightbox" class="lightbox hidden">
   <img id="lightboxImg" src="" alt="Expanded Image">
 </div>
-<script src="/app.js?v=6"></script>
+<script src="/app.js?v=7"></script>
 </body>
 </html>

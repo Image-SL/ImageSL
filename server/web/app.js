@@ -31,7 +31,6 @@ async function runAnalysis(files) {
     setStatus(`Analyzing ${i + 1} of ${files.length} (${f.name})…`);
     const fd = new FormData();
     fd.append("file", f);
-    fd.append("use_ai", $("useAi").checked ? "true" : "false");
 
     try {
       const res = await fetch("/api/analyze", { method: "POST", headers: headers(false), body: fd });
@@ -95,7 +94,6 @@ function createCard(data) {
 
   let currentData = data;
   let analysisId = data.analysis_id;
-  const messages = [];
 
   // Render function
   function renderState(d, setControls) {
@@ -125,9 +123,6 @@ function createCard(data) {
       qs(".vBg").textContent = (+p.background_threshold).toFixed(2);
       qs(".vScale").textContent = (+p.threshold_scale).toFixed(2);
       qs(".vGain").textContent = (+p.target_gain).toFixed(2);
-    }
-    if (d.vision) {
-      qs(".visionNote").textContent = (d.vision.available && d.vision.summary) ? ("AI vision: " + d.vision.summary) : "";
     }
   }
 
@@ -189,51 +184,6 @@ function createCard(data) {
   qs(".dl-stainB").addEventListener("click", () => download("stainB"));
   qs(".dl-overlay").addEventListener("click", () => download("overlay"));
   qs(".dl-comparison").addEventListener("click", () => download("comparison"));
-
-  // Chat logic
-  const chatBox = qs(".chat");
-  function addMsg(who, text, cls) {
-    const d = document.createElement("div");
-    d.className = "msg " + (cls || "");
-    d.innerHTML = '<div class="who"></div><div class="text"></div>';
-    d.querySelector(".who").textContent = who;
-    d.querySelector(".text").textContent = text;
-    chatBox.appendChild(d);
-    chatBox.scrollTop = chatBox.scrollHeight;
-    return d;
-  }
-
-  qs(".chatForm").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const chatInput = qs(".chatInput");
-    const text = chatInput.value.trim();
-    if (!text) return;
-    chatInput.value = "";
-    messages.push({ role: "user", content: text });
-    addMsg("You", text, "user");
-    const pending = addMsg("Assistant", "…", "pending");
-
-    try {
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: headers(true),
-        body: JSON.stringify({ messages, analysis_id: analysisId }),
-      });
-      const resData = await res.json();
-      pending.remove();
-      const reply = resData.reply || "(no reply)";
-      messages.push({ role: "assistant", content: reply });
-      addMsg("Assistant", reply);
-      if (resData.updated) {
-        currentData = resData;
-        renderState(currentData, true);
-        addMsg("System", "↳ analysis recalculated", "recalc");
-      }
-    } catch (e2) {
-      pending.remove();
-      addMsg("Assistant", "Error: " + e2.message);
-    }
-  });
 
   // Append card
   $("resultsContainer").appendChild(clone);
