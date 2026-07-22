@@ -1,0 +1,82 @@
+name: Deploy to AWS Lightsail
+
+# Every push to main builds the Docker image, pushes it to Amazon ECR,
+# and rolls out a new deployment on the Lightsail container service.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write   # required for AWS OIDC (no stored keys)
+  contents: read
+
+env:
+  AWS_REGION: us-east-2
+  ECR_REGISTRY: 581586866061.dkr.ecr.us-east-2.amazonaws.com
+  ECR_REPO: imagesl
+  SERVICE: imagesl
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::581586866061:role/imagesl-github-deploy
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        run: aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+
+      - name: Build and push image
+        run: |
+          set -euo pipefail
+          TAG="git-${GITHUB_SHA::12}"
+          docker build -t "$ECR_REGISTRY/$ECR_REPO:$TAG" -t "$ECR_REGISTRY/$ECR_REPO:latest" .
+          docker push "$ECR_REGISTRY/$ECR_REPO:$TAG"
+          docker push "$ECR_REGISTRY/$ECR_REPO:latest"
+          echo "IMAGE_TAG=$TAG" >> "$GITHUB_ENV"
+
+      - name: Deploy to Lightsail
+        run: |
+          set -euo pipefail
+          cat > deploy.json <<EOF
+          {
+            "serviceName": "${SERVICE}",
+            "containers": {
+              "imagesl": {
+                "image": "${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}",
+                "environment": { "IMAGESL_VERSION": "2.0.0" },
+                "ports": { "8000": "HTTP" }
+              }
+            },
+            "publicEndpoint": {
+              "containerName": "imagesl",
+              "containerPort": 8000,
+              "healthCheck": {
+                "path": "/api/health",
+                "successCodes": "200-299",
+                "intervalSeconds": 10,
+                "timeoutSeconds": 5,
+                "healthyThreshold": 2,
+                "unhealthyThreshold": 5
+              }
+            }
+          }
+          EOF
+          # Retry while a previous deployment is still rolling out.
+          for i in $(seq 1 12); do
+            if aws lightsail create-container-service-deployment --region "$AWS_REGION" --cli-input-json file://deploy.json; then
+              echo "Deployment submitted."
+              exit 0
+            fi
+            echo "Service busy (attempt $i) — retrying in 20s…"
+            sleep 20
+          done
+          echo "Could not submit deployment after retries." >&2
+          exit 1
