@@ -115,7 +115,12 @@ class _DiskCache:
                 p.unlink(missing_ok=True)
 
 
-_CACHE = _DiskCache()
+# TTL/size are generous enough that a large batch (dozens of slides) survives
+# analysis + review + export. Still auto-wipes for privacy; tune via env.
+_CACHE = _DiskCache(
+    max_items=int(os.environ.get("IMAGESL_CACHE_MAX", "200")),
+    ttl_seconds=int(os.environ.get("IMAGESL_CACHE_TTL", "3600")),
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -309,6 +314,7 @@ async def api_analyze(
     }
     _render_images(entry)
 
+    entry["maps"].pop("od", None)  # unused downstream; keep cache entries lean
     analysis_id = uuid.uuid4().hex
     _CACHE.put(analysis_id, entry)
 
@@ -493,18 +499,21 @@ async def api_export_zip(request: Request, x_imagesl_key: Optional[str] = Header
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        used: dict[str, int] = {}
+        used: set[str] = set()
         for entry in entries:
             stem = _safe_name(entry.get("filename", "image"))
-            # de-duplicate identical stems across the batch
-            n = used.get(stem, 0)
-            used[stem] = n + 1
-            folder = stem if n == 0 else f"{stem}_{n+1}"
             for image_type in images:
+                # flat layout, no per-image folders; de-duplicate if names collide
+                name = f"{stem}_{image_type}.tif"
+                k = 2
+                while name in used:
+                    name = f"{stem}_{image_type}_{k}.tif"
+                    k += 1
+                used.add(name)
                 arr = _render_type(entry, image_type)
                 img_buf = io.BytesIO()
                 Image.fromarray(arr).save(img_buf, format="TIFF")
-                zf.writestr(f"{folder}/{stem}_{image_type}.tif", img_buf.getvalue())
+                zf.writestr(name, img_buf.getvalue())
         if include_csv:
             zf.writestr("ImageSL_results.csv", _build_csv(entries))
     buf.seek(0)
