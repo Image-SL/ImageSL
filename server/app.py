@@ -14,6 +14,8 @@ import threading
 import uuid
 from pathlib import Path
 from typing import Optional
+import tempfile
+import pickle
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
@@ -47,43 +49,71 @@ if ASSETS_DIR.is_dir():
 
 
 # --------------------------------------------------------------------------- #
-# In-memory analysis cache (per instance)
+# Persistent disk analysis cache (survives restarts if /data is mounted)
 # --------------------------------------------------------------------------- #
 
-class _AnalysisCache:
-    def __init__(self, max_items: int = 15, ttl_seconds: int = 3600):
-        self._data: dict[str, tuple[float, dict]] = {}
+CACHE_DIR = Path("/data") if Path("/data").exists() else Path(tempfile.gettempdir()) / "imagesl_cache"
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+class _DiskCache:
+    def __init__(self, max_items: int = 50, ttl_seconds: int = 86400):
+        self._dir = CACHE_DIR
         self._lock = threading.Lock()
         self._max = max_items
         self._ttl = ttl_seconds
 
+    def _file(self, key: str) -> Path:
+        return self._dir / f"{key}.pkl"
+
     def put(self, key: str, value: dict) -> None:
         with self._lock:
             self._evict()
-            self._data[key] = (time.time(), value)
+            with open(self._file(key), "wb") as f:
+                pickle.dump((time.time(), value), f)
 
     def get(self, key: str) -> Optional[dict]:
         with self._lock:
-            item = self._data.get(key)
-            if not item:
+            path = self._file(key)
+            if not path.exists():
                 return None
-            ts, value = item
-            if time.time() - ts > self._ttl:
-                self._data.pop(key, None)
+            try:
+                with open(path, "rb") as f:
+                    ts, value = pickle.load(f)
+                if time.time() - ts > self._ttl:
+                    path.unlink(missing_ok=True)
+                    return None
+                # Update timestamp on read
+                with open(path, "wb") as f:
+                    pickle.dump((time.time(), value), f)
+                return value
+            except Exception:
+                path.unlink(missing_ok=True)
                 return None
-            self._data[key] = (time.time(), value)
-            return value
 
     def _evict(self) -> None:
         now = time.time()
-        for k in [k for k, (ts, _) in self._data.items() if now - ts > self._ttl]:
-            self._data.pop(k, None)
-        while len(self._data) >= self._max:
-            oldest = min(self._data.items(), key=lambda kv: kv[1][0])[0]
-            self._data.pop(oldest, None)
+        files = list(self._dir.glob("*.pkl"))
+        
+        valid_files = []
+        for p in files:
+            try:
+                with open(p, "rb") as f:
+                    ts, _ = pickle.load(f)
+                if now - ts > self._ttl:
+                    p.unlink(missing_ok=True)
+                else:
+                    valid_files.append((ts, p))
+            except Exception:
+                p.unlink(missing_ok=True)
+                
+        if len(valid_files) >= self._max:
+            valid_files.sort(key=lambda x: x[0])
+            to_remove = len(valid_files) - self._max + 1
+            for _, p in valid_files[:to_remove]:
+                p.unlink(missing_ok=True)
 
 
-_CACHE = _AnalysisCache()
+_CACHE = _DiskCache()
 
 
 # --------------------------------------------------------------------------- #
