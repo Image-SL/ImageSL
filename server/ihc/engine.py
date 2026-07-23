@@ -631,6 +631,17 @@ def to_data_uri(rgb: np.ndarray, fmt: str = "PNG", quality: int = 86) -> str:
     return f"data:{mime};base64,{b64}"
 
 
+def mask_data_uri(mask: np.ndarray) -> str:
+    """Encode a boolean positive-pixel mask as a transparent PNG (alpha = mask).
+    The browser tints this with any color for instant client-side overlays."""
+    h, w = mask.shape[:2]
+    rgba = np.zeros((h, w, 4), dtype=np.uint8)
+    rgba[mask.astype(bool)] = (255, 255, 255, 255)
+    buf = io.BytesIO()
+    Image.fromarray(rgba, "RGBA").save(buf, format="PNG", optimize=True)
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+
 def thumbnail_jpeg_b64(rgb: np.ndarray, max_edge: int = 768, quality: int = 82) -> str:
     """Small JPEG (base64, no data-URI prefix) for sending to Claude vision."""
     im = Image.fromarray(rgb)

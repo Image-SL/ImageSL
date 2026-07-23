@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ImageSL — IHC Stain Quantification</title>
 <link rel="icon" type="image/svg+xml" href="/assets/logo.svg">
-<link rel="stylesheet" href="/styles.css?v=11">
+<link rel="stylesheet" href="/styles.css?v=14">
 </head>
 <body>
 
@@ -110,7 +110,7 @@
     <div class="compare">
       <div class="cmp-viewport" style="--split:50%">
         <img class="cmp-base imgOriginal" alt="Original" draggable="false">
-        <div class="cmp-front"><img class="imgOverlayFront" alt="Detection overlay" draggable="false"></div>
+        <div class="cmp-front"><canvas class="cmpFront"></canvas></div>
         <span class="cmp-tag cmp-tag-l">Original</span>
         <span class="cmp-tag cmp-tag-r">Overlay</span>
         <div class="cmp-handle">
@@ -180,8 +180,9 @@
   </article>
 </template>
 
+<div id="toasts"></div>
 <div id="lightbox" class="lightbox hidden"><img id="lightboxImg" src="" alt="Expanded"></div>
 
-<script src="/app.js?v=11"></script>
+<script src="/app.js?v=14"></script>
 </body>
 </html>

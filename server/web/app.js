@@ -33,6 +33,46 @@ function hexToHue(hex) {
   else h = 60 * ((r - g) / d + 4);
   return Math.round(h);
 }
+
+// Composite the detection overlay in-browser: original + positive mask tinted
+// with `hex`. Recoloring is instant (no server round-trip). alpha matches the
+// server export (0.45). A shared scratch canvas holds the tinted mask.
+let _maskScratch = null;
+function _tintMask(maskImg, hex, w, h) {
+  if (!_maskScratch) _maskScratch = document.createElement("canvas");
+  _maskScratch.width = w; _maskScratch.height = h;
+  const mx = _maskScratch.getContext("2d");
+  mx.clearRect(0, 0, w, h);
+  mx.globalCompositeOperation = "source-over";
+  mx.drawImage(maskImg, 0, 0, w, h);
+  mx.globalCompositeOperation = "source-in";
+  mx.fillStyle = hex; mx.fillRect(0, 0, w, h);
+  return _maskScratch;
+}
+// Draw the overlay straight onto a DOM canvas — no encoding, so it's ~instant.
+function drawOverlay(canvas, origImg, maskImg, hex, alpha) {
+  const w = origImg.naturalWidth || origImg.width, h = origImg.naturalHeight || origImg.height;
+  if (canvas.width !== w) canvas.width = w;
+  if (canvas.height !== h) canvas.height = h;
+  const cx = canvas.getContext("2d");
+  cx.clearRect(0, 0, w, h);
+  cx.drawImage(origImg, 0, 0, w, h);
+  cx.globalAlpha = alpha == null ? 0.45 : alpha;
+  cx.drawImage(_tintMask(maskImg, hex, w, h), 0, 0);
+  cx.globalAlpha = 1;
+}
+// Composite to a data URI at a bounded width (for the small thumbnail — fast).
+function compositeOverlay(origImg, maskImg, hex, alpha, maxW) {
+  let w = origImg.naturalWidth || origImg.width, h = origImg.naturalHeight || origImg.height;
+  if (maxW && w > maxW) { h = Math.round(h * maxW / w); w = maxW; }
+  const cv = document.createElement("canvas"); cv.width = w; cv.height = h;
+  const cx = cv.getContext("2d");
+  cx.drawImage(origImg, 0, 0, w, h);
+  cx.globalAlpha = alpha == null ? 0.45 : alpha;
+  cx.drawImage(_tintMask(maskImg, hex, w, h), 0, 0);
+  cx.globalAlpha = 1;
+  return cv.toDataURL("image/jpeg", 0.85);
+}
 function safeStem(name) {
   return (name || "image").replace(/\.[^.]+$/, "").replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^[._]+|[._]+$/g, "") || "image";
 }
@@ -54,6 +94,49 @@ async function fetchBlob(url, opts) {
     throw new Error(msg);
   }
   return res.blob();
+}
+
+// top-right progress notification with a live horizontal bar
+function makeToast(label) {
+  const el = document.createElement("div");
+  el.className = "toast";
+  el.innerHTML = '<div class="toast-label"></div><div class="toast-track"><div class="toast-fill"></div></div>';
+  el.querySelector(".toast-label").textContent = label;
+  document.getElementById("toasts").appendChild(el);
+  requestAnimationFrame(() => el.classList.add("show"));
+  const fill = el.querySelector(".toast-fill"), lab = el.querySelector(".toast-label");
+  const dismiss = (ms) => setTimeout(() => { el.classList.remove("show"); setTimeout(() => el.remove(), 400); }, ms);
+  return {
+    set(frac, text) { fill.style.width = Math.max(0, Math.min(1, frac)) * 100 + "%"; if (text) lab.textContent = text; },
+    done(text) { el.classList.add("ok"); fill.style.width = "100%"; if (text) lab.textContent = text; dismiss(1100); },
+    fail(text) { el.classList.add("err"); if (text) lab.textContent = text; dismiss(3200); },
+  };
+}
+
+// download with a live progress toast; reads the streamed response so long
+// operations (big ZIPs) show real progress. GET when body is null.
+async function streamedDownload(url, body, filename, label, estBytes) {
+  const t = makeToast(label);
+  try {
+    const opts = body == null
+      ? { method: "GET", headers: headers(false) }
+      : { method: "POST", headers: headers(true), body: JSON.stringify(body) };
+    const res = await fetch(url, opts);
+    if (!res.ok) { let m = res.statusText; try { m = (await res.json()).detail || m; } catch (e) {} throw new Error(m); }
+    if (!res.body || !res.body.getReader) {
+      await downloadBlob(await res.blob(), filename); t.done("Saved " + filename); return;
+    }
+    const reader = res.body.getReader();
+    const chunks = []; let received = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value); received += value.length;
+      t.set(estBytes ? (received / estBytes) * 0.92 : 0.4, `${label} · ${(received / 1048576).toFixed(1)} MB`);
+    }
+    await downloadBlob(new Blob(chunks), filename);
+    t.done("Saved " + filename);
+  } catch (e) { t.fail("Export failed: " + e.message); }
 }
 
 /* ============================== state ============================== */
@@ -152,17 +235,31 @@ function createCard(data) {
   const filename = data.filename;
   const stem = safeStem(filename);
   let current = data;
+  const ov = { origImg: null, maskImg: null }; // loaded sources for instant recolor
 
   q(".fname").textContent = filename;
+
+  function recolorOverlay() {
+    if (!ov.origImg || !ov.maskImg) return;
+    const color = q(".cOverlay").value;
+    drawOverlay(q(".cmpFront"), ov.origImg, ov.maskImg, color, 0.45);              // slider: instant, no encode
+    q(".imgOverlay").src = compositeOverlay(ov.origImg, ov.maskImg, color, 0.45, 520); // thumbnail: small + fast
+  }
+  function loadOverlaySources(origSrc, maskSrc) {
+    const o = new Image(), m = new Image();
+    let n = 0;
+    const done = () => { if (++n === 2) { ov.origImg = o; ov.maskImg = m; recolorOverlay(); } };
+    o.onload = done; m.onload = done; o.src = origSrc; m.src = maskSrc;
+  }
 
   // ---- render current state into the DOM ----
   function paint(d) {
     current = d;
     const img = d.images || {};
     if (img.original) { q(".imgOriginal").src = img.original; q(".imgOriginal2").src = img.original; }
-    if (img.overlay) { q(".imgOverlayFront").src = img.overlay; q(".imgOverlay").src = img.overlay; }
     if (img.stainA) q(".imgStainA").src = img.stainA;
     if (img.stainB) q(".imgStainB").src = img.stainB;
+    if (img.original && img.mask) loadOverlaySources(img.original, img.mask); // overlay composited client-side
 
     const r = d.result;
     if (r) {
@@ -226,52 +323,47 @@ function createCard(data) {
   q(".cScale").addEventListener("input", () => { q(".vScale").textContent = (+q(".cScale").value).toFixed(2); recalc(); });
   q(".cTarget").addEventListener("change", recalc);
   q(".cGain").addEventListener("input", () => { q(".vGain").textContent = (+q(".cGain").value).toFixed(1); appearance(); });
-  q(".cOverlay").addEventListener("input", () => { q(".cHue").value = hexToHue(q(".cOverlay").value); appearance(); });
-  q(".cHue").addEventListener("input", () => { q(".cOverlay").value = hueToHex(+q(".cHue").value); appearance(); });
+  // Overlay color: recolor instantly in the browser; persist to the server
+  // (debounced, fire-and-forget) only so downloads/exports use the chosen color.
+  let colorDeb;
+  function persistColor() {
+    clearTimeout(colorDeb);
+    colorDeb = setTimeout(() => {
+      fetch("/api/appearance", { method: "POST", headers: headers(true), body: JSON.stringify({ analysis_id: analysisId, overlay_hex: q(".cOverlay").value }) }).catch(() => {});
+    }, 350);
+  }
+  q(".cOverlay").addEventListener("input", () => { q(".cHue").value = hexToHue(q(".cOverlay").value); recolorOverlay(); persistColor(); });
+  q(".cHue").addEventListener("input", () => { q(".cOverlay").value = hueToHex(+q(".cHue").value); recolorOverlay(); persistColor(); });
   q(".cBgColor").addEventListener("input", () => appearance({ background_hex: q(".cBgColor").value }));
   q(".clearBg").addEventListener("click", (e) => { e.preventDefault(); q(".cBgColor").value = "#ffffff"; appearance({ background_hex: "" }); });
 
   // ---- downloads ----
-  async function dlTif(type) {
-    try {
-      const blob = await fetchBlob(`/api/download_tif?analysis_id=${analysisId}&image_type=${type}`, { headers: headers(false) });
-      downloadBlob(blob, `${stem}_${type}.tif`);
-    } catch (e) { alert("Download failed: " + e.message); }
+  function dlTif(type) {
+    streamedDownload(`/api/download_tif?analysis_id=${analysisId}&image_type=${type}`, null, `${stem}_${type}.tif`, `Exporting ${type}`, 2 * 1048576);
   }
   node.querySelectorAll(".dl-btn").forEach((b) => b.addEventListener("click", () => dlTif(b.dataset.type)));
   node.querySelectorAll(".vdl").forEach((b) => b.addEventListener("click", (e) => { e.stopPropagation(); dlTif(b.dataset.type); }));
 
-  q(".export-one").addEventListener("click", async () => {
-    try {
-      const blob = await fetchBlob("/api/export_csv", { method: "POST", headers: headers(true), body: JSON.stringify({ analysis_ids: [analysisId] }) });
-      downloadBlob(blob, `${stem}_data.csv`);
-    } catch (e) { alert("Export failed: " + e.message); }
+  q(".export-one").addEventListener("click", () => {
+    streamedDownload("/api/export_csv", { analysis_ids: [analysisId] }, `${stem}_data.csv`, "Exporting CSV", 0);
   });
 
   return node;
 }
 
 /* ============================== mass export ============================== */
-$("btnExportCsv").addEventListener("click", async function () {
+$("btnExportCsv").addEventListener("click", function () {
   const ids = analyses.map((a) => a.id);
   if (!ids.length) return;
-  this.disabled = true;
-  try {
-    const blob = await fetchBlob("/api/export_csv", { method: "POST", headers: headers(true), body: JSON.stringify({ analysis_ids: ids }) });
-    downloadBlob(blob, "ImageSL_results.csv");
-  } catch (e) { alert("Export failed: " + e.message); }
-  this.disabled = false;
+  streamedDownload("/api/export_csv", { analysis_ids: ids }, "ImageSL_results.csv", "Exporting data (CSV)", 0);
 });
 
-$("btnDownloadZip").addEventListener("click", async function () {
+$("btnDownloadZip").addEventListener("click", function () {
   const ids = analyses.map((a) => a.id);
   if (!ids.length) return;
-  const label = this.innerHTML; this.disabled = true; this.textContent = "Packaging…";
-  try {
-    const blob = await fetchBlob("/api/export_zip", { method: "POST", headers: headers(true), body: JSON.stringify({ analysis_ids: ids, images: ["comparison"], include_csv: true }) });
-    downloadBlob(blob, "ImageSL_export.zip");
-  } catch (e) { alert("Download failed: " + e.message); }
-  this.disabled = false; this.innerHTML = label;
+  const n = ids.length;
+  streamedDownload("/api/export_zip", { analysis_ids: ids, images: ["comparison"], include_csv: true },
+    "ImageSL_export.zip", `Packaging ${n} slide${n === 1 ? "" : "s"} (ZIP)`, n * 1.6 * 1048576);
 });
 
 $("btnNew").addEventListener("click", () => { analyses = []; $("resultsContainer").innerHTML = ""; showView("uploadView"); window.scrollTo({ top: 0, behavior: "smooth" }); });

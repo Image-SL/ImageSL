@@ -148,7 +148,7 @@ class _DiskCache:
 # TTL/size are generous enough that a large batch (dozens of slides) survives
 # analysis + review + export. Still auto-wipes for privacy; tune via env.
 _CACHE = _DiskCache(
-    max_items=int(os.environ.get("IMAGESL_CACHE_MAX", "200")),
+    max_items=int(os.environ.get("IMAGESL_CACHE_MAX", "400")),
     ttl_seconds=int(os.environ.get("IMAGESL_CACHE_TTL", "3600")),
 )
 
@@ -200,7 +200,6 @@ def _overlay_color(p: dict) -> tuple[int, int, int]:
 
 def _render_images(entry: dict) -> None:
     rgb, maps, p = entry["rgb"], entry["maps"], entry["params"]
-    overlay = engine.render_overlay(rgb, maps, color=_overlay_color(p))
     stainA = engine.render_variant(
         rgb, maps,
         target_gain=1.0,
@@ -215,11 +214,14 @@ def _render_images(entry: dict) -> None:
         background_rgb=_hex_to_rgb(p["background_hex"]),
         target_index=1,  # Stain B (usually target)
     )
+    # The overlay is composited in the browser from `original` + `mask`, so the
+    # detection color changes instantly (no server round-trip) and analysis
+    # renders one fewer image. The mask is a transparent PNG of positive pixels.
     entry["images"] = {
         "original": entry["images"].get("original") if entry.get("images") else engine.to_data_uri(rgb, "JPEG"),
-        "overlay": engine.to_data_uri(overlay, "JPEG"),
         "stainA": engine.to_data_uri(stainA, "JPEG"),
         "stainB": engine.to_data_uri(stainB, "JPEG"),
+        "mask": engine.mask_data_uri(maps["positive"]),
     }
 
 
@@ -245,12 +247,19 @@ def _recompute(entry: dict, **updates) -> dict:
 
 
 def _rerender(entry: dict, **updates) -> dict:
-    """Apply appearance-only updates and re-render the preview image."""
+    """Apply appearance-only updates. Overlay color is composited in the browser,
+    so an overlay-color-only change needs no server re-render — it just updates
+    the stored param so downloads/exports use the chosen color."""
     p = entry["params"]
-    for k in ("target_gain", "counterstain_gain", "background_hex", "overlay_hex"):
+    needs_render = False
+    for k in ("target_gain", "counterstain_gain", "background_hex"):
         if k in updates and updates[k] is not None:
             p[k] = updates[k]
-    _render_images(entry)
+            needs_render = True
+    if updates.get("overlay_hex") is not None:
+        p["overlay_hex"] = updates["overlay_hex"]
+    if needs_render:
+        _render_images(entry)
     return entry
 
 
@@ -279,8 +288,13 @@ def _public(entry: dict) -> dict:
 
 def _persist(analysis_id: str, entry: dict) -> None:
     """Save an entry back to cache (keeping it lean) with its CSV row sidecar, so
-    later recalcs/appearance edits are reflected in downloads and exports."""
-    entry["maps"].pop("od", None)  # unused downstream; keep cache entries lean
+    later recalcs/appearance edits are reflected in downloads and exports.
+
+    Drops the two biggest arrays from the cached copy — the optical-density and
+    concentration maps — so hundreds of slides can be held at once. They are only
+    needed to render Stain A/B, which is recomputed on demand at export time."""
+    entry["maps"].pop("od", None)
+    entry["maps"].pop("conc", None)
     _CACHE.put(analysis_id, entry, meta=_csv_row(entry))
 
 
@@ -362,6 +376,18 @@ def _render_type(entry: dict, image_type: str) -> np.ndarray:
     """Produce the RGB array for a requested image variant (shared by download + zip)."""
     rgb, maps, p = entry["rgb"], entry["maps"], entry["params"]
     bg = _hex_to_rgb(p.get("background_hex"))
+
+    # Stain A/B need the concentration maps, which we drop from the cache to stay
+    # lean — recompute them here on demand (rare path).
+    if image_type in ("stainA", "stainB") and "conc" not in maps:
+        _, maps = engine.analyze(
+            rgb, entry.get("source_size", (rgb.shape[1], rgb.shape[0])),
+            target_index=p.get("target_index", 1),
+            background_threshold=p.get("background_threshold", engine.BACKGROUND_OD_THRESHOLD),
+            threshold_scale=p.get("threshold_scale", 1.0),
+            stain_strictness=p.get("stain_strictness", "strong"),
+            stain_method=p.get("stain_method", "hdab"),
+        )
 
     if image_type == "original":
         return rgb
