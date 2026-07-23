@@ -174,11 +174,11 @@ def _default_params() -> dict:
         "target_index": 1,
         "threshold_scale": 1.0,
         "stain_strictness": "strong",
-        "stain_method": "hdab",
-        "target_gain": 1.0,
-        "counterstain_gain": 1.0,
-        "background_hex": None,
-        "overlay_hex": "#ff2d55",
+        "stain_method": "auto",
+        # colours — all auto-derived at analysis time; user may override any.
+        "overlay_hex": None,     # None → per-slide auto-contrast colour
+        "stainA_hex": None,      # None → stain's natural colour
+        "stainB_hex": None,
     }
 
 
@@ -195,25 +195,30 @@ def _hex_to_rgb(h: Optional[str]) -> Optional[tuple[int, int, int]]:
 
 
 def _overlay_color(p: dict) -> tuple[int, int, int]:
-    return _hex_to_rgb(p.get("overlay_hex")) or (255, 45, 85)
+    """Overlay colour: user override, else the per-slide auto-contrast colour."""
+    return _hex_to_rgb(p.get("overlay_hex")) or _hex_to_rgb(p.get("_overlay_auto")) or (0, 229, 255)
+
+
+def _stain_indices(maps: dict) -> tuple[int, int]:
+    """(Stain-A index, Stain-B index) — A = counterstain, B = target chromogen."""
+    return int(maps.get("counter_index", 0)), int(maps.get("target_index", 1))
 
 
 def _render_images(entry: dict) -> None:
-    rgb, maps, p = entry["rgb"], entry["maps"], entry["params"]
-    stainA = engine.render_variant(
-        rgb, maps,
-        target_gain=1.0,
-        counterstain_gain=0.0,
-        background_rgb=_hex_to_rgb(p["background_hex"]),
-        target_index=0,  # Stain A (usually nuclei)
-    )
-    stainB = engine.render_variant(
-        rgb, maps,
-        target_gain=1.0,
-        counterstain_gain=0.0,
-        background_rgb=_hex_to_rgb(p["background_hex"]),
-        target_index=1,  # Stain B (usually target)
-    )
+    rgb, p = entry["rgb"], entry["params"]
+    maps = entry["maps"]
+    # After caching we drop the heavy concentration maps; recompute on demand.
+    if "conc" not in maps:
+        _, maps = engine.analyze(
+            rgb, entry.get("source_size", (rgb.shape[1], rgb.shape[0])),
+            background_threshold=p.get("background_threshold", engine.BACKGROUND_OD_THRESHOLD),
+            stain_strictness=p.get("stain_strictness", "strong"),
+            stain_method=p.get("stain_method", "auto"),
+        )
+        entry["maps"] = maps
+    a_idx, b_idx = _stain_indices(maps)
+    stainA = engine.render_stain(maps, a_idx, _hex_to_rgb(p.get("stainA_hex")))
+    stainB = engine.render_stain(maps, b_idx, _hex_to_rgb(p.get("stainB_hex")))
     # The overlay is composited in the browser from `original` + `mask`, so the
     # detection color changes instantly (no server round-trip) and analysis
     # renders one fewer image. The mask is a transparent PNG of positive pixels.
@@ -225,39 +230,19 @@ def _render_images(entry: dict) -> None:
     }
 
 
-def _recompute(entry: dict, **updates) -> dict:
-    """Apply analysis-parameter updates, re-run analyze, re-render images."""
-    p = entry["params"]
-    for k in ("background_threshold", "target_index", "threshold_scale", "stain_strictness", "stain_method"):
-        if k in updates and updates[k] is not None:
-            p[k] = updates[k]
-    p["target_index"] = int(max(0, min(int(p["target_index"]), 1)))
-    result, maps = engine.analyze(
-        entry["rgb"],
-        entry["source_size"],
-        target_index=p["target_index"],
-        background_threshold=float(p["background_threshold"]),
-        threshold_scale=float(p["threshold_scale"]),
-        stain_strictness=p.get("stain_strictness", "strong"),
-        stain_method=p.get("stain_method", "hdab"),
-    )
-    entry["result"], entry["maps"] = result, maps
-    _render_images(entry)
-    return entry
-
-
 def _rerender(entry: dict, **updates) -> dict:
-    """Apply appearance-only updates. Overlay color is composited in the browser,
-    so an overlay-color-only change needs no server re-render — it just updates
-    the stored param so downloads/exports use the chosen color."""
+    """Apply appearance-only updates. Overlay colour is composited in the browser,
+    so an overlay-colour-only change needs no server re-render — it just updates
+    the stored param so downloads/exports use the chosen colour. Recolouring
+    Stain A / Stain B re-renders those two panels."""
     p = entry["params"]
     needs_render = False
-    for k in ("target_gain", "counterstain_gain", "background_hex"):
+    for k in ("stainA_hex", "stainB_hex"):
         if k in updates and updates[k] is not None:
-            p[k] = updates[k]
+            p[k] = updates[k] or None
             needs_render = True
     if updates.get("overlay_hex") is not None:
-        p["overlay_hex"] = updates["overlay_hex"]
+        p["overlay_hex"] = updates["overlay_hex"] or None
     if needs_render:
         _render_images(entry)
     return entry
@@ -352,12 +337,13 @@ async def api_analyze(
     params = _default_params()
     result, maps = engine.analyze(
         rgb, source_size,
-        target_index=params["target_index"],
         background_threshold=params["background_threshold"],
-        threshold_scale=params["threshold_scale"],
         stain_strictness=params["stain_strictness"],
         stain_method=params["stain_method"],
     )
+    # Remember the per-slide auto-contrast overlay colour; used until the user
+    # explicitly overrides it.
+    params["_overlay_auto"] = result.suggested_overlay_hex
     entry = {
         "rgb": rgb, "source_size": source_size, "maps": maps, "result": result,
         "params": params, "images": {"original": engine.to_data_uri(rgb, "JPEG")},
@@ -375,37 +361,34 @@ async def api_analyze(
 def _render_type(entry: dict, image_type: str) -> np.ndarray:
     """Produce the RGB array for a requested image variant (shared by download + zip)."""
     rgb, maps, p = entry["rgb"], entry["maps"], entry["params"]
-    bg = _hex_to_rgb(p.get("background_hex"))
 
-    # Stain A/B need the concentration maps, which we drop from the cache to stay
-    # lean — recompute them here on demand (rare path).
-    if image_type in ("stainA", "stainB") and "conc" not in maps:
+    # Stain A/B and the overlay need the concentration maps, which we drop from
+    # the cache to stay lean — recompute them here on demand (export path).
+    if image_type in ("stainA", "stainB", "overlay", "comparison") and "conc" not in maps:
         _, maps = engine.analyze(
             rgb, entry.get("source_size", (rgb.shape[1], rgb.shape[0])),
-            target_index=p.get("target_index", 1),
             background_threshold=p.get("background_threshold", engine.BACKGROUND_OD_THRESHOLD),
-            threshold_scale=p.get("threshold_scale", 1.0),
             stain_strictness=p.get("stain_strictness", "strong"),
-            stain_method=p.get("stain_method", "hdab"),
+            stain_method=p.get("stain_method", "auto"),
         )
+    a_idx, b_idx = _stain_indices(maps)
 
     if image_type == "original":
         return rgb
     if image_type == "overlay":
         return engine.render_overlay(rgb, maps, color=_overlay_color(p))
     if image_type == "stainA":
-        return engine.render_variant(
-            rgb, maps, target_gain=1.0, counterstain_gain=0.0,
-            background_rgb=bg, target_index=0,
-        )
+        return engine.render_stain(maps, a_idx, _hex_to_rgb(p.get("stainA_hex")))
     if image_type == "stainB":
-        return engine.render_variant(
-            rgb, maps, target_gain=1.0, counterstain_gain=0.0,
-            background_rgb=bg, target_index=1,
-        )
+        return engine.render_stain(maps, b_idx, _hex_to_rgb(p.get("stainB_hex")))
     if image_type == "comparison":
         overlay = engine.render_overlay(rgb, maps, color=_overlay_color(p))
-        return engine.compose_comparison(rgb, overlay, "Original", "Detection Overlay")
+        r = entry["result"]
+        return engine.compose_comparison(
+            rgb, overlay, "Original", "Detection Overlay",
+            metric_text=f"{r.positive_percent:.2f}% positive area",
+            stain_text=getattr(r, "stain_label", ""),
+        )
     raise HTTPException(status_code=400, detail="Invalid image type")
 
 
@@ -438,25 +421,6 @@ def api_download_tif(analysis_id: str, image_type: str):
     )
 
 
-@app.post("/api/recalculate")
-async def api_recalculate(request: Request, x_imagesl_key: Optional[str] = Header(default=None)):
-    _require_key(x_imagesl_key)
-    body = await request.json()
-    entry = _CACHE.get(body.get("analysis_id"))
-    if not entry:
-        raise HTTPException(status_code=404, detail="Analysis expired; re-run analysis.")
-    _recompute(
-        entry,
-        background_threshold=body.get("background_threshold"),
-        target_index=body.get("target_index"),
-        threshold_scale=body.get("threshold_scale"),
-        stain_strictness=body.get("stain_strictness"),
-        stain_method=body.get("stain_method"),
-    )
-    _persist(body.get("analysis_id"), entry)
-    return JSONResponse(_public(entry))
-
-
 @app.post("/api/appearance")
 async def api_appearance(request: Request, x_imagesl_key: Optional[str] = Header(default=None)):
     _require_key(x_imagesl_key)
@@ -466,10 +430,9 @@ async def api_appearance(request: Request, x_imagesl_key: Optional[str] = Header
         raise HTTPException(status_code=404, detail="Analysis expired; re-run analysis.")
     _rerender(
         entry,
-        target_gain=body.get("target_gain"),
-        counterstain_gain=body.get("counterstain_gain"),
-        background_hex=body.get("background_hex"),
         overlay_hex=body.get("overlay_hex"),
+        stainA_hex=body.get("stainA_hex"),
+        stainB_hex=body.get("stainB_hex"),
     )
     _persist(body.get("analysis_id"), entry)
     return JSONResponse(_public(entry))
@@ -481,14 +444,16 @@ async def api_appearance(request: Request, x_imagesl_key: Optional[str] = Header
 
 _CSV_COLUMNS = [
     "filename",
+    "detected_stain",
     "positive_area_percent_of_tissue",
     "positive_pixels",
     "tissue_pixels",
     "total_image_pixels",
     "positive_percent_of_image",
-    "otsu_threshold",
+    "intensity_threshold",
     "mean_positive_intensity",
-    "stain_method",
+    "detection_confidence",
+    "stain_family",
     "target_stain_index",
     "analysis_width_px",
     "analysis_height_px",
@@ -503,14 +468,16 @@ def _csv_row(entry: dict) -> dict:
     pct_of_image = round((r.positive_pixels / total_px * 100.0), 3) if total_px else 0.0
     return {
         "filename": entry.get("filename", "image"),
+        "detected_stain": getattr(r, "stain_label", ""),
         "positive_area_percent_of_tissue": r.positive_percent,
         "positive_pixels": r.positive_pixels,
         "tissue_pixels": r.tissue_pixels,
         "total_image_pixels": total_px,
         "positive_percent_of_image": pct_of_image,
-        "otsu_threshold": r.threshold,
+        "intensity_threshold": r.threshold,
         "mean_positive_intensity": r.mean_positive_intensity,
-        "stain_method": r.method,
+        "detection_confidence": getattr(r, "confidence", 1.0),
+        "stain_family": r.method,
         "target_stain_index": r.target_index,
         "analysis_width_px": r.width,
         "analysis_height_px": r.height,

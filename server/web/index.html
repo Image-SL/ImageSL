@@ -4,8 +4,35 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ImageSL — IHC Stain Quantification</title>
+<meta name="description" content="ImageSL quantifies immunohistochemistry slides with automatic stain detection, color deconvolution and precise positive-area measurement. Drop one slide or a whole batch.">
+<meta name="theme-color" content="#6d28d9">
+
+<!-- favicons / app icons (all the SAME stain-circle mark, so search engines match the site) -->
 <link rel="icon" type="image/svg+xml" href="/assets/logo.svg">
-<link rel="stylesheet" href="/styles.css?v=14">
+<link rel="icon" type="image/png" sizes="32x32" href="/assets/favicon-32.png">
+<link rel="icon" type="image/png" sizes="192x192" href="/assets/logo-192.png">
+<link rel="apple-touch-icon" href="/assets/logo-192.png">
+
+<!-- Open Graph / Twitter (controls the Google + social preview card) -->
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="ImageSL">
+<meta property="og:title" content="ImageSL — IHC Stain Quantification">
+<meta property="og:description" content="Automatic stain detection and precise positive-area quantification for immunohistochemistry slides.">
+<meta property="og:url" content="https://imagesl.online/">
+<meta property="og:image" content="https://imagesl.online/assets/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="ImageSL — IHC Stain Quantification">
+<meta name="twitter:description" content="Automatic stain detection and precise positive-area quantification for immunohistochemistry slides.">
+<meta name="twitter:image" content="https://imagesl.online/assets/og-image.png">
+<link rel="canonical" href="https://imagesl.online/">
+
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"WebApplication","name":"ImageSL","url":"https://imagesl.online/","applicationCategory":"HealthApplication","operatingSystem":"Web","description":"ImageSL quantifies immunohistochemistry slides with automatic stain detection, color deconvolution and precise positive-area measurement.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}
+</script>
+
+<link rel="stylesheet" href="/styles.css?v=20">
 </head>
 <body>
 
@@ -36,7 +63,7 @@
   <section id="uploadView" class="view">
     <div class="hero">
       <h1>Quantify immunohistochemistry, precisely.</h1>
-      <p class="lede">Color deconvolution · automatic stain estimation · Otsu thresholding. Drop one slide or a whole batch.</p>
+      <p class="lede">Automatic stain detection · color deconvolution · positive-area measurement. Drop one slide or a whole batch — ImageSL figures out the rest.</p>
     </div>
     <div id="dropzone" class="dropzone">
       <div class="dz-icon" aria-hidden="true">
@@ -47,6 +74,11 @@
       <h2>Drop histology slides here</h2>
       <p>or <span class="link-inline">click to browse</span> — TIFF, PNG, JPG. Multiple files welcome.</p>
       <input type="file" id="file" multiple accept=".tif,.tiff,.png,.jpg,.jpeg" hidden>
+    </div>
+    <div class="feature-row">
+      <div class="feature"><b>Any stain</b><span>DAB, red, and more — auto-detected</span></div>
+      <div class="feature"><b>Smart guarding</b><span>ignores background, debris &amp; non-slides</span></div>
+      <div class="feature"><b>Batch &amp; export</b><span>ZIP of overlays + CSV in one click</span></div>
     </div>
     <div class="upload-foot">
       <p id="uploadError" class="err hidden"></p>
@@ -73,23 +105,39 @@
   <section id="resultsView" class="view hidden">
     <div class="results-bar">
       <div class="results-count" id="resultsCount"></div>
-      <label class="global-overlay" title="Set the detection overlay color for every slide">
-        <span>Overlay color · all</span>
-        <input type="range" id="gHue" class="rainbow" min="0" max="359" step="1" value="345">
-        <input type="color" id="gOverlay" value="#ff2d55">
-      </label>
-      <div class="results-actions">
-        <button id="btnExportCsv" class="btn ghost">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8M8 17h5"/></svg>
-          Export all data (CSV)
-        </button>
-        <button id="btnDownloadZip" class="btn primary">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>
-          Download all (ZIP)
-        </button>
-        <button id="btnNew" class="btn subtle">New batch</button>
+      <div class="results-tools">
+        <label class="global-overlay" title="Set the detection overlay color for every slide">
+          <span>Overlay · all</span>
+          <input type="range" id="gHue" class="rainbow" min="0" max="359" step="1" value="200">
+        </label>
+        <div class="results-actions">
+          <button id="btnAddMore" class="btn ghost" title="Analyze more slides into this batch">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+            Add more
+          </button>
+          <button id="btnExportCsv" class="btn ghost">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8M8 17h5"/></svg>
+            CSV
+          </button>
+          <button id="btnDownloadZip" class="btn primary">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>
+            Download ZIP
+          </button>
+          <button id="btnNew" class="btn subtle">New batch</button>
+        </div>
       </div>
     </div>
+
+    <!-- skipped (non-slide) files -->
+    <div id="skippedPanel" class="skipped hidden">
+      <div class="skipped-head">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg>
+        <span id="skippedTitle"></span>
+      </div>
+      <ul id="skippedList"></ul>
+    </div>
+
+    <input type="file" id="fileAdd" multiple accept=".tif,.tiff,.png,.jpg,.jpeg" hidden>
     <div id="resultsContainer"></div>
   </section>
 
@@ -103,10 +151,10 @@
         <span class="fname"></span>
         <span class="badge method"></span>
       </div>
-      <button class="btn tiny ghost export-one">CSV</button>
+      <button class="btn tiny ghost export-one" title="Export this slide's data">CSV</button>
     </div>
 
-    <!-- comparison slider -->
+    <!-- comparison slider (natural aspect ratio, no crop) -->
     <div class="compare">
       <div class="cmp-viewport" style="--split:50%">
         <img class="cmp-base imgOriginal" alt="Original" draggable="false">
@@ -115,7 +163,7 @@
         <span class="cmp-tag cmp-tag-r">Overlay</span>
         <div class="cmp-handle">
           <div class="cmp-grip">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/><path d="m9 6 6 6-6 6" opacity="0"/></svg>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
           </div>
         </div>
@@ -127,50 +175,38 @@
       <div class="metric hero-metric"><b class="mPercent">–</b><span>Positive area (of tissue)</span></div>
       <div class="metric"><b class="mPositive">–</b><span>Positive pixels</span></div>
       <div class="metric"><b class="mTissue">–</b><span>Tissue pixels</span></div>
-      <div class="metric"><b class="mThreshold">–</b><span>Otsu threshold</span></div>
+      <div class="metric"><b class="mThreshold">–</b><span>Intensity threshold</span></div>
     </div>
 
-    <!-- variant thumbnails -->
+    <!-- variant thumbnails (natural aspect ratio; Stain A/B carry a recolor swatch) -->
     <div class="variants">
-      <figure class="variant"><img class="vImg imgOriginal2" alt="Original" draggable="false"><figcaption><span>Original</span><button class="vdl" data-type="original" title="Download TIFF">↓ TIF</button></figcaption></figure>
-      <figure class="variant"><img class="vImg imgOverlay" alt="Overlay" draggable="false"><figcaption><span>Overlay</span><button class="vdl" data-type="overlay" title="Download TIFF">↓ TIF</button></figcaption></figure>
-      <figure class="variant"><img class="vImg imgStainA" alt="Stain A" draggable="false"><figcaption><span>Stain A</span><button class="vdl" data-type="stainA" title="Download TIFF">↓ TIF</button></figcaption></figure>
-      <figure class="variant"><img class="vImg imgStainB" alt="Stain B" draggable="false"><figcaption><span>Stain B</span><button class="vdl" data-type="stainB" title="Download TIFF">↓ TIF</button></figcaption></figure>
+      <figure class="variant"><div class="vwrap"><img class="vImg imgOriginal2" alt="Original" draggable="false"></div>
+        <figcaption><span>Original</span><button class="vdl" data-type="original" title="Download TIFF">TIF</button></figcaption></figure>
+      <figure class="variant"><div class="vwrap"><img class="vImg imgOverlay" alt="Overlay" draggable="false"></div>
+        <figcaption><span>Overlay</span><button class="vdl" data-type="overlay" title="Download TIFF">TIF</button></figcaption></figure>
+      <figure class="variant"><div class="vwrap"><img class="vImg imgStainA" alt="Stain A" draggable="false"></div>
+        <figcaption><button class="swatch swA" title="Recolor Stain A" aria-label="Recolor Stain A"></button><span class="labA">Stain A</span><button class="vdl" data-type="stainA" title="Download TIFF">TIF</button></figcaption></figure>
+      <figure class="variant"><div class="vwrap"><img class="vImg imgStainB" alt="Stain B" draggable="false"></div>
+        <figcaption><button class="swatch swB" title="Recolor Stain B" aria-label="Recolor Stain B"></button><span class="labB">Stain B</span><button class="vdl" data-type="stainB" title="Download TIFF">TIF</button></figcaption></figure>
     </div>
 
-    <!-- customize -->
-    <details class="customize">
-      <summary>
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg>
-        Customize analysis & colors
-      </summary>
-      <div class="controls">
-        <label class="ctl">Background threshold <input type="range" class="cBg" min="0.05" max="0.5" step="0.01"><span class="val vBg"></span></label>
-        <label class="ctl">Sensitivity <input type="range" class="cScale" min="0.5" max="1.8" step="0.05"><span class="val vScale"></span></label>
-        <label class="ctl">Stain intensity <input type="range" class="cGain" min="0.1" max="3.0" step="0.1"><span class="val vGain"></span></label>
-        <label class="ctl">Target stain
-          <select class="cTarget">
-            <option value="1">Chromogen (target)</option>
-            <option value="0">Counterstain (nuclei)</option>
-          </select>
-        </label>
-        <label class="ctl color">Background color <input type="color" class="cBgColor" value="#ffffff"><button class="clearBg" title="Reset background">reset</button></label>
-      </div>
-    </details>
-
-    <!-- detection overlay color -->
+    <!-- appearance: overlay color (thumb shows the color) -->
     <div class="overlay-color">
       <span class="oc-label">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/></svg>
-        Detection overlay color
+        Overlay color
       </span>
-      <input type="range" class="cHue rainbow" min="0" max="359" step="1" value="345" aria-label="Overlay hue">
-      <input type="color" class="cOverlay" value="#ff2d55" aria-label="Overlay color">
+      <input type="range" class="cHue rainbow" min="0" max="359" step="1" value="200" aria-label="Overlay hue">
+      <button class="oc-auto" title="Reset to the auto-contrast color">Auto</button>
     </div>
+
+    <!-- hidden native pickers driving the Stain A/B swatches -->
+    <input type="color" class="pickA" hidden>
+    <input type="color" class="pickB" hidden>
 
     <!-- downloads -->
     <div class="downloads">
-      <span class="dl-label">Download:</span>
+      <span class="dl-label">Download</span>
       <button class="dl-btn" data-type="original">Original</button>
       <button class="dl-btn" data-type="overlay">Overlay</button>
       <button class="dl-btn" data-type="stainA">Stain A</button>
@@ -183,6 +219,6 @@
 <div id="toasts"></div>
 <div id="lightbox" class="lightbox hidden"><img id="lightboxImg" src="" alt="Expanded"></div>
 
-<script src="/app.js?v=14"></script>
+<script src="/app.js?v=20"></script>
 </body>
 </html>
