@@ -4,13 +4,34 @@
 const $ = (id) => document.getElementById(id);
 const RING_C = 2 * Math.PI * 52; // circumference of the progress ring
 
-function getKey() { return ($("key").value || "").trim(); }
 function headers(json) {
   const h = {};
-  const k = getKey();
-  if (k) h["X-ImageSL-Key"] = k;
   if (json) h["Content-Type"] = "application/json";
   return h;
+}
+
+// vivid full-saturation color from a hue angle (the rainbow "all colors" slider)
+function hueToHex(h) {
+  h = ((h % 360) + 360) % 360;
+  const x = 1 - Math.abs(((h / 60) % 2) - 1);
+  let r = 0, g = 0, b = 0;
+  if (h < 60) { r = 1; g = x; } else if (h < 120) { r = x; g = 1; }
+  else if (h < 180) { g = 1; b = x; } else if (h < 240) { g = x; b = 1; }
+  else if (h < 300) { r = x; b = 1; } else { r = 1; b = x; }
+  const to = (v) => ("0" + Math.round(v * 255).toString(16)).slice(-2);
+  return "#" + to(r) + to(g) + to(b);
+}
+function hexToHue(hex) {
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex || "");
+  if (!m) return 345;
+  const r = parseInt(m[1], 16) / 255, g = parseInt(m[2], 16) / 255, b = parseInt(m[3], 16) / 255;
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+  let h = 0;
+  if (d === 0) h = 0;
+  else if (mx === r) h = 60 * ((((g - b) / d) % 6 + 6) % 6);
+  else if (mx === g) h = 60 * ((b - r) / d + 2);
+  else h = 60 * ((r - g) / d + 4);
+  return Math.round(h);
 }
 function safeStem(name) {
   return (name || "image").replace(/\.[^.]+$/, "").replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^[._]+|[._]+$/g, "") || "image";
@@ -37,10 +58,6 @@ async function fetchBlob(url, opts) {
 
 /* ============================== state ============================== */
 let analyses = []; // [{ id, filename }]
-
-// persist access key
-$("key").value = localStorage.getItem("imagesl_key") || "";
-$("key").addEventListener("change", () => localStorage.setItem("imagesl_key", getKey()));
 
 /* ============================== upload ============================== */
 const dropzone = $("dropzone");
@@ -162,7 +179,7 @@ function createCard(data) {
     q(".cScale").value = p.threshold_scale; q(".vScale").textContent = (+p.threshold_scale).toFixed(2);
     q(".cGain").value = p.target_gain; q(".vGain").textContent = (+p.target_gain).toFixed(1);
     q(".cTarget").value = String(r ? r.target_index : p.target_index);
-    if (p.overlay_hex) q(".cOverlay").value = p.overlay_hex;
+    if (p.overlay_hex) { q(".cOverlay").value = p.overlay_hex; q(".cHue").value = hexToHue(p.overlay_hex); }
     q(".cBgColor").value = p.background_hex || "#ffffff";
   }
   paint(data); paintControls(data);
@@ -209,7 +226,8 @@ function createCard(data) {
   q(".cScale").addEventListener("input", () => { q(".vScale").textContent = (+q(".cScale").value).toFixed(2); recalc(); });
   q(".cTarget").addEventListener("change", recalc);
   q(".cGain").addEventListener("input", () => { q(".vGain").textContent = (+q(".cGain").value).toFixed(1); appearance(); });
-  q(".cOverlay").addEventListener("input", () => appearance());
+  q(".cOverlay").addEventListener("input", () => { q(".cHue").value = hexToHue(q(".cOverlay").value); appearance(); });
+  q(".cHue").addEventListener("input", () => { q(".cOverlay").value = hueToHex(+q(".cHue").value); appearance(); });
   q(".cBgColor").addEventListener("input", () => appearance({ background_hex: q(".cBgColor").value }));
   q(".clearBg").addEventListener("click", (e) => { e.preventDefault(); q(".cBgColor").value = "#ffffff"; appearance({ background_hex: "" }); });
 
@@ -257,6 +275,20 @@ $("btnDownloadZip").addEventListener("click", async function () {
 });
 
 $("btnNew").addEventListener("click", () => { analyses = []; $("resultsContainer").innerHTML = ""; showView("uploadView"); window.scrollTo({ top: 0, behavior: "smooth" }); });
+
+/* ============================== global overlay color ============================== */
+function applyGlobalOverlay(hex) {
+  document.querySelectorAll(".card").forEach((card) => {
+    const c = card.querySelector(".cOverlay");
+    const hue = card.querySelector(".cHue");
+    if (!c) return;
+    c.value = hex;
+    if (hue) hue.value = hexToHue(hex);
+    c.dispatchEvent(new Event("input", { bubbles: true })); // triggers that card's re-render + persist
+  });
+}
+$("gHue").addEventListener("input", () => { const hex = hueToHex(+$("gHue").value); $("gOverlay").value = hex; applyGlobalOverlay(hex); });
+$("gOverlay").addEventListener("input", () => { $("gHue").value = hexToHue($("gOverlay").value); applyGlobalOverlay($("gOverlay").value); });
 
 /* ============================== lightbox ============================== */
 function showLightbox(src) { if (!src) return; $("lightboxImg").src = src; $("lightbox").classList.remove("hidden"); }

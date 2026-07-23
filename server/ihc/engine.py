@@ -40,8 +40,8 @@ try:  # tifffile + imagecodecs handle compressed / pyramidal histology TIFs
 except Exception:  # pragma: no cover - tifffile is a hard dep in prod
     _HAVE_TIFFFILE = False
 
-from skimage.filters import threshold_otsu, threshold_multiotsu, gaussian
-from skimage.morphology import disk
+from skimage.filters import threshold_otsu, threshold_multiotsu
+from skimage.morphology import disk, binary_erosion, remove_small_objects
 
 
 # --------------------------------------------------------------------------- #
@@ -384,44 +384,73 @@ def analyze(
         # index 1 is the second Macenko vector (typically the chromogen/DAB).
         target_index = 1
     target_index = int(max(0, min(target_index, 1)))
+    counter_index = 1 - target_index
 
-    target_map = conc[..., target_index]
-    
-    if stain_strictness == "strong":
-        # Adaptive Gaussian High-Pass Filter
-        # Subtracts the low-frequency background (local baseline color)
-        # while preserving local contrast (stains of ALL sizes!)
-        bg = gaussian(target_map, sigma=15)
-        target_map = np.clip(target_map - bg, 0, None)
+    target_conc = conc[..., target_index]
+    counter_conc = conc[..., counter_index]
+    resid_conc = np.abs(conc[..., 2])
 
-    target_in_tissue = target_map[tissue_mask]
+    # ------------------------------------------------------------------ #
+    # Real-vs-artifact discrimination.
+    #
+    # The previous path thresholded a high-pass-filtered target map, which
+    # turned every tissue/glass edge and lumen rim into "signal" and counted
+    # folds, debris and neutral-gray boundaries as positive. Instead a pixel is
+    # counted only when ALL of the following hold — i.e. it looks like genuine
+    # chromogen, not an artifact:
+    #
+    #   (a) it lies in the tissue *core*, not the partial-volume rim that hugs
+    #       white lumens/tears (the biggest source of false positives);
+    #   (b) it is a real absorber (enough optical density — not a faint edge);
+    #   (c) the target stain actually *dominates* the pixel's color — it isn't
+    #       neutral gray, counterstain, or an off-color fold (color specificity);
+    #   (d) the target out-weighs the counterstain at that pixel;
+    #   (e) after Otsu intensity thresholding it survives as part of a coherent
+    #       region rather than isolated speckle or a 1-px edge tracing.
+    # ------------------------------------------------------------------ #
+    core_tissue = binary_erosion(tissue_mask, disk(2)) if tissue_pixels else tissue_mask
+    total_conc = target_conc + counter_conc + resid_conc + 1e-6
+    specificity = target_conc / total_conc          # → 1.0 for pure target stain
+    min_od = max(float(background_threshold) * 1.5, 0.18)
 
-    if target_in_tissue.size == 0:
+    # "loose" strictness is an escape hatch that skips color specificity.
+    lenient = stain_strictness not in ("strong",)
+    if lenient:
+        color_ok = np.ones_like(core_tissue)
+    else:
+        color_ok = (specificity >= 0.42) & (target_conc > counter_conc) & (total_od >= min_od)
+
+    gated = core_tissue & color_ok
+    # Intensity bar comes from the tissue as a whole, so it means "specifically
+    # stained above this slide's own background" rather than "darker half of the
+    # already-brown pixels". Multi-Otsu's top class isolates genuine strong
+    # chromogen from diffuse background tint.
+    tissue_vals = target_conc[core_tissue] if core_tissue.any() else target_conc[tissue_mask]
+
+    if tissue_vals.size < 50:
         threshold = 0.0
         positive = np.zeros((h, w), dtype=bool)
-        notes.append("No tissue detected above the background threshold.")
+        notes.append("No specific target staining detected above background.")
     else:
-        # Otsu on the target concentration restricted to tissue.
-        try:
-            if stain_strictness == "strong":
-                try:
-                    thresholds = threshold_multiotsu(target_in_tissue, classes=4)
-                    threshold = float(thresholds[-1])
-                except ValueError:
-                    try:
-                        thresholds = threshold_multiotsu(target_in_tissue, classes=3)
-                        threshold = float(thresholds[-1])
-                    except ValueError:
-                        threshold = float(threshold_otsu(target_in_tissue))
-            else:
-                threshold = float(threshold_otsu(target_in_tissue))
-        except Exception:
-            threshold = float(np.percentile(target_in_tissue, 75))
-        # threshold_scale lets the assistant tune sensitivity: >1 is stricter
-        # (fewer positive pixels), <1 is looser (more positive pixels).
+        threshold = None
+        for classes in (4, 3):
+            try:
+                threshold = float(threshold_multiotsu(tissue_vals, classes=classes)[-1])
+                break
+            except Exception:
+                continue
+        if threshold is None:
+            try:
+                threshold = float(threshold_otsu(tissue_vals))
+            except Exception:
+                threshold = float(np.percentile(tissue_vals, 90))
+        # threshold_scale tunes sensitivity: >1 stricter, <1 looser.
         threshold = max(0.0, threshold * float(threshold_scale))
-        positive = tissue_mask & (target_map >= threshold)
+        positive = gated & (target_conc >= threshold)
+        if positive.any():
+            positive = remove_small_objects(positive, min_size=8)
 
+    target_map = target_conc  # for mean-intensity reporting
     positive_pixels = int(positive.sum())
     positive_fraction = (positive_pixels / tissue_pixels) if tissue_pixels else 0.0
     mean_pos = float(target_map[positive].mean()) if positive_pixels else 0.0
@@ -587,11 +616,18 @@ def to_png_bytes(rgb: np.ndarray) -> bytes:
     return buf.getvalue()
 
 
-def to_data_uri(rgb: np.ndarray, fmt: str = "PNG") -> str:
+def to_data_uri(rgb: np.ndarray, fmt: str = "PNG", quality: int = 86) -> str:
     buf = io.BytesIO()
-    Image.fromarray(rgb).save(buf, format=fmt)
+    im = Image.fromarray(rgb)
+    if fmt.upper() in ("JPEG", "JPG"):
+        # JPEG encodes ~5-10x faster than PNG for photographic histology and is a
+        # fraction of the size — much snappier previews. Downloads stay TIFF.
+        im.convert("RGB").save(buf, format="JPEG", quality=quality)
+        mime = "image/jpeg"
+    else:
+        im.save(buf, format=fmt)
+        mime = "image/png"
     b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-    mime = "image/png" if fmt.upper() == "PNG" else "image/jpeg"
     return f"data:{mime};base64,{b64}"
 
 

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Optional
 import tempfile
 import pickle
+import json
 import csv
 import zipfile
 import re
@@ -67,11 +68,23 @@ class _DiskCache:
     def _file(self, key: str) -> Path:
         return self._dir / f"{key}.pkl"
 
-    def put(self, key: str, value: dict) -> None:
+    def _meta_file(self, key: str) -> Path:
+        return self._dir / f"{key}.json"
+
+    def _drop(self, key: str) -> None:
+        self._file(key).unlink(missing_ok=True)
+        self._meta_file(key).unlink(missing_ok=True)
+
+    def put(self, key: str, value: dict, meta: Optional[dict] = None) -> None:
+        """Store the heavy analysis entry, plus a tiny JSON sidecar (`meta`) that
+        CSV export can read without unpickling the whole (megabytes) entry."""
         with self._lock:
             self._evict()
             with open(self._file(key), "wb") as f:
                 pickle.dump((time.time(), value), f)
+            if meta is not None:
+                with open(self._meta_file(key), "w", encoding="utf-8") as f:
+                    json.dump({"ts": time.time(), "row": meta}, f)
 
     def get(self, key: str) -> Optional[dict]:
         with self._lock:
@@ -82,37 +95,54 @@ class _DiskCache:
                 with open(path, "rb") as f:
                     ts, value = pickle.load(f)
                 if time.time() - ts > self._ttl:
-                    path.unlink(missing_ok=True)
+                    self._drop(key)
                     return None
-                # Update timestamp on read
-                with open(path, "wb") as f:
+                with open(path, "wb") as f:  # refresh timestamp on read
                     pickle.dump((time.time(), value), f)
                 return value
             except Exception:
-                path.unlink(missing_ok=True)
+                self._drop(key)
+                return None
+
+    def get_meta(self, key: str) -> Optional[dict]:
+        """Fast path for CSV export — reads the small JSON sidecar only."""
+        with self._lock:
+            p = self._meta_file(key)
+            if not p.exists():
+                return None
+            try:
+                with open(p, encoding="utf-8") as f:
+                    d = json.load(f)
+                if time.time() - d.get("ts", 0) > self._ttl:
+                    self._drop(key)
+                    return None
+                d["ts"] = time.time()
+                with open(p, "w", encoding="utf-8") as f:
+                    json.dump(d, f)
+                return d.get("row")
+            except Exception:
+                p.unlink(missing_ok=True)
                 return None
 
     def _evict(self) -> None:
         now = time.time()
-        files = list(self._dir.glob("*.pkl"))
-        
         valid_files = []
-        for p in files:
+        for p in list(self._dir.glob("*.pkl")):
+            key = p.stem
             try:
                 with open(p, "rb") as f:
                     ts, _ = pickle.load(f)
                 if now - ts > self._ttl:
-                    p.unlink(missing_ok=True)
+                    self._drop(key)
                 else:
-                    valid_files.append((ts, p))
+                    valid_files.append((ts, key))
             except Exception:
-                p.unlink(missing_ok=True)
-                
+                self._drop(key)
+
         if len(valid_files) >= self._max:
             valid_files.sort(key=lambda x: x[0])
-            to_remove = len(valid_files) - self._max + 1
-            for _, p in valid_files[:to_remove]:
-                p.unlink(missing_ok=True)
+            for _, key in valid_files[: len(valid_files) - self._max + 1]:
+                self._drop(key)
 
 
 # TTL/size are generous enough that a large batch (dozens of slides) survives
@@ -186,10 +216,10 @@ def _render_images(entry: dict) -> None:
         target_index=1,  # Stain B (usually target)
     )
     entry["images"] = {
-        "original": entry["images"].get("original") if entry.get("images") else engine.to_data_uri(rgb),
-        "overlay": engine.to_data_uri(overlay),
-        "stainA": engine.to_data_uri(stainA),
-        "stainB": engine.to_data_uri(stainB),
+        "original": entry["images"].get("original") if entry.get("images") else engine.to_data_uri(rgb, "JPEG"),
+        "overlay": engine.to_data_uri(overlay, "JPEG"),
+        "stainA": engine.to_data_uri(stainA, "JPEG"),
+        "stainB": engine.to_data_uri(stainB, "JPEG"),
     }
 
 
@@ -245,6 +275,13 @@ def _public(entry: dict) -> dict:
         "params": entry["params"],
         "filename": entry.get("filename", ""),
     }
+
+
+def _persist(analysis_id: str, entry: dict) -> None:
+    """Save an entry back to cache (keeping it lean) with its CSV row sidecar, so
+    later recalcs/appearance edits are reflected in downloads and exports."""
+    entry["maps"].pop("od", None)  # unused downstream; keep cache entries lean
+    _CACHE.put(analysis_id, entry, meta=_csv_row(entry))
 
 
 # --------------------------------------------------------------------------- #
@@ -309,14 +346,13 @@ async def api_analyze(
     )
     entry = {
         "rgb": rgb, "source_size": source_size, "maps": maps, "result": result,
-        "params": params, "images": {"original": engine.to_data_uri(rgb)},
+        "params": params, "images": {"original": engine.to_data_uri(rgb, "JPEG")},
         "filename": (filename or file.filename or "image"),
     }
     _render_images(entry)
 
-    entry["maps"].pop("od", None)  # unused downstream; keep cache entries lean
     analysis_id = uuid.uuid4().hex
-    _CACHE.put(analysis_id, entry)
+    _persist(analysis_id, entry)
 
     payload = {"analysis_id": analysis_id, **_public(entry)}
     return JSONResponse(payload)
@@ -353,20 +389,24 @@ def _safe_name(name: str) -> str:
     return stem
 
 
+def _tiff_bytes(arr: np.ndarray) -> bytes:
+    """Lossless but DEFLATE-compressed TIFF — histology compresses well, so this
+    is far smaller and faster to transfer than raw uncompressed TIFF."""
+    buf = io.BytesIO()
+    Image.fromarray(arr).save(buf, format="TIFF", compression="tiff_deflate")
+    return buf.getvalue()
+
+
 @app.get("/api/download_tif")
 def api_download_tif(analysis_id: str, image_type: str):
     entry = _CACHE.get(analysis_id)
     if not entry:
         raise HTTPException(status_code=404, detail="Analysis expired")
 
-    out_rgb = _render_type(entry, image_type)
-    buf = io.BytesIO()
-    Image.fromarray(out_rgb).save(buf, format="TIFF")
-    buf.seek(0)
-
+    data = _tiff_bytes(_render_type(entry, image_type))
     stem = _safe_name(entry.get("filename", "image"))
     return StreamingResponse(
-        buf,
+        io.BytesIO(data),
         media_type="image/tiff",
         headers={"Content-Disposition": f'attachment; filename="{stem}_{image_type}.tif"'},
     )
@@ -387,6 +427,7 @@ async def api_recalculate(request: Request, x_imagesl_key: Optional[str] = Heade
         stain_strictness=body.get("stain_strictness"),
         stain_method=body.get("stain_method"),
     )
+    _persist(body.get("analysis_id"), entry)
     return JSONResponse(_public(entry))
 
 
@@ -404,6 +445,7 @@ async def api_appearance(request: Request, x_imagesl_key: Optional[str] = Header
         background_hex=body.get("background_hex"),
         overlay_hex=body.get("overlay_hex"),
     )
+    _persist(body.get("analysis_id"), entry)
     return JSONResponse(_public(entry))
 
 
@@ -451,35 +493,32 @@ def _csv_row(entry: dict) -> dict:
     }
 
 
-def _build_csv(entries: list[dict]) -> str:
+def _build_csv_from_rows(rows: list[dict]) -> str:
     out = io.StringIO()
     writer = csv.DictWriter(out, fieldnames=_CSV_COLUMNS)
     writer.writeheader()
-    for entry in entries:
-        writer.writerow(_csv_row(entry))
+    for row in rows:
+        writer.writerow({k: row.get(k, "") for k in _CSV_COLUMNS})
     return out.getvalue()
 
 
-def _collect_entries(analysis_ids) -> list[dict]:
+def _collect_meta(analysis_ids) -> list[dict]:
+    """Fast: read only the small JSON sidecars — never touches the heavy pickles."""
     if not isinstance(analysis_ids, list) or not analysis_ids:
         raise HTTPException(status_code=400, detail="No analysis_ids provided.")
-    entries = []
-    for aid in analysis_ids:
-        entry = _CACHE.get(aid)
-        if entry:
-            entries.append(entry)
-    if not entries:
+    rows = [m for m in (_CACHE.get_meta(a) for a in analysis_ids) if m]
+    if not rows:
         raise HTTPException(status_code=404, detail="All analyses expired; re-run analysis.")
-    return entries
+    return rows
 
 
 @app.post("/api/export_csv")
 async def api_export_csv(request: Request, x_imagesl_key: Optional[str] = Header(default=None)):
     _require_key(x_imagesl_key)
     body = await request.json()
-    entries = _collect_entries(body.get("analysis_ids"))
-    csv_text = _build_csv(entries)
-    fname = "ImageSL_results.csv" if len(entries) > 1 else f"{_safe_name(entries[0].get('filename'))}_data.csv"
+    rows = _collect_meta(body.get("analysis_ids"))
+    csv_text = _build_csv_from_rows(rows)
+    fname = "ImageSL_results.csv" if len(rows) > 1 else f"{_safe_name(rows[0].get('filename'))}_data.csv"
     return StreamingResponse(
         io.BytesIO(csv_text.encode("utf-8-sig")),
         media_type="text/csv",
@@ -487,38 +526,74 @@ async def api_export_csv(request: Request, x_imagesl_key: Optional[str] = Header
     )
 
 
+class _ZipSink:
+    """A writable buffer the ZipFile streams into; drained between files so bytes
+    flow to the client as they are produced (no gateway timeout, tiny memory)."""
+
+    def __init__(self) -> None:
+        self._b = bytearray()
+
+    def write(self, data) -> int:
+        self._b += data
+        return len(data)
+
+    def flush(self) -> None:
+        pass
+
+    def drain(self) -> bytes:
+        b = bytes(self._b)
+        self._b.clear()
+        return b
+
+
+def _zip_stream(analysis_ids, images, include_csv):
+    """Generator that builds the ZIP incrementally, one image at a time. Only a
+    single analysis entry is ever held in memory, so 40+ slides won't OOM."""
+    sink = _ZipSink()
+    zf = zipfile.ZipFile(sink, "w", zipfile.ZIP_STORED, allowZip64=True)  # TIFFs already compressed
+    used: set[str] = set()
+    rows: list[dict] = []
+    for aid in analysis_ids:
+        entry = _CACHE.get(aid)
+        if not entry:
+            continue
+        stem = _safe_name(entry.get("filename", "image"))
+        for image_type in images:
+            name = f"{stem}_{image_type}.tif"
+            k = 2
+            while name in used:
+                name = f"{stem}_{image_type}_{k}.tif"
+                k += 1
+            used.add(name)
+            zf.writestr(name, _tiff_bytes(_render_type(entry, image_type)))
+            chunk = sink.drain()
+            if chunk:
+                yield chunk
+        if include_csv:
+            rows.append(_csv_row(entry))
+        entry = None  # release before loading the next
+    if include_csv and rows:
+        zf.writestr("ImageSL_results.csv", _build_csv_from_rows(rows).encode("utf-8-sig"))
+    zf.close()
+    chunk = sink.drain()
+    if chunk:
+        yield chunk
+
+
 @app.post("/api/export_zip")
 async def api_export_zip(request: Request, x_imagesl_key: Optional[str] = Header(default=None)):
     _require_key(x_imagesl_key)
     body = await request.json()
-    entries = _collect_entries(body.get("analysis_ids"))
+    analysis_ids = body.get("analysis_ids")
+    if not isinstance(analysis_ids, list) or not analysis_ids:
+        raise HTTPException(status_code=400, detail="No analysis_ids provided.")
 
     valid = {"original", "overlay", "stainA", "stainB", "comparison"}
     images = [t for t in (body.get("images") or ["comparison"]) if t in valid] or ["comparison"]
     include_csv = body.get("include_csv", True)
 
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        used: set[str] = set()
-        for entry in entries:
-            stem = _safe_name(entry.get("filename", "image"))
-            for image_type in images:
-                # flat layout, no per-image folders; de-duplicate if names collide
-                name = f"{stem}_{image_type}.tif"
-                k = 2
-                while name in used:
-                    name = f"{stem}_{image_type}_{k}.tif"
-                    k += 1
-                used.add(name)
-                arr = _render_type(entry, image_type)
-                img_buf = io.BytesIO()
-                Image.fromarray(arr).save(img_buf, format="TIFF")
-                zf.writestr(name, img_buf.getvalue())
-        if include_csv:
-            zf.writestr("ImageSL_results.csv", _build_csv(entries))
-    buf.seek(0)
     return StreamingResponse(
-        buf,
+        _zip_stream(analysis_ids, images, include_csv),
         media_type="application/zip",
         headers={"Content-Disposition": 'attachment; filename="ImageSL_export.zip"'},
     )
