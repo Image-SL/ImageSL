@@ -7,7 +7,6 @@ const OVERLAY_ALPHA = 0.5;
 
 function headers(json) { const h = {}; if (json) h["Content-Type"] = "application/json"; return h; }
 
-// vivid full-saturation color from a hue angle (the rainbow slider)
 function hueToHex(h) {
   h = ((h % 360) + 360) % 360;
   const x = 1 - Math.abs(((h / 60) % 2) - 1);
@@ -30,43 +29,9 @@ function hexToHue(hex) {
   else h = 60 * ((r - g) / d + 4);
   return Math.round(h);
 }
-
-// Composite the detection overlay in-browser: original + positive mask tinted.
-let _maskScratch = null;
-function _tintMask(maskImg, hex, w, h) {
-  if (!_maskScratch) _maskScratch = document.createElement("canvas");
-  _maskScratch.width = w; _maskScratch.height = h;
-  const mx = _maskScratch.getContext("2d");
-  mx.clearRect(0, 0, w, h);
-  mx.globalCompositeOperation = "source-over";
-  mx.drawImage(maskImg, 0, 0, w, h);
-  mx.globalCompositeOperation = "source-in";
-  mx.fillStyle = hex; mx.fillRect(0, 0, w, h);
-  return _maskScratch;
-}
-function drawOverlay(canvas, origImg, maskImg, hex, alpha) {
-  const w = origImg.naturalWidth || origImg.width, h = origImg.naturalHeight || origImg.height;
-  if (!w || !h) return;
-  if (canvas.width !== w) canvas.width = w;
-  if (canvas.height !== h) canvas.height = h;
-  const cx = canvas.getContext("2d");
-  cx.clearRect(0, 0, w, h);
-  cx.drawImage(origImg, 0, 0, w, h);
-  cx.globalAlpha = alpha == null ? OVERLAY_ALPHA : alpha;
-  cx.drawImage(_tintMask(maskImg, hex, w, h), 0, 0);
-  cx.globalAlpha = 1;
-}
-function compositeOverlay(origImg, maskImg, hex, alpha, maxW) {
-  let w = origImg.naturalWidth || origImg.width, h = origImg.naturalHeight || origImg.height;
-  if (!w || !h) return "";
-  if (maxW && w > maxW) { h = Math.round(h * maxW / w); w = maxW; }
-  const cv = document.createElement("canvas"); cv.width = w; cv.height = h;
-  const cx = cv.getContext("2d");
-  cx.drawImage(origImg, 0, 0, w, h);
-  cx.globalAlpha = alpha == null ? OVERLAY_ALPHA : alpha;
-  cx.drawImage(_tintMask(maskImg, hex, w, h), 0, 0);
-  cx.globalAlpha = 1;
-  return cv.toDataURL("image/jpeg", 0.85);
+function hexRGB(hex) {
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex || "#00e5ff");
+  return m ? [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)] : [0, 229, 255];
 }
 function safeStem(name) {
   return (name || "image").replace(/\.[^.]+$/, "").replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^[._]+|[._]+$/g, "") || "image";
@@ -74,8 +39,7 @@ function safeStem(name) {
 function showView(id) { ["uploadView", "loadingView", "resultsView"].forEach((v) => $(v).classList.toggle("hidden", v !== id)); }
 async function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url; a.download = filename;
+  const a = document.createElement("a"); a.href = url; a.download = filename;
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 4000);
 }
@@ -117,10 +81,59 @@ async function streamedDownload(url, body, filename, label, estBytes) {
   } catch (e) { t.fail("Export failed: " + e.message); }
 }
 
+/* ============================== score-map overlay ==============================
+   The server sends a grayscale "stainness" score (0..255) per pixel. The browser
+   thresholds it live: positive = score ≥ threshold. This makes the threshold
+   slider (and the overlay colour) update instantly with no server round-trip. */
+function buildScoreData(scoreImg) {
+  const W = scoreImg.naturalWidth, H = scoreImg.naturalHeight;
+  const cv = document.createElement("canvas"); cv.width = W; cv.height = H;
+  const cx = cv.getContext("2d", { willReadFrequently: true });
+  cx.drawImage(scoreImg, 0, 0);
+  const raw = cx.getImageData(0, 0, W, H).data;
+  const data = new Uint8Array(W * H);
+  for (let i = 0, j = 0; i < data.length; i++, j += 4) data[i] = raw[j];
+  const hist = new Int32Array(258);
+  for (let i = 0; i < data.length; i++) hist[data[i]]++;
+  const suffix = new Int32Array(258);      // suffix[t] = # pixels with value ≥ t
+  for (let t = 256; t >= 0; t--) suffix[t] = suffix[t + 1] + (hist[t] || 0);
+  const ov = document.createElement("canvas"); ov.width = W; ov.height = H;
+  const ovCtx = ov.getContext("2d");
+  return { W, H, data, suffix, ov, ovCtx, ovData: ovCtx.createImageData(W, H) };
+}
+function scoreTint(sc, hex, thrNorm, alpha) {
+  const t = Math.max(1, Math.round(thrNorm * 255));
+  const [r, g, b] = hexRGB(hex);
+  const a = Math.round((alpha == null ? OVERLAY_ALPHA : alpha) * 255);
+  const px = sc.ovData.data, data = sc.data;
+  for (let i = 0, j = 0; i < data.length; i++, j += 4) {
+    if (data[i] >= t) { px[j] = r; px[j + 1] = g; px[j + 2] = b; px[j + 3] = a; }
+    else px[j + 3] = 0;
+  }
+  sc.ovCtx.putImageData(sc.ovData, 0, 0);
+}
+function drawScoreOverlay(canvas, origImg, sc, hex, thrNorm) {
+  const W = sc.W, H = sc.H;
+  if (canvas.width !== W) canvas.width = W;
+  if (canvas.height !== H) canvas.height = H;
+  scoreTint(sc, hex, thrNorm, OVERLAY_ALPHA);
+  const cx = canvas.getContext("2d");
+  cx.clearRect(0, 0, W, H);
+  cx.drawImage(origImg, 0, 0, W, H);
+  cx.drawImage(sc.ov, 0, 0, W, H);
+}
+function scoreThumb(origImg, sc, hex, thrNorm, maxW) {
+  let w = sc.W, h = sc.H;
+  if (maxW && w > maxW) { h = Math.round(h * maxW / w); w = maxW; }
+  const cv = document.createElement("canvas"); cv.width = w; cv.height = h;
+  const cx = cv.getContext("2d");
+  scoreTint(sc, hex, thrNorm, OVERLAY_ALPHA);
+  cx.drawImage(origImg, 0, 0, w, h);
+  cx.drawImage(sc.ov, 0, 0, w, h);
+  return cv.toDataURL("image/jpeg", 0.85);
+}
+
 /* ============================== IndexedDB persistence ============================== */
-// The whole analyzed batch (metrics + self-contained data-URI images) is stored
-// so a refresh / navigation restores it instantly — even if the server cache has
-// since expired.
 const DB_NAME = "imagesl", STORE = "state", KEY = "batch";
 function idb() {
   return new Promise((res, rej) => {
@@ -135,10 +148,10 @@ async function saveState() {
     const tx = db.transaction(STORE, "readwrite");
     tx.objectStore(STORE).put({ analyses, skipped, ts: Date.now() }, KEY);
     await new Promise((r) => (tx.oncomplete = r));
-  } catch (e) { /* storage full / private mode — non-fatal */ }
+  } catch (e) {}
 }
 let _saveDeb;
-function saveStateSoon() { clearTimeout(_saveDeb); _saveDeb = setTimeout(saveState, 400); }
+function saveStateSoon() { clearTimeout(_saveDeb); _saveDeb = setTimeout(saveState, 500); }
 async function loadState() {
   try {
     const db = await idb();
@@ -149,8 +162,63 @@ async function loadState() {
 async function clearState() { try { const db = await idb(); const tx = db.transaction(STORE, "readwrite"); tx.objectStore(STORE).delete(KEY); } catch (e) {} }
 
 /* ============================== state ============================== */
-let analyses = []; // [{ id, filename, data }]
-let skipped = [];  // [{ filename, reason }]
+let analyses = [];   // [{ id, filename, data }]
+let skipped = [];    // [{ filename, reason }]
+let mode = "auto";   // "auto" | "select"
+let selectedStain = null;   // { key, name, compartment_name, ... }
+let stainList = null;       // cached /api/stains
+
+/* ============================== mode selector + stain picker ============================== */
+document.querySelectorAll(".mode-card").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".mode-card").forEach((b) => { b.classList.toggle("active", b === btn); b.setAttribute("aria-selected", b === btn ? "true" : "false"); });
+    mode = btn.dataset.mode;
+    $("stainPicker").classList.toggle("hidden", mode !== "select");
+    if (mode === "select") { ensureStains(); $("stainSearch").focus(); }
+  });
+});
+async function ensureStains() {
+  if (stainList) return stainList;
+  try { stainList = (await (await fetch("/api/stains")).json()).stains || []; }
+  catch (e) { stainList = []; }
+  return stainList;
+}
+function renderStainResults(query) {
+  const box = $("stainResults");
+  const q = (query || "").trim().toLowerCase();
+  const items = (stainList || []).filter((s) => !q || s.name.toLowerCase().includes(q) || s.category.toLowerCase().includes(q));
+  box.innerHTML = "";
+  if (!items.length) { box.innerHTML = '<div class="sp-empty">No antibody matches that search.</div>'; box.classList.add("show"); return; }
+  let cat = null;
+  items.slice(0, 80).forEach((s) => {
+    if (s.category !== cat) { cat = s.category; const h = document.createElement("div"); h.className = "sp-cat"; h.textContent = cat; box.appendChild(h); }
+    const it = document.createElement("div");
+    it.className = "sp-item"; it.setAttribute("role", "option");
+    it.innerHTML = `<span></span><span class="sp-comp"></span>`;
+    it.children[0].textContent = s.name;
+    it.children[1].textContent = s.compartment_name;
+    it.addEventListener("mousedown", (e) => { e.preventDefault(); chooseStain(s); });
+    box.appendChild(it);
+  });
+  box.classList.add("show");
+}
+function chooseStain(s) {
+  selectedStain = s;
+  const chip = $("stainChosen");
+  chip.innerHTML = `<b></b><span class="sp-comp"></span><button class="sp-change" type="button">Change</button>`;
+  chip.querySelector("b").textContent = s.name;
+  chip.querySelector(".sp-comp").textContent = s.compartment_name + " · " + s.category;
+  chip.querySelector(".sp-change").addEventListener("click", () => { selectedStain = null; chip.classList.add("hidden"); $("stainSearch").value = ""; $("stainSearch").focus(); renderStainResults(""); $("stainClear").classList.add("hidden"); });
+  chip.classList.remove("hidden");
+  $("stainResults").classList.remove("show");
+  $("stainSearch").value = s.name;
+  $("stainClear").classList.remove("hidden");
+}
+$("stainSearch") && $("stainSearch").addEventListener("input", (e) => { renderStainResults(e.target.value); $("stainClear").classList.toggle("hidden", !e.target.value); });
+$("stainSearch") && $("stainSearch").addEventListener("focus", () => { if (!selectedStain) renderStainResults($("stainSearch").value); });
+$("stainSearch") && $("stainSearch").addEventListener("blur", () => setTimeout(() => $("stainResults").classList.remove("show"), 150));
+$("stainClear") && $("stainClear").addEventListener("click", () => { selectedStain = null; $("stainChosen").classList.add("hidden"); $("stainSearch").value = ""; $("stainClear").classList.add("hidden"); renderStainResults(""); $("stainSearch").focus(); });
+function currentStainKey() { return (mode === "select" && selectedStain) ? selectedStain.key : ""; }
 
 /* ============================== upload ============================== */
 const dropzone = $("dropzone");
@@ -160,7 +228,6 @@ fileInput.addEventListener("change", (e) => { const f = e.target.files; e.target
 ["dragover", "dragenter"].forEach((ev) => dropzone.addEventListener(ev, (e) => { e.preventDefault(); dropzone.classList.add("dragover"); }));
 ["dragleave", "dragend"].forEach((ev) => dropzone.addEventListener(ev, (e) => { e.preventDefault(); dropzone.classList.remove("dragover"); }));
 dropzone.addEventListener("drop", (e) => { e.preventDefault(); dropzone.classList.remove("dragover"); const f = e.dataTransfer.files; if (f && f.length) runBatch(f, false); });
-
 $("fileAdd").addEventListener("change", (e) => { const f = e.target.files; e.target.value = ""; if (f.length) runBatch(f, true); });
 $("btnAddMore").addEventListener("click", () => $("fileAdd").click());
 
@@ -172,6 +239,8 @@ function setRing(fraction) {
 async function analyzeOne(file) {
   const fd = new FormData();
   fd.append("file", file); fd.append("filename", file.name);
+  const key = currentStainKey();
+  if (key) fd.append("stain_key", key);
   const res = await fetch("/api/analyze", { method: "POST", headers: headers(false), body: fd });
   if (!res.ok) { let msg = res.statusText; try { msg = (await res.json()).detail || msg; } catch (e) {} throw new Error(msg); }
   const data = await res.json();
@@ -182,10 +251,8 @@ async function runBatch(fileList, append) {
   const files = Array.from(fileList);
   $("uploadError").classList.add("hidden");
   if (!append) { analyses = []; skipped = []; $("resultsContainer").innerHTML = ""; }
-  showView("loadingView");
-  setRing(0);
+  showView("loadingView"); setRing(0);
   $("loaderSub").textContent = "Preparing…";
-
   const container = $("resultsContainer");
   const errors = [];
   let added = 0;
@@ -200,20 +267,14 @@ async function runBatch(fileList, append) {
         analyses.push({ id: data.analysis_id, filename: data.filename, data });
         const card = createCard(data);
         card.style.animationDelay = Math.min(added * 60, 400) + "ms";
-        container.appendChild(card);
-        added++;
+        container.appendChild(card); added++;
       }
-    } catch (e) {
-      errors.push(`${files[i].name}: ${e.message}`);
-    }
+    } catch (e) { errors.push(`${files[i].name}: ${e.message}`); }
     setRing((i + 1) / files.length);
   }
-
   if (!analyses.length && !skipped.length) {
     showView("uploadView");
-    const box = $("uploadError");
-    box.textContent = "Could not analyze: " + errors.join(" · ");
-    box.classList.remove("hidden");
+    const box = $("uploadError"); box.textContent = "Could not analyze: " + errors.join(" · "); box.classList.remove("hidden");
     return;
   }
   await new Promise((r) => setTimeout(r, 300));
@@ -231,7 +292,6 @@ function renderSummary(errors) {
   if (errors && errors.length) bits.push(`${errors.length} failed`);
   const note = bits.length ? ` <span class="sub">· ${bits.join(" · ")}</span>` : "";
   $("resultsCount").innerHTML = `${n} slide${n === 1 ? "" : "s"} analyzed${note}`;
-
   const panel = $("skippedPanel"), list = $("skippedList");
   if (skipped.length) {
     $("skippedTitle").textContent = `${skipped.length} file${skipped.length === 1 ? "" : "s"} skipped — not stained slides`;
@@ -244,12 +304,17 @@ function renderSummary(errors) {
       list.appendChild(li);
     });
     panel.classList.remove("hidden");
-  } else { panel.classList.add("hidden"); }
+  } else panel.classList.add("hidden");
 }
 
 function currentOverlayHex(data) {
   const p = data.params || {}, r = data.result || {};
   return p.overlay_hex || r.suggested_overlay_hex || "#00e5ff";
+}
+function currentThr(data) {
+  const p = data.params || {}, r = data.result || {};
+  const st = (p.score_threshold != null) ? p.score_threshold : r.score_auto_threshold;
+  return (st == null ? 0.2 : st);
 }
 
 function createCard(data) {
@@ -259,53 +324,79 @@ function createCard(data) {
   const filename = data.filename;
   const stem = safeStem(filename);
   let current = data;
-  const ov = { origImg: null, maskImg: null };
   const entry = analyses.find((a) => a.id === analysisId);
+  const st = { origImg: null, sc: null };
+  let thrNorm = currentThr(data);
+  const scoreFull = (data.result && data.result.score_full) || 1.8;
 
   q(".fname").textContent = filename;
+  function persistData() { if (entry) entry.data = current; saveStateSoon(); }
 
-  function persistData() { if (entry) { entry.data = current; } saveStateSoon(); }
-
-  function recolorOverlay() {
-    if (!ov.origImg || !ov.maskImg) return;
-    const color = q(".cHue").style.getPropertyValue("--thumb") || currentOverlayHex(current);
-    drawOverlay(q(".cmpFront"), ov.origImg, ov.maskImg, color, OVERLAY_ALPHA);
-    q(".imgOverlay").src = compositeOverlay(ov.origImg, ov.maskImg, color, OVERLAY_ALPHA, 560);
+  // ---- overlay redraw (colour + threshold, all client-side) ----
+  let rafPending = false;
+  function redraw() {
+    if (!st.origImg || !st.sc) return;
+    const hex = q(".cHue").style.getPropertyValue("--thumb") || currentOverlayHex(current);
+    drawScoreOverlay(q(".cmpFront"), st.origImg, st.sc, hex, thrNorm);
+    q(".imgOverlay").src = scoreThumb(st.origImg, st.sc, hex, thrNorm, 560);
   }
-  function loadOverlaySources(origSrc, maskSrc) {
-    const o = new Image(), m = new Image();
-    let n = 0; const done = () => { if (++n === 2) { ov.origImg = o; ov.maskImg = m; recolorOverlay(); } };
-    o.onload = done; m.onload = done; o.src = origSrc; m.src = maskSrc;
-  }
-
-  function setOverlayHex(hex) {
-    q(".cHue").style.setProperty("--thumb", hex);
-    q(".cHue").value = hexToHue(hex);
-    recolorOverlay();
+  function redrawSoon() {
+    if (document.hidden) { redraw(); return; }   // rAF is paused when hidden
+    if (rafPending) return;
+    rafPending = true;
+    requestAnimationFrame(() => { rafPending = false; redraw(); });
   }
 
-  function paint(d) {
+  function liveMetrics() {
+    if (!st.sc) return;
+    const t = Math.max(1, Math.round(thrNorm * 255));
+    const pos = st.sc.suffix[t] || 0;
+    const tissue = (current.result && current.result.tissue_pixels) || 0;
+    const pct = tissue ? (pos / tissue * 100) : 0;
+    q(".mPercent").textContent = pct.toFixed(2) + "%";
+    q(".mPositive").textContent = pos.toLocaleString();
+    const concThr = thrNorm * scoreFull;
+    q(".mThreshold").textContent = concThr.toFixed(3);
+    q(".thrVal").textContent = concThr.toFixed(3);
+    [".mPercent", ".mPositive"].forEach((s) => { const b = q(s); b.classList.remove("flash"); void b.offsetWidth; b.classList.add("flash"); });
+  }
+
+  function setThr(norm, persist) {
+    thrNorm = Math.max(0.001, Math.min(0.999, norm));
+    q(".cThr").value = Math.round(thrNorm * 1000);
+    redrawSoon(); liveMetrics();
+    if (current.params) current.params.score_threshold = thrNorm;
+    if (persist) { persistData(); postThreshold(thrNorm); }
+  }
+  function setOverlayHex(hex) { q(".cHue").style.setProperty("--thumb", hex); q(".cHue").value = hexToHue(hex); redrawSoon(); }
+
+  function loadSources(origSrc, scoreSrc) {
+    const o = new Image(), s = new Image();
+    let n = 0; const done = () => { if (++n === 2) { st.origImg = o; st.sc = buildScoreData(s); redraw(); liveMetrics(); } };
+    o.onload = done; s.onload = done; o.src = origSrc; s.src = scoreSrc;
+  }
+
+  function paint(d, keepThr) {
     current = d;
     const img = d.images || {};
     if (img.original) { q(".imgOriginal").src = img.original; q(".imgOriginal2").src = img.original; }
     if (img.stainA) q(".imgStainA").src = img.stainA;
     if (img.stainB) q(".imgStainB").src = img.stainB;
-    if (img.original && img.mask) loadOverlaySources(img.original, img.mask);
-
+    if (img.original && img.score) loadSources(img.original, img.score);
     const r = d.result;
     if (r) {
-      q(".mPercent").textContent = (r.positive_percent || 0).toFixed(2) + "%";
-      q(".mPositive").textContent = (r.positive_pixels || 0).toLocaleString();
-      q(".mTissue").textContent = (r.tissue_pixels || 0).toLocaleString();
-      q(".mThreshold").textContent = (r.threshold || 0).toFixed(3);
       q(".badge").textContent = r.stain_label || r.method || "";
+      q(".mTissue").textContent = (r.tissue_pixels || 0).toLocaleString();
       q(".labA").textContent = r.stain_a_label || "Stain A";
       q(".labB").textContent = r.stain_b_label || "Stain B";
+      if (!keepThr) { thrNorm = currentThr(d); q(".cThr").value = Math.round(thrNorm * 1000); }
+      q(".mPercent").textContent = (r.positive_percent || 0).toFixed(2) + "%";
+      q(".mPositive").textContent = (r.positive_pixels || 0).toLocaleString();
+      q(".mThreshold").textContent = (r.threshold || 0).toFixed(3);
+      q(".thrVal").textContent = (r.threshold || 0).toFixed(3);
     }
   }
   paint(data);
-
-  // init colors
   setOverlayHex(currentOverlayHex(data));
   const p0 = data.params || {}, r0 = data.result || {};
   q(".swA").style.background = p0.stainA_hex || r0.stain_a_hex || "#3b5bdb";
@@ -323,90 +414,72 @@ function createCard(data) {
   vp.addEventListener("pointermove", (e) => { if (dragging) setSplit(e.clientX); });
   vp.addEventListener("pointerup", (e) => { dragging = false; try { vp.releasePointerCapture(e.pointerId); } catch (x) {} });
   vp.addEventListener("pointercancel", () => { dragging = false; });
-
   node.querySelectorAll(".vImg").forEach((im) => im.addEventListener("click", () => showLightbox(im.src)));
 
   // ---- server appearance calls (debounced) ----
-  let deb;
+  let deb, thrDeb;
   function post(body, cb) {
     clearTimeout(deb);
     deb = setTimeout(async () => {
-      try {
-        const res = await fetch("/api/appearance", { method: "POST", headers: headers(true), body: JSON.stringify(Object.assign({ analysis_id: analysisId }, body)) });
-        if (res.ok) { const d = await res.json(); if (cb) cb(d); }
-      } catch (e) {}
+      try { const res = await fetch("/api/appearance", { method: "POST", headers: headers(true), body: JSON.stringify(Object.assign({ analysis_id: analysisId }, body)) }); if (res.ok && cb) cb(await res.json()); } catch (e) {}
     }, 200);
   }
-
-  // ---- overlay color: instant client recolor + persist to server for exports ----
-  function onOverlayHex(hex) {
-    setOverlayHex(hex);
-    if (current.params) current.params.overlay_hex = hex;
-    persistData();
-    post({ overlay_hex: hex });
+  function postThreshold(norm) {
+    clearTimeout(thrDeb);
+    thrDeb = setTimeout(async () => {
+      try {
+        const res = await fetch("/api/appearance", { method: "POST", headers: headers(true), body: JSON.stringify({ analysis_id: analysisId, score_threshold: norm }) });
+        if (res.ok) { const d = await res.json(); if (d.result) { current.result = d.result; paint(d, true); persistData(); } }
+      } catch (e) {}
+    }, 350);
   }
-  q(".cHue").addEventListener("input", () => onOverlayHex(hueToHex(+q(".cHue").value)));
-  q(".oc-auto").addEventListener("click", () => {
-    const auto = (current.result && current.result.suggested_overlay_hex) || "#00e5ff";
-    if (current.params) current.params.overlay_hex = null;
-    onOverlayHex(auto);
-  });
 
-  // ---- Stain A / B recolor swatches → hidden color pickers → server re-render ----
+  // ---- overlay colour ----
+  function onOverlayHex(hex) { setOverlayHex(hex); if (current.params) current.params.overlay_hex = hex; persistData(); post({ overlay_hex: hex }); }
+  q(".cHue").addEventListener("input", () => onOverlayHex(hueToHex(+q(".cHue").value)));
+  q(".oc-auto").addEventListener("click", () => { const auto = (current.result && current.result.suggested_overlay_hex) || "#00e5ff"; if (current.params) current.params.overlay_hex = null; onOverlayHex(auto); });
+
+  // ---- live detection threshold ----
+  q(".cThr").addEventListener("input", () => setThr((+q(".cThr").value) / 1000, true));
+  q(".thr-auto").addEventListener("click", () => { const auto = (current.result && current.result.score_auto_threshold) || 0.2; if (current.params) current.params.score_threshold = null; setThr(auto, false); postThreshold(""); persistData(); });
+
+  // ---- Stain A / B recolour ----
   q(".swA").addEventListener("click", () => q(".pickA").click());
   q(".swB").addEventListener("click", () => q(".pickB").click());
   q(".pickA").value = p0.stainA_hex || r0.stain_a_hex || "#3b5bdb";
   q(".pickB").value = p0.stainB_hex || r0.stain_b_hex || "#a1531f";
-  q(".pickA").addEventListener("input", () => {
-    const hex = q(".pickA").value; q(".swA").style.background = hex;
-    if (current.params) current.params.stainA_hex = hex;
-    post({ stainA_hex: hex }, (d) => { paint(d); persistData(); });
-  });
-  q(".pickB").addEventListener("input", () => {
-    const hex = q(".pickB").value; q(".swB").style.background = hex;
-    if (current.params) current.params.stainB_hex = hex;
-    post({ stainB_hex: hex }, (d) => { paint(d); persistData(); });
-  });
+  q(".pickA").addEventListener("input", () => { const hex = q(".pickA").value; q(".swA").style.background = hex; if (current.params) current.params.stainA_hex = hex; post({ stainA_hex: hex }, (d) => { paint(d, true); persistData(); }); });
+  q(".pickB").addEventListener("input", () => { const hex = q(".pickB").value; q(".swB").style.background = hex; if (current.params) current.params.stainB_hex = hex; post({ stainB_hex: hex }, (d) => { paint(d, true); persistData(); }); });
 
   // ---- downloads ----
-  function dlTif(type) {
-    streamedDownload(`/api/download_tif?analysis_id=${analysisId}&image_type=${type}`, null, `${stem}_${type}.tif`, `Exporting ${type}`, 2 * 1048576);
-  }
+  function dlTif(type) { streamedDownload(`/api/download_tif?analysis_id=${analysisId}&image_type=${type}`, null, `${stem}_${type}.tif`, `Exporting ${type}`, 2 * 1048576); }
   node.querySelectorAll(".dl-btn").forEach((b) => b.addEventListener("click", () => dlTif(b.dataset.type)));
   node.querySelectorAll(".vdl").forEach((b) => b.addEventListener("click", (e) => { e.stopPropagation(); dlTif(b.dataset.type); }));
   q(".export-one").addEventListener("click", () => streamedDownload("/api/export_csv", { analysis_ids: [analysisId] }, `${stem}_data.csv`, "Exporting CSV", 0));
 
-  // expose a setter so the global slider can drive this card
   node._setOverlayHex = onOverlayHex;
   return node;
 }
 
 /* ============================== mass export ============================== */
 $("btnExportCsv").addEventListener("click", () => {
-  const ids = analyses.map((a) => a.id);
-  if (!ids.length) return;
+  const ids = analyses.map((a) => a.id); if (!ids.length) return;
   streamedDownload("/api/export_csv", { analysis_ids: ids }, "ImageSL_results.csv", "Exporting data (CSV)", 0);
 });
 $("btnDownloadZip").addEventListener("click", () => {
-  const ids = analyses.map((a) => a.id);
-  if (!ids.length) return;
+  const ids = analyses.map((a) => a.id); if (!ids.length) return;
   const n = ids.length;
   streamedDownload("/api/export_zip", { analysis_ids: ids, images: ["comparison"], include_csv: true },
     "ImageSL_export.zip", `Packaging ${n} slide${n === 1 ? "" : "s"} (ZIP)`, n * 1.6 * 1048576);
 });
 $("btnNew").addEventListener("click", () => {
   analyses = []; skipped = [];
-  $("resultsContainer").innerHTML = "";
-  $("skippedPanel").classList.add("hidden");
-  clearState();
-  showView("uploadView");
-  window.scrollTo({ top: 0, behavior: "smooth" });
+  $("resultsContainer").innerHTML = ""; $("skippedPanel").classList.add("hidden");
+  clearState(); showView("uploadView"); window.scrollTo({ top: 0, behavior: "smooth" });
 });
 
 /* ============================== global overlay color ============================== */
-function applyGlobalOverlay(hex) {
-  document.querySelectorAll("#resultsContainer .card").forEach((card) => { if (card._setOverlayHex) card._setOverlayHex(hex); });
-}
+function applyGlobalOverlay(hex) { document.querySelectorAll("#resultsContainer .card").forEach((card) => { if (card._setOverlayHex) card._setOverlayHex(hex); }); }
 $("gHue").addEventListener("input", () => { const hex = hueToHex(+$("gHue").value); $("gHue").style.setProperty("--thumb", hex); applyGlobalOverlay(hex); });
 $("gHue").style.setProperty("--thumb", hueToHex(200));
 
@@ -416,12 +489,11 @@ $("lightbox").addEventListener("click", () => $("lightbox").classList.add("hidde
 
 /* ============================== restore on load ============================== */
 (async function restore() {
-  const st = await loadState();
-  if (!st || (!(st.analyses || []).length && !(st.skipped || []).length)) return;
-  analyses = (st.analyses || []).filter((a) => a && a.data);
-  skipped = st.skipped || [];
-  const container = $("resultsContainer");
-  container.innerHTML = "";
+  const stt = await loadState();
+  if (!stt || (!(stt.analyses || []).length && !(stt.skipped || []).length)) return;
+  analyses = (stt.analyses || []).filter((a) => a && a.data);
+  skipped = stt.skipped || [];
+  const container = $("resultsContainer"); container.innerHTML = "";
   analyses.forEach((a) => container.appendChild(createCard(a.data)));
   renderSummary([]);
   showView("resultsView");

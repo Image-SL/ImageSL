@@ -72,14 +72,18 @@ BACKGROUND_OD_THRESHOLD = 0.15
 # uniformly-tinted slide reads ~0 instead of flooding. Saturation, optical-
 # density and colour-specificity gates run alongside to reject desaturated tan
 # tint and near-neutral grey/black debris.
-_SAT_FLOOR          = 0.23   # absolute minimum HSV saturation for a positive
+_SAT_FLOOR          = 0.23   # absolute minimum HSV saturation for a candidate
 _SAT_MARGIN         = 0.05   # must beat the tissue saturation bulk by this much
-_OD_ABS_FLOOR       = 0.55   # absolute minimum summed OD for a positive
-_OD_SEP_K           = 1.6    # …and must beat background OD by K robust-sigmas
-_CONC_SEP_K         = 2.2    # target-conc must beat background conc by K sigmas
-_SPEC_MIN           = 0.55   # target must own ≥55% of the pixel's stain colour
+_OD_ABS_FLOOR       = 0.42   # ×0.5 → a tiny chromogen-concentration floor (noise)
+_CONC_SEP_K         = 2.8    # default threshold = bg conc + K robust-sigmas
+_SPEC_MIN           = 0.50   # target must own ≥ this share of the pixel's colour
 _HUE_TOL_DEG        = 46.0   # pixel hue must sit within this of the chromogen
-_MIN_OBJECT_PX      = 10     # drop specks smaller than this (isolated noise)
+_MIN_OBJECT_PX      = 8      # default: drop specks smaller than this (noise)
+
+# The per-pixel "stainness" score (deconvolved chromogen concentration for colour-
+# qualified pixels) is normalised by this full-scale concentration so the browser
+# can re-threshold it live. ~1.8 OD maps a very strongly stained pixel to ~1.0.
+SCORE_FULL = 1.8
 
 _HDAB_REFERENCE = np.array(
     [
@@ -148,6 +152,13 @@ class AnalysisResult:
     stain_b_hex: str = "#a1531f"
     stain_a_label: str = "Stain A"
     stain_b_label: str = "Stain B"
+    # --- interactive-threshold support ---
+    score_auto_threshold: float = 0.2   # default slider position, 0..1 (normalised)
+    score_threshold: float = 0.2        # threshold actually applied, 0..1
+    score_full: float = SCORE_FULL      # concentration that maps to score = 1.0
+    chromogen: str = ""                 # detected chromogen family label
+    compartment: str = ""               # expected localisation (if a marker chosen)
+    marker: str = ""                    # chosen antibody name (selection mode)
     notes: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -580,8 +591,17 @@ def analyze(
     stain_strictness: str = "strong",
     stain_method: str = "auto",
     stain_override_od: Optional[list[list[float]]] = None,
+    stain_choice: Optional[dict] = None,
+    score_threshold: Optional[float] = None,
 ) -> tuple[AnalysisResult, dict[str, np.ndarray]]:
-    """Full IHC analysis. Returns (result, maps)."""
+    """
+    Full IHC analysis. Returns (result, maps).
+
+    `stain_choice` is an optional antibody registry entry (selection mode) used
+    for labelling + compartment-aware morphology. `score_threshold` (0..1) is an
+    optional manual override of the intensity threshold applied to the per-pixel
+    stainness score; None uses the auto, background-anchored threshold.
+    """
     h, w = rgb.shape[:2]
     notes: list[str] = []
 
@@ -629,62 +649,73 @@ def analyze(
     resid_conc = np.abs(conc[..., 2])
 
     # ------------------------------------------------------------------ #
-    # Positive detection — multi-gate, anchored to THIS slide's background.
+    # Stain-vs-not classification → a continuous per-pixel "stainness" SCORE.
     #
-    # A pixel is positive only when it is, all at once:
-    #   (core)   inside the eroded tissue core (not a lumen / tear rim);
-    #   (hue)    the target chromogen's hue (rejects blue nuclei & neutral debris);
-    #   (sat)    clearly more saturated than the tissue bulk (rejects tan tint and
-    #            grey/black debris, which are desaturated);
-    #   (od)     clearly darker than the tissue bulk AND above an absolute floor;
-    #   (spec)   colour-dominated by the target stain, out-weighing counterstain;
-    #   (conc)   above an intensity threshold that is separated from background,
-    #            so a uniformly tinted slide reads ~0 instead of flooding.
+    # The score is the deconvolved *chromogen concentration* (a colour-axis
+    # projection), NOT darkness. That is the whole point: a dark grey / blue /
+    # neutral background — even one DARKER than the stain — has almost no
+    # chromogen concentration, so it scores ~0 and can never be thresholded into
+    # a positive. Only pixels that pass the colour-specificity "candidate" test
+    # (right hue, saturated enough, chromogen-dominated, in the tissue core) carry
+    # a non-zero score; everything else — background, counterstain, grey/black
+    # debris, lumen rims — is zeroed out here, by the classifier, not by a slider.
+    #
+    # The intensity threshold is then applied ON TOP of that score: an automatic,
+    # background-anchored default that the user can nudge live.
     # ------------------------------------------------------------------ #
+    score = np.zeros((h, w), dtype=np.float32)
+    candidate = np.zeros((h, w), dtype=bool)
     positive = np.zeros((h, w), dtype=bool)
-    threshold = 0.0
+    conc_threshold = 0.0
+    auto_norm = float(np.clip(_CONC_SEP_K * 0.12, 0.05, 0.95))  # fallback
+    min_px = int(stain_choice.get("min_px", _MIN_OBJECT_PX)) if stain_choice else _MIN_OBJECT_PX
 
     if valid and tissue_pixels >= 200:
         core = _binary_erode(tissue_mask, 2)
 
-        # Background statistics from a bounded random subsample of tissue — the
-        # medians/percentiles are identical to within noise but far cheaper than
-        # sorting ~750k values several times.
+        # Background statistics from a bounded random subsample of tissue.
         t_idx = np.flatnonzero(tissue_mask.ravel())
         if t_idx.size > 120_000:
             t_idx = t_idx[np.random.default_rng(0).integers(0, t_idx.size, 120_000)]
-        t_od = total_od.ravel()[t_idx]
         t_sat = sat.ravel()[t_idx]
         t_conc = target_conc.ravel()[t_idx]
 
-        od_bg = float(np.median(t_od))
-        od_sig = 1.4826 * float(np.median(np.abs(t_od - od_bg))) + 1e-6
         sat_bg = float(np.percentile(t_sat, 55))
         conc_bg = float(np.median(t_conc))
         conc_sig = 1.4826 * float(np.median(np.abs(t_conc - conc_bg))) + 1e-6
 
         sat_gate = max(_SAT_FLOOR, sat_bg + _SAT_MARGIN)
-        od_gate = max(_OD_ABS_FLOOR, od_bg + _OD_SEP_K * od_sig)
         conc_gate = conc_bg + _CONC_SEP_K * conc_sig
 
         total_stain = target_conc + counter_conc + resid_conc + 1e-6
-        specificity = target_conc / total_stain
+        specificity = target_conc / total_stain          # colour purity of target
 
+        # CANDIDATE = "this pixel IS the chromogen colour, not background/debris".
+        # Deliberately NOT gated on darkness (total OD): the whole point is that a
+        # dark grey/blue background — even one DARKER than the stain — carries little
+        # chromogen concentration, so it is excluded by colour, not by intensity.
+        # This is what lets ImageSL separate stain from a darker background.
         hue_ok = _hue_dist(hue, target_hue) <= _HUE_TOL_DEG
-        sat_ok = sat >= sat_gate
-        od_ok = total_od >= od_gate
-        spec_ok = (specificity >= _SPEC_MIN) & (target_conc > counter_conc)
+        candidate = (core & hue_ok & (sat >= sat_gate)
+                     & (specificity >= _SPEC_MIN) & (target_conc > counter_conc)
+                     & (target_conc >= _OD_ABS_FLOOR * 0.5))   # tiny floor kills noise only
 
-        qualified = core & hue_ok & sat_ok & od_ok & spec_ok
+        # Score = normalised chromogen concentration within candidates. Pure
+        # concentration (not weighted by darkness) so the auto threshold reproduces
+        # the validated background-anchored behaviour and the slider is linear.
+        raw = np.clip(target_conc / SCORE_FULL, 0.0, 1.0)
+        score = np.where(candidate, raw, 0.0).astype(np.float32)
 
-        if qualified.sum() >= 30:
-            # Intensity bar = background-anchored separation (scale-consistent);
-            # threshold_scale tunes sensitivity (>1 stricter, <1 looser).
-            threshold = conc_gate * float(threshold_scale)
-            positive = qualified & (target_conc >= threshold)
-            if positive.any():
-                positive = _remove_small(positive, _MIN_OBJECT_PX)
-        else:
+        auto_norm = float(np.clip((conc_gate / SCORE_FULL), 0.02, 0.98))
+        # Manual override (0..1) beats the auto threshold when supplied.
+        thr_norm = auto_norm if score_threshold is None else float(np.clip(score_threshold, 0.0, 1.0))
+        thr_norm *= float(threshold_scale)
+        conc_threshold = thr_norm * SCORE_FULL
+
+        positive = score >= max(thr_norm, 1e-4)
+        if positive.any():
+            positive = _remove_small(positive, min_px)
+        if not candidate.any():
             notes.append("No specific target staining detected above background.")
 
     if not valid:
@@ -700,7 +731,13 @@ def analyze(
     b_rgb = _od_to_rgb_unit(stain_matrix[b_idx])
     overlay_hex = _auto_overlay_hex(rgb, tissue_mask)
 
-    stain_label = target_label if not tissue_pixels else f"{target_label} · H counterstain"
+    chromogen = target_label
+    marker = str(stain_choice.get("name", "")) if stain_choice else ""
+    compartment = str(stain_choice.get("compartment_name", "")) if stain_choice else ""
+    if marker:
+        stain_label = f"{marker} · {chromogen}"
+    else:
+        stain_label = chromogen if not tissue_pixels else f"{chromogen} · H counterstain"
 
     stains = [
         StainVector(counter_label, a_rgb, stain_matrix[a_idx].tolist()),
@@ -716,7 +753,7 @@ def analyze(
         positive_fraction=round(positive_fraction, 6),
         positive_percent=round(positive_fraction * 100.0, 3),
         mean_positive_intensity=round(mean_pos, 4),
-        threshold=round(float(threshold), 4),
+        threshold=round(float(conc_threshold), 4),
         stains=stains,
         target_index=int(tgt_idx),
         method=method,
@@ -729,15 +766,24 @@ def analyze(
         stain_b_hex=_hex(b_rgb),
         stain_a_label=counter_label,
         stain_b_label=target_label,
+        score_auto_threshold=round(auto_norm, 4),
+        score_threshold=round(float(auto_norm if score_threshold is None else np.clip(score_threshold, 0, 1)), 4),
+        score_full=SCORE_FULL,
+        chromogen=chromogen,
+        compartment=compartment,
+        marker=marker,
         notes=notes,
     )
     maps = {
         "conc": conc,
         "tissue_mask": tissue_mask,
         "positive": positive,
+        "score": score,
+        "candidate": candidate,
         "stain_matrix": stain_matrix,
         "counter_index": counter_idx,
         "target_index": tgt_idx,
+        "min_px": min_px,
         "od": od,
     }
     return result, maps
@@ -960,3 +1006,23 @@ def mask_data_uri(mask: np.ndarray) -> str:
     buf = io.BytesIO()
     Image.fromarray(rgba, "RGBA").save(buf, format="PNG", optimize=True)
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def score_data_uri(score: np.ndarray) -> str:
+    """Encode the 0..1 stainness score as an 8-bit grayscale PNG (value = score*255).
+    The browser reads this once and re-thresholds it live — no server round-trip —
+    so dragging the threshold slider updates the overlay, %, and pixel counts
+    instantly."""
+    arr = np.clip(np.asarray(score) * 255.0, 0, 255).astype(np.uint8)
+    buf = io.BytesIO()
+    Image.fromarray(arr, "L").save(buf, format="PNG", optimize=True)
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def positive_from_score(score: np.ndarray, threshold_norm: float, min_px: int = _MIN_OBJECT_PX) -> np.ndarray:
+    """Boolean positive mask = score ≥ threshold (0..1), de-speckled. Mirrors what
+    the browser does live, for server-side downloads/exports at a chosen threshold."""
+    pos = np.asarray(score) >= max(float(threshold_norm), 1e-4)
+    if pos.any():
+        pos = _remove_small(pos, int(min_px))
+    return pos

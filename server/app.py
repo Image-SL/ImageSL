@@ -29,6 +29,7 @@ from PIL import Image
 import numpy as np
 
 from ihc import engine
+from ihc import stains as stain_registry
 
 # --------------------------------------------------------------------------- #
 # Config
@@ -171,14 +172,27 @@ def _require_key(x_imagesl_key: Optional[str]) -> None:
 def _default_params() -> dict:
     return {
         "background_threshold": engine.BACKGROUND_OD_THRESHOLD,
-        "target_index": 1,
-        "threshold_scale": 1.0,
         "stain_strictness": "strong",
         "stain_method": "auto",
+        "stain_key": None,          # selection mode: chosen antibody key (or None=auto)
+        "score_threshold": None,    # manual intensity threshold 0..1 (None=auto)
         # colours — all auto-derived at analysis time; user may override any.
-        "overlay_hex": None,     # None → per-slide auto-contrast colour
-        "stainA_hex": None,      # None → stain's natural colour
+        "overlay_hex": None,        # None → per-slide auto-contrast colour
+        "stainA_hex": None,         # None → stain's natural colour
         "stainB_hex": None,
+    }
+
+
+def _analyze_kwargs(p: dict) -> dict:
+    """Common engine.analyze kwargs derived from stored params (used everywhere we
+    (re)run analysis, so the chosen marker + threshold are always honoured)."""
+    st = p.get("score_threshold")
+    return {
+        "background_threshold": p.get("background_threshold", engine.BACKGROUND_OD_THRESHOLD),
+        "stain_strictness": p.get("stain_strictness", "strong"),
+        "stain_method": p.get("stain_method", "auto"),
+        "stain_choice": stain_registry.lookup(p.get("stain_key")),
+        "score_threshold": (float(st) if st is not None else None),
     }
 
 
@@ -208,34 +222,35 @@ def _render_images(entry: dict) -> None:
     rgb, p = entry["rgb"], entry["params"]
     maps = entry["maps"]
     # After caching we drop the heavy concentration maps; recompute on demand.
-    if "conc" not in maps:
-        _, maps = engine.analyze(
-            rgb, entry.get("source_size", (rgb.shape[1], rgb.shape[0])),
-            background_threshold=p.get("background_threshold", engine.BACKGROUND_OD_THRESHOLD),
-            stain_strictness=p.get("stain_strictness", "strong"),
-            stain_method=p.get("stain_method", "auto"),
-        )
+    if "conc" not in maps or "score" not in maps:
+        _, maps = engine.analyze(rgb, entry.get("source_size", (rgb.shape[1], rgb.shape[0])),
+                                 **_analyze_kwargs(p))
         entry["maps"] = maps
     a_idx, b_idx = _stain_indices(maps)
     stainA = engine.render_stain(maps, a_idx, _hex_to_rgb(p.get("stainA_hex")))
     stainB = engine.render_stain(maps, b_idx, _hex_to_rgb(p.get("stainB_hex")))
-    # The overlay is composited in the browser from `original` + `mask`, so the
-    # detection color changes instantly (no server round-trip) and analysis
-    # renders one fewer image. The mask is a transparent PNG of positive pixels.
+    # The overlay is composited IN THE BROWSER from `original` + `score` (a grayscale
+    # stainness map): the browser re-thresholds the score live, so both the detection
+    # colour AND the threshold slider update instantly with no server round-trip.
     entry["images"] = {
         "original": entry["images"].get("original") if entry.get("images") else engine.to_data_uri(rgb, "JPEG"),
         "stainA": engine.to_data_uri(stainA, "JPEG"),
         "stainB": engine.to_data_uri(stainB, "JPEG"),
-        "mask": engine.mask_data_uri(maps["positive"]),
+        "score": engine.score_data_uri(maps["score"]),
     }
 
 
 def _rerender(entry: dict, **updates) -> dict:
-    """Apply appearance-only updates. Overlay colour is composited in the browser,
-    so an overlay-colour-only change needs no server re-render — it just updates
-    the stored param so downloads/exports use the chosen colour. Recolouring
-    Stain A / Stain B re-renders those two panels."""
+    """Apply appearance / threshold updates. Overlay colour + threshold are
+    composited live in the browser, so this path only needs to persist the choice
+    and — for a threshold change — recompute the exact server-side metrics so CSV
+    and exports match. Recolouring Stain A / Stain B re-renders those two panels."""
     p = entry["params"]
+    recompute = False
+    if "score_threshold" in updates and updates["score_threshold"] is not None:
+        st = updates["score_threshold"]
+        p["score_threshold"] = None if st in ("", "auto") else float(st)
+        recompute = True
     needs_render = False
     for k in ("stainA_hex", "stainB_hex"):
         if k in updates and updates[k] is not None:
@@ -243,23 +258,14 @@ def _rerender(entry: dict, **updates) -> dict:
             needs_render = True
     if updates.get("overlay_hex") is not None:
         p["overlay_hex"] = updates["overlay_hex"] or None
-    if needs_render:
+
+    if recompute:
+        result, maps = engine.analyze(entry["rgb"], entry["source_size"], **_analyze_kwargs(p))
+        entry["result"], entry["maps"] = result, maps
+        _render_images(entry)
+    elif needs_render:
         _render_images(entry)
     return entry
-
-
-def _state_summary(entry: dict) -> str:
-    r = entry["result"]
-    return (
-        f"positive area {r.positive_percent:.2f}% of tissue "
-        f"({r.positive_pixels:,} positive / {r.tissue_pixels:,} tissue px); "
-        f"threshold {r.threshold:.3f}; target stain index {r.target_index} "
-        f"background_threshold {entry['params']['background_threshold']:.3f}; "
-        f"threshold_scale {entry['params']['threshold_scale']:.2f}; "
-        f"stain_strictness '{entry['params'].get('stain_strictness', 'strong')}'; "
-        f"stain_method '{entry['params'].get('stain_method', 'hdab')}'; "
-        f"stain estimation '{r.method}'."
-    )
 
 
 def _public(entry: dict) -> dict:
@@ -278,8 +284,8 @@ def _persist(analysis_id: str, entry: dict) -> None:
     Drops the two biggest arrays from the cached copy — the optical-density and
     concentration maps — so hundreds of slides can be held at once. They are only
     needed to render Stain A/B, which is recomputed on demand at export time."""
-    entry["maps"].pop("od", None)
-    entry["maps"].pop("conc", None)
+    for k in ("od", "conc", "score", "candidate"):
+        entry["maps"].pop(k, None)
     _CACHE.put(analysis_id, entry, meta=_csv_row(entry))
 
 
@@ -320,10 +326,17 @@ def health() -> JSONResponse:
 # Analysis API
 # --------------------------------------------------------------------------- #
 
+@app.get("/api/stains")
+def api_stains() -> JSONResponse:
+    """The full antibody registry for the pre-upload "select your stain" mode."""
+    return JSONResponse({"stains": stain_registry.as_list()})
+
+
 @app.post("/api/analyze")
 async def api_analyze(
     file: UploadFile = File(...),
     filename: Optional[str] = Form(default=None),
+    stain_key: Optional[str] = Form(default=None),
     x_imagesl_key: Optional[str] = Header(default=None),
 ):
     _require_key(x_imagesl_key)
@@ -335,12 +348,9 @@ async def api_analyze(
         raise HTTPException(status_code=400, detail=f"Could not decode image: {exc}")
 
     params = _default_params()
-    result, maps = engine.analyze(
-        rgb, source_size,
-        background_threshold=params["background_threshold"],
-        stain_strictness=params["stain_strictness"],
-        stain_method=params["stain_method"],
-    )
+    if stain_key and stain_registry.lookup(stain_key):
+        params["stain_key"] = stain_registry.lookup(stain_key)["key"]
+    result, maps = engine.analyze(rgb, source_size, **_analyze_kwargs(params))
     # Remember the per-slide auto-contrast overlay colour; used until the user
     # explicitly overrides it.
     params["_overlay_auto"] = result.suggested_overlay_hex
@@ -362,15 +372,11 @@ def _render_type(entry: dict, image_type: str) -> np.ndarray:
     """Produce the RGB array for a requested image variant (shared by download + zip)."""
     rgb, maps, p = entry["rgb"], entry["maps"], entry["params"]
 
-    # Stain A/B and the overlay need the concentration maps, which we drop from
-    # the cache to stay lean — recompute them here on demand (export path).
-    if image_type in ("stainA", "stainB", "overlay", "comparison") and "conc" not in maps:
-        _, maps = engine.analyze(
-            rgb, entry.get("source_size", (rgb.shape[1], rgb.shape[0])),
-            background_threshold=p.get("background_threshold", engine.BACKGROUND_OD_THRESHOLD),
-            stain_strictness=p.get("stain_strictness", "strong"),
-            stain_method=p.get("stain_method", "auto"),
-        )
+    # Stain A/B and the overlay need the concentration/positive maps, which we drop
+    # from the cache to stay lean — recompute on demand (honours marker + threshold).
+    if image_type in ("stainA", "stainB", "overlay", "comparison") and ("conc" not in maps or "positive" not in maps):
+        _, maps = engine.analyze(rgb, entry.get("source_size", (rgb.shape[1], rgb.shape[0])),
+                                 **_analyze_kwargs(p))
     a_idx, b_idx = _stain_indices(maps)
 
     if image_type == "original":
@@ -433,6 +439,7 @@ async def api_appearance(request: Request, x_imagesl_key: Optional[str] = Header
         overlay_hex=body.get("overlay_hex"),
         stainA_hex=body.get("stainA_hex"),
         stainB_hex=body.get("stainB_hex"),
+        score_threshold=body.get("score_threshold"),
     )
     _persist(body.get("analysis_id"), entry)
     return JSONResponse(_public(entry))
@@ -445,6 +452,7 @@ async def api_appearance(request: Request, x_imagesl_key: Optional[str] = Header
 _CSV_COLUMNS = [
     "filename",
     "detected_stain",
+    "compartment",
     "positive_area_percent_of_tissue",
     "positive_pixels",
     "tissue_pixels",
@@ -469,6 +477,7 @@ def _csv_row(entry: dict) -> dict:
     return {
         "filename": entry.get("filename", "image"),
         "detected_stain": getattr(r, "stain_label", ""),
+        "compartment": getattr(r, "compartment", ""),
         "positive_area_percent_of_tissue": r.positive_percent,
         "positive_pixels": r.positive_pixels,
         "tissue_pixels": r.tissue_pixels,
