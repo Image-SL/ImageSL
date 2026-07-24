@@ -32,7 +32,7 @@
 {"@context":"https://schema.org","@type":"WebApplication","name":"ImageSL","url":"https://imagesl.online/","applicationCategory":"HealthApplication","operatingSystem":"Web","description":"ImageSL quantifies immunohistochemistry slides with automatic stain detection, color deconvolution and precise positive-area measurement.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}
 </script>
 
-<link rel="stylesheet" href="/styles.css?v=22">
+<link rel="stylesheet" href="/styles.css?v=24">
 </head>
 <body>
 
@@ -78,7 +78,7 @@
         <span class="mode-ic">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 2v6.5a3 3 0 0 1-.5 1.6L4 20a2 2 0 0 0 1.7 3h12.6a2 2 0 0 0 1.7-3l-6.5-9.9a3 3 0 0 1-.5-1.6V2"/><path d="M8.5 2h7M7 15h10"/></svg>
         </span>
-        <span class="mode-txt"><b>Select stain</b><small>Pick the antibody from the 88342 panel</small></span>
+        <span class="mode-txt"><b>Select stain</b><small>Pick the chromogen / stain — DAB, AEC, trichrome…</small></span>
       </button>
     </div>
 
@@ -86,7 +86,7 @@
     <div id="stainPicker" class="stain-picker hidden">
       <div class="sp-field">
         <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-        <input id="stainSearch" type="text" autocomplete="off" spellcheck="false" placeholder="Search 200+ antibodies — CK19, Ki-67, CD20, TTF1, S100…">
+        <input id="stainSearch" type="text" autocomplete="off" spellcheck="false" placeholder="Search stains — DAB, AEC, Fast Red, trichrome, PAS, H&amp;E…">
         <button id="stainClear" class="sp-clear hidden" title="Clear" aria-label="Clear selection">✕</button>
       </div>
       <div id="stainChosen" class="sp-chosen hidden"></div>
@@ -258,6 +258,6 @@
 <div id="toasts"></div>
 <div id="lightbox" class="lightbox hidden"><img id="lightboxImg" src="" alt="Expanded"></div>
 
-<script src="/app.js?v=22"></script>
+<script src="/app.js?v=24"></script>
 </body>
 </html>

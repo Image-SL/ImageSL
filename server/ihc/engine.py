@@ -544,22 +544,29 @@ def _deconvolve(od: np.ndarray, stain_matrix_3x3: np.ndarray) -> np.ndarray:
 # Auto overlay colour (max contrast to the tissue)
 # --------------------------------------------------------------------------- #
 
-def _auto_overlay_hex(rgb: np.ndarray, tissue: np.ndarray) -> str:
-    """Pick a vivid overlay colour that maximally contrasts the tissue: take the
-    mean tissue hue, rotate ~180°, snap to full saturation and a bright value.
-    Uses a strided subsample so it is cheap on a full slide."""
+def _auto_overlay_hex(rgb: np.ndarray, tissue: np.ndarray, avoid_hues=None) -> str:
+    """Pick a vivid overlay colour that is unambiguous — maximally distant from
+    every stain colour actually on the slide, so the highlight can never be
+    confused with the chromogen OR the (often blue) counterstain. For H-DAB
+    (brown DAB ~30° + blue haematoxylin ~270°) this lands on green.
+
+    `avoid_hues` are the stain hues to stay away from; the mean tissue hue is
+    always added. Returns a full-saturation, bright hex."""
     small = rgb[::3, ::3].astype(np.float32) / 255.0
     tmask = tissue[::3, ::3]
     sample = small[tmask] if tmask.any() else small.reshape(-1, 3)
     mean_rgb = sample.mean(axis=0).reshape(1, 1, 3)
-    hue, _, val = _rgb_to_hsv(mean_rgb)
-    h = float(hue[0, 0])
-    comp = (h + 180.0) % 360.0
-    # Nudge away from the tissue's own band and toward cyan/magenta which read
-    # cleanly over both brown tissue and dark chromogen.
-    if 40 <= comp <= 80:            # muddy yellow-green → push to cyan
-        comp = 190.0
-    out = _hsv_to_rgb(comp, 1.0, 1.0)
+    tissue_hue = float(_rgb_to_hsv(mean_rgb)[0][0, 0])
+
+    avoid = [tissue_hue] + [float(h) for h in (avoid_hues or [])]
+    # Choose the hue whose minimum circular distance to every avoided hue is
+    # largest (the emptiest part of the colour wheel).
+    best_h, best_gap = 150.0, -1.0
+    for h in range(0, 360, 3):
+        gap = min((min(abs(h - a) % 360.0, 360.0 - (abs(h - a) % 360.0)) for a in avoid))
+        if gap > best_gap:
+            best_gap, best_h = gap, float(h)
+    out = _hsv_to_rgb(best_h, 1.0, 1.0)
     return _hex(out)
 
 
@@ -622,7 +629,23 @@ def analyze(
     # ------------------------------------------------------------------ #
     # Stain basis
     # ------------------------------------------------------------------ #
-    if stain_override_od:
+    black_mode = bool(stain_choice and stain_choice.get("black"))
+    if stain_choice and stain_choice.get("target_od"):
+        # Selection mode: use this stain's exact deconvolution vectors
+        # [counterstain, chromogen] (Ruifrok / derived).
+        counter_v = np.array(stain_choice["counter_od"], dtype=np.float64)
+        target_v = np.array(stain_choice["target_od"], dtype=np.float64)
+        stains2 = _normalize_rows(np.vstack([counter_v, target_v]))
+        residual = np.cross(stains2[0], stains2[1])
+        if np.linalg.norm(residual) < 1e-6:
+            residual = np.array([0.0, 0.0, 1.0])
+        stain_matrix = _normalize_rows(np.vstack([stains2, residual]))
+        counter_idx, tgt_idx = 0, 1
+        method = stain_choice.get("key", "selected")
+        target_hue = float(stain_choice.get("target_hue", 30.0))
+        counter_label = stain_choice.get("counter_name", "Counterstain")
+        target_label = stain_choice.get("name", "Selected stain")
+    elif stain_override_od:
         stains2 = _normalize_rows(np.array(stain_override_od, dtype=np.float64)[:2])
         residual = np.cross(stains2[0], stains2[1])
         if np.linalg.norm(residual) < 1e-6:
@@ -678,35 +701,48 @@ def analyze(
         if t_idx.size > 120_000:
             t_idx = t_idx[np.random.default_rng(0).integers(0, t_idx.size, 120_000)]
         t_sat = sat.ravel()[t_idx]
-        t_conc = target_conc.ravel()[t_idx]
 
-        sat_bg = float(np.percentile(t_sat, 55))
-        conc_bg = float(np.median(t_conc))
-        conc_sig = 1.4826 * float(np.median(np.abs(t_conc - conc_bg))) + 1e-6
+        if black_mode:
+            # BLACK / silver stains (GMS, reticulin, Verhoeff, Ni-DAB) carry no
+            # hue, so detect them by DARKNESS-in-tissue instead: near-neutral pixels
+            # markedly darker than the tissue background. Score = how far the total
+            # OD sits above background, normalised.
+            t_od = total_od.ravel()[t_idx]
+            od_bg = float(np.median(t_od))
+            od_sig = 1.4826 * float(np.median(np.abs(t_od - od_bg))) + 1e-6
+            low_chroma = sat <= 0.30
+            candidate = core & low_chroma & (total_od > od_bg + 1.0 * od_sig)
+            full = max(od_bg + 6.0 * od_sig, 1.5)
+            raw = np.clip((total_od - od_bg) / (full - od_bg + 1e-6), 0.0, 1.0)
+            score = np.where(candidate, raw, 0.0).astype(np.float32)
+            auto_norm = float(np.clip((2.2 * od_sig) / (full - od_bg + 1e-6), 0.05, 0.95))
+        else:
+            t_conc = target_conc.ravel()[t_idx]
+            sat_bg = float(np.percentile(t_sat, 55))
+            conc_bg = float(np.median(t_conc))
+            conc_sig = 1.4826 * float(np.median(np.abs(t_conc - conc_bg))) + 1e-6
+            sat_gate = max(_SAT_FLOOR, sat_bg + _SAT_MARGIN)
+            conc_gate = conc_bg + _CONC_SEP_K * conc_sig
 
-        sat_gate = max(_SAT_FLOOR, sat_bg + _SAT_MARGIN)
-        conc_gate = conc_bg + _CONC_SEP_K * conc_sig
+            total_stain = target_conc + counter_conc + resid_conc + 1e-6
+            specificity = target_conc / total_stain      # colour purity of target
 
-        total_stain = target_conc + counter_conc + resid_conc + 1e-6
-        specificity = target_conc / total_stain          # colour purity of target
+            # CANDIDATE = "this pixel IS the chromogen colour, not background/debris".
+            # Deliberately NOT gated on darkness (total OD): the whole point is that a
+            # dark grey/blue background — even one DARKER than the stain — carries
+            # little chromogen concentration, so it is excluded by colour, not by
+            # intensity. This is what lets ImageSL separate stain from a darker bg.
+            hue_ok = _hue_dist(hue, target_hue) <= _HUE_TOL_DEG
+            candidate = (core & hue_ok & (sat >= sat_gate)
+                         & (specificity >= _SPEC_MIN) & (target_conc > counter_conc)
+                         & (target_conc >= _OD_ABS_FLOOR * 0.5))  # tiny floor kills noise
 
-        # CANDIDATE = "this pixel IS the chromogen colour, not background/debris".
-        # Deliberately NOT gated on darkness (total OD): the whole point is that a
-        # dark grey/blue background — even one DARKER than the stain — carries little
-        # chromogen concentration, so it is excluded by colour, not by intensity.
-        # This is what lets ImageSL separate stain from a darker background.
-        hue_ok = _hue_dist(hue, target_hue) <= _HUE_TOL_DEG
-        candidate = (core & hue_ok & (sat >= sat_gate)
-                     & (specificity >= _SPEC_MIN) & (target_conc > counter_conc)
-                     & (target_conc >= _OD_ABS_FLOOR * 0.5))   # tiny floor kills noise only
-
-        # Score = normalised chromogen concentration within candidates. Pure
-        # concentration (not weighted by darkness) so the auto threshold reproduces
-        # the validated background-anchored behaviour and the slider is linear.
-        raw = np.clip(target_conc / SCORE_FULL, 0.0, 1.0)
-        score = np.where(candidate, raw, 0.0).astype(np.float32)
-
-        auto_norm = float(np.clip((conc_gate / SCORE_FULL), 0.02, 0.98))
+            # Score = normalised chromogen concentration within candidates. Pure
+            # concentration (not weighted by darkness) so the auto threshold
+            # reproduces the validated behaviour and the slider is linear.
+            raw = np.clip(target_conc / SCORE_FULL, 0.0, 1.0)
+            score = np.where(candidate, raw, 0.0).astype(np.float32)
+            auto_norm = float(np.clip((conc_gate / SCORE_FULL), 0.02, 0.98))
         # Manual override (0..1) beats the auto threshold when supplied.
         thr_norm = auto_norm if score_threshold is None else float(np.clip(score_threshold, 0.0, 1.0))
         thr_norm *= float(threshold_scale)
@@ -729,14 +765,18 @@ def analyze(
     a_idx, b_idx = counter_idx, tgt_idx
     a_rgb = _od_to_rgb_unit(stain_matrix[a_idx])
     b_rgb = _od_to_rgb_unit(stain_matrix[b_idx])
-    overlay_hex = _auto_overlay_hex(rgb, tissue_mask)
+    counter_hue = _classify_stain(a_rgb)[1]
+    overlay_hex = _auto_overlay_hex(rgb, tissue_mask, avoid_hues=[float(target_hue), counter_hue])
 
     chromogen = target_label
-    marker = str(stain_choice.get("name", "")) if stain_choice else ""
-    compartment = str(stain_choice.get("compartment_name", "")) if stain_choice else ""
-    if marker:
-        stain_label = f"{marker} · {chromogen}"
+    if stain_choice:
+        # Selection mode: the label IS the chosen stain (already the target label).
+        marker = str(stain_choice.get("name", ""))
+        compartment = str(stain_choice.get("category", ""))
+        stain_label = f"{marker} (selected)"
     else:
+        marker = ""
+        compartment = ""
         stain_label = chromogen if not tissue_pixels else f"{chromogen} · H counterstain"
 
     stains = [

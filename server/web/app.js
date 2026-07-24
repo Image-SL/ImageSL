@@ -186,17 +186,19 @@ async function ensureStains() {
 function renderStainResults(query) {
   const box = $("stainResults");
   const q = (query || "").trim().toLowerCase();
-  const items = (stainList || []).filter((s) => !q || s.name.toLowerCase().includes(q) || s.category.toLowerCase().includes(q));
+  const items = (stainList || []).filter((s) => !q || s.name.toLowerCase().includes(q) || s.category.toLowerCase().includes(q) || (s.description || "").toLowerCase().includes(q));
   box.innerHTML = "";
-  if (!items.length) { box.innerHTML = '<div class="sp-empty">No antibody matches that search.</div>'; box.classList.add("show"); return; }
+  if (!items.length) { box.innerHTML = '<div class="sp-empty">No stain matches that search.</div>'; box.classList.add("show"); return; }
   let cat = null;
   items.slice(0, 80).forEach((s) => {
     if (s.category !== cat) { cat = s.category; const h = document.createElement("div"); h.className = "sp-cat"; h.textContent = cat; box.appendChild(h); }
     const it = document.createElement("div");
     it.className = "sp-item"; it.setAttribute("role", "option");
-    it.innerHTML = `<span></span><span class="sp-comp"></span>`;
-    it.children[0].textContent = s.name;
-    it.children[1].textContent = s.compartment_name;
+    it.innerHTML = `<span class="sp-sw"></span><span class="sp-nm"><b></b><small></small></span><span class="sp-comp"></span>`;
+    it.querySelector(".sp-sw").style.background = s.swatch || "#999";
+    it.querySelector("b").textContent = s.name;
+    it.querySelector("small").textContent = s.description || "";
+    it.querySelector(".sp-comp").textContent = s.enzyme || "";
     it.addEventListener("mousedown", (e) => { e.preventDefault(); chooseStain(s); });
     box.appendChild(it);
   });
@@ -205,9 +207,10 @@ function renderStainResults(query) {
 function chooseStain(s) {
   selectedStain = s;
   const chip = $("stainChosen");
-  chip.innerHTML = `<b></b><span class="sp-comp"></span><button class="sp-change" type="button">Change</button>`;
+  chip.innerHTML = `<span class="sp-sw"></span><b></b><span class="sp-comp"></span><button class="sp-change" type="button">Change</button>`;
+  chip.querySelector(".sp-sw").style.background = s.swatch || "#999";
   chip.querySelector("b").textContent = s.name;
-  chip.querySelector(".sp-comp").textContent = s.compartment_name + " · " + s.category;
+  chip.querySelector(".sp-comp").textContent = s.category;
   chip.querySelector(".sp-change").addEventListener("click", () => { selectedStain = null; chip.classList.add("hidden"); $("stainSearch").value = ""; $("stainSearch").focus(); renderStainResults(""); $("stainClear").classList.add("hidden"); });
   chip.classList.remove("hidden");
   $("stainResults").classList.remove("show");
@@ -451,8 +454,12 @@ function createCard(data) {
   q(".pickA").addEventListener("input", () => { const hex = q(".pickA").value; q(".swA").style.background = hex; if (current.params) current.params.stainA_hex = hex; post({ stainA_hex: hex }, (d) => { paint(d, true); persistData(); }); });
   q(".pickB").addEventListener("input", () => { const hex = q(".pickB").value; q(".swB").style.background = hex; if (current.params) current.params.stainB_hex = hex; post({ stainB_hex: hex }, (d) => { paint(d, true); persistData(); }); });
 
-  // ---- downloads ----
-  function dlTif(type) { streamedDownload(`/api/download_tif?analysis_id=${analysisId}&image_type=${type}`, null, `${stem}_${type}.tif`, `Exporting ${type}`, 2 * 1048576); }
+  // ---- downloads (always carry the CURRENT on-screen colour + threshold) ----
+  function dlTif(type) {
+    const hex = q(".cHue").style.getPropertyValue("--thumb") || "";
+    const qs = `analysis_id=${analysisId}&image_type=${type}&overlay_hex=${encodeURIComponent(hex)}&score_threshold=${thrNorm.toFixed(4)}`;
+    streamedDownload(`/api/download_tif?${qs}`, null, `${stem}_${type}.tif`, `Exporting ${type}`, 2 * 1048576);
+  }
   node.querySelectorAll(".dl-btn").forEach((b) => b.addEventListener("click", () => dlTif(b.dataset.type)));
   node.querySelectorAll(".vdl").forEach((b) => b.addEventListener("click", (e) => { e.stopPropagation(); dlTif(b.dataset.type); }));
   q(".export-one").addEventListener("click", () => streamedDownload("/api/export_csv", { analysis_ids: [analysisId] }, `${stem}_data.csv`, "Exporting CSV", 0));
@@ -469,7 +476,15 @@ $("btnExportCsv").addEventListener("click", () => {
 $("btnDownloadZip").addEventListener("click", () => {
   const ids = analyses.map((a) => a.id); if (!ids.length) return;
   const n = ids.length;
-  streamedDownload("/api/export_zip", { analysis_ids: ids, images: ["comparison"], include_csv: true },
+  // carry each slide's current overlay colour + threshold so the ZIP matches screen
+  const overrides = {};
+  document.querySelectorAll("#resultsContainer .card").forEach((card, i) => {
+    const a = analyses[i]; if (!a) return;
+    const hex = card.querySelector(".cHue").style.getPropertyValue("--thumb") || "";
+    const thr = (parseInt(card.querySelector(".cThr").value, 10) || 200) / 1000;
+    overrides[a.id] = { overlay_hex: hex, score_threshold: thr.toFixed(4) };
+  });
+  streamedDownload("/api/export_zip", { analysis_ids: ids, images: ["comparison"], include_csv: true, overrides },
     "ImageSL_export.zip", `Packaging ${n} slide${n === 1 ? "" : "s"} (ZIP)`, n * 1.6 * 1048576);
 });
 $("btnNew").addEventListener("click", () => {

@@ -412,11 +412,28 @@ def _tiff_bytes(arr: np.ndarray) -> bytes:
     return buf.getvalue()
 
 
+def _apply_view(entry: dict, overlay_hex: Optional[str], score_threshold: Optional[str]) -> None:
+    """Apply the caller's CURRENT on-screen overlay colour / threshold to this
+    entry before rendering, so a download always matches exactly what's shown —
+    no dependence on a debounced background persist."""
+    p = entry["params"]
+    if overlay_hex:
+        p["overlay_hex"] = overlay_hex
+    if score_threshold is not None and score_threshold != "":
+        try:
+            p["score_threshold"] = None if score_threshold == "auto" else float(score_threshold)
+            entry["maps"].pop("positive", None)  # force recompute at this threshold
+        except ValueError:
+            pass
+
+
 @app.get("/api/download_tif")
-def api_download_tif(analysis_id: str, image_type: str):
+def api_download_tif(analysis_id: str, image_type: str,
+                     overlay_hex: Optional[str] = None, score_threshold: Optional[str] = None):
     entry = _CACHE.get(analysis_id)
     if not entry:
         raise HTTPException(status_code=404, detail="Analysis expired")
+    _apply_view(entry, overlay_hex, score_threshold)
 
     data = _tiff_bytes(_render_type(entry, image_type))
     stem = _safe_name(entry.get("filename", "image"))
@@ -452,7 +469,7 @@ async def api_appearance(request: Request, x_imagesl_key: Optional[str] = Header
 _CSV_COLUMNS = [
     "filename",
     "detected_stain",
-    "compartment",
+    "stain_category",
     "positive_area_percent_of_tissue",
     "positive_pixels",
     "tissue_pixels",
@@ -477,7 +494,7 @@ def _csv_row(entry: dict) -> dict:
     return {
         "filename": entry.get("filename", "image"),
         "detected_stain": getattr(r, "stain_label", ""),
-        "compartment": getattr(r, "compartment", ""),
+        "stain_category": getattr(r, "compartment", ""),
         "positive_area_percent_of_tissue": r.positive_percent,
         "positive_pixels": r.positive_pixels,
         "tissue_pixels": r.tissue_pixels,
@@ -548,9 +565,12 @@ class _ZipSink:
         return b
 
 
-def _zip_stream(analysis_ids, images, include_csv):
+def _zip_stream(analysis_ids, images, include_csv, overrides=None):
     """Generator that builds the ZIP incrementally, one image at a time. Only a
-    single analysis entry is ever held in memory, so 40+ slides won't OOM."""
+    single analysis entry is ever held in memory, so 40+ slides won't OOM.
+    `overrides` maps analysis_id → {overlay_hex, score_threshold} so each slide's
+    export matches its exact on-screen appearance."""
+    overrides = overrides or {}
     sink = _ZipSink()
     zf = zipfile.ZipFile(sink, "w", zipfile.ZIP_STORED, allowZip64=True)  # TIFFs already compressed
     used: set[str] = set()
@@ -559,6 +579,8 @@ def _zip_stream(analysis_ids, images, include_csv):
         entry = _CACHE.get(aid)
         if not entry:
             continue
+        ov = overrides.get(aid) or {}
+        _apply_view(entry, ov.get("overlay_hex"), ov.get("score_threshold"))
         stem = _safe_name(entry.get("filename", "image"))
         for image_type in images:
             name = f"{stem}_{image_type}.tif"
@@ -593,9 +615,10 @@ async def api_export_zip(request: Request, x_imagesl_key: Optional[str] = Header
     valid = {"original", "overlay", "stainA", "stainB", "comparison"}
     images = [t for t in (body.get("images") or ["comparison"]) if t in valid] or ["comparison"]
     include_csv = body.get("include_csv", True)
+    overrides = body.get("overrides") if isinstance(body.get("overrides"), dict) else {}
 
     return StreamingResponse(
-        _zip_stream(analysis_ids, images, include_csv),
+        _zip_stream(analysis_ids, images, include_csv, overrides),
         media_type="application/zip",
         headers={"Content-Disposition": 'attachment; filename="ImageSL_export.zip"'},
     )
