@@ -5,33 +5,24 @@ const $ = (id) => document.getElementById(id);
 const RING_C = 2 * Math.PI * 52;
 const OVERLAY_ALPHA = 0.5;
 
+/* The detection overlay is a choice between exactly TWO colours, not a hue
+   continuum. These must stay in step with engine.OVERLAY_CHOICES. */
+const OVERLAY_RED = "#e61e2d";
+const OVERLAY_BLUE = "#2060eb";
+const OVERLAY_DEFAULT = OVERLAY_BLUE;
+
 function headers(json) { const h = {}; if (json) h["Content-Type"] = "application/json"; return h; }
 
-function hueToHex(h) {
-  h = ((h % 360) + 360) % 360;
-  const x = 1 - Math.abs(((h / 60) % 2) - 1);
-  let r = 0, g = 0, b = 0;
-  if (h < 60) { r = 1; g = x; } else if (h < 120) { r = x; g = 1; }
-  else if (h < 180) { g = 1; b = x; } else if (h < 240) { g = x; b = 1; }
-  else if (h < 300) { r = x; b = 1; } else { r = 1; b = x; }
-  const to = (v) => ("0" + Math.round(v * 255).toString(16)).slice(-2);
-  return "#" + to(r) + to(g) + to(b);
-}
-function hexToHue(hex) {
-  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex || "");
-  if (!m) return 200;
-  const r = parseInt(m[1], 16) / 255, g = parseInt(m[2], 16) / 255, b = parseInt(m[3], 16) / 255;
-  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
-  let h = 0;
-  if (d === 0) h = 0;
-  else if (mx === r) h = 60 * ((((g - b) / d) % 6 + 6) % 6);
-  else if (mx === g) h = 60 * ((b - r) / d + 2);
-  else h = 60 * ((r - g) / d + 4);
-  return Math.round(h);
-}
 function hexRGB(hex) {
-  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex || "#00e5ff");
-  return m ? [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)] : [0, 229, 255];
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex || OVERLAY_DEFAULT);
+  return m ? [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)] : [32, 96, 235];
+}
+/* Snap any colour (e.g. a per-slide auto pick, or a restored older analysis) to
+   whichever of the two offered colours it is nearest. */
+function nearestChoice(hex) {
+  const [r, g, b] = hexRGB(hex);
+  const d = (h) => { const [x, y, z] = hexRGB(h); return (r - x) ** 2 + (g - y) ** 2 + (b - z) ** 2; };
+  return d(OVERLAY_RED) <= d(OVERLAY_BLUE) ? OVERLAY_RED : OVERLAY_BLUE;
 }
 function safeStem(name) {
   return (name || "image").replace(/\.[^.]+$/, "").replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^[._]+|[._]+$/g, "") || "image";
@@ -99,7 +90,16 @@ function buildScoreData(scoreImg) {
   for (let t = 256; t >= 0; t--) suffix[t] = suffix[t + 1] + (hist[t] || 0);
   const ov = document.createElement("canvas"); ov.width = W; ov.height = H;
   const ovCtx = ov.getContext("2d");
-  return { W, H, data, suffix, ov, ovCtx, ovData: ovCtx.createImageData(W, H) };
+  // separate buffers for the "stain only" isolate so it never fights the overlay
+  const iso = document.createElement("canvas"); iso.width = W; iso.height = H;
+  const isoCtx = iso.getContext("2d");
+  const tmp = document.createElement("canvas"); tmp.width = W; tmp.height = H;
+  const tmpCtx = tmp.getContext("2d");
+  return {
+    W, H, data, suffix,
+    ov, ovCtx, ovData: ovCtx.createImageData(W, H),
+    iso, isoCtx, isoData: isoCtx.createImageData(W, H), tmp, tmpCtx,
+  };
 }
 function scoreTint(sc, hex, thrNorm, alpha) {
   const t = Math.max(1, Math.round(thrNorm * 255));
@@ -130,6 +130,36 @@ function scoreThumb(origImg, sc, hex, thrNorm, maxW) {
   scoreTint(sc, hex, thrNorm, OVERLAY_ALPHA);
   cx.drawImage(origImg, 0, 0, w, h);
   cx.drawImage(sc.ov, 0, 0, w, h);
+  return cv.toDataURL("image/jpeg", 0.85);
+}
+
+/* BACKGROUND REMOVED — keep only the pixels above threshold, in their true
+   colours, on white. Same live re-thresholding as the overlay, so the "stain
+   only" panel tracks the slider with no server round-trip. */
+function scoreIsolate(origImg, sc, thrNorm, maxW) {
+  const W = sc.W, H = sc.H;
+  const t = Math.max(1, Math.round(thrNorm * 255));
+  const px = sc.isoData.data, data = sc.data;
+  for (let i = 0, j = 0; i < data.length; i++, j += 4) {
+    if (data[i] >= t) { px[j] = px[j + 1] = px[j + 2] = 255; px[j + 3] = 255; }
+    else px[j + 3] = 0;
+  }
+  sc.isoCtx.putImageData(sc.isoData, 0, 0);
+
+  const tc = sc.tmpCtx;                       // original ∩ mask
+  tc.globalCompositeOperation = "source-over";
+  tc.clearRect(0, 0, W, H);
+  tc.drawImage(origImg, 0, 0, W, H);
+  tc.globalCompositeOperation = "destination-in";
+  tc.drawImage(sc.iso, 0, 0);
+  tc.globalCompositeOperation = "source-over";
+
+  let w = W, h = H;                           // flatten onto white
+  if (maxW && w > maxW) { h = Math.round(h * maxW / w); w = maxW; }
+  const cv = document.createElement("canvas"); cv.width = w; cv.height = h;
+  const cx = cv.getContext("2d");
+  cx.fillStyle = "#ffffff"; cx.fillRect(0, 0, w, h);
+  cx.drawImage(sc.tmp, 0, 0, w, h);
   return cv.toDataURL("image/jpeg", 0.85);
 }
 
@@ -312,7 +342,7 @@ function renderSummary(errors) {
 
 function currentOverlayHex(data) {
   const p = data.params || {}, r = data.result || {};
-  return p.overlay_hex || r.suggested_overlay_hex || "#00e5ff";
+  return nearestChoice(p.overlay_hex || r.suggested_overlay_hex || OVERLAY_DEFAULT);
 }
 function currentThr(data) {
   const p = data.params || {}, r = data.result || {};
@@ -336,12 +366,13 @@ function createCard(data) {
   function persistData() { if (entry) entry.data = current; saveStateSoon(); }
 
   // ---- overlay redraw (colour + threshold, all client-side) ----
+  let overlayHex = currentOverlayHex(data);
   let rafPending = false;
   function redraw() {
     if (!st.origImg || !st.sc) return;
-    const hex = q(".cHue").style.getPropertyValue("--thumb") || currentOverlayHex(current);
-    drawScoreOverlay(q(".cmpFront"), st.origImg, st.sc, hex, thrNorm);
-    q(".imgOverlay").src = scoreThumb(st.origImg, st.sc, hex, thrNorm, 560);
+    drawScoreOverlay(q(".cmpFront"), st.origImg, st.sc, overlayHex, thrNorm);
+    q(".imgOverlay").src = scoreThumb(st.origImg, st.sc, overlayHex, thrNorm, 560);
+    q(".imgStainOnly").src = scoreIsolate(st.origImg, st.sc, thrNorm, 560);
   }
   function redrawSoon() {
     if (document.hidden) { redraw(); return; }   // rAF is paused when hidden
@@ -371,7 +402,14 @@ function createCard(data) {
     if (current.params) current.params.score_threshold = thrNorm;
     if (persist) { persistData(); postThreshold(thrNorm); }
   }
-  function setOverlayHex(hex) { q(".cHue").style.setProperty("--thumb", hex); q(".cHue").value = hexToHue(hex); redrawSoon(); }
+  function setOverlayHex(hex) {
+    overlayHex = nearestChoice(hex);
+    node.dataset.overlayHex = overlayHex;                    // read back by the ZIP export
+    node.querySelectorAll(".oc-opt").forEach((b) => {
+      b.setAttribute("aria-checked", b.dataset.hex === overlayHex ? "true" : "false");
+    });
+    redrawSoon();
+  }
 
   function loadSources(origSrc, scoreSrc) {
     const o = new Image(), s = new Image();
@@ -385,6 +423,7 @@ function createCard(data) {
     if (img.original) { q(".imgOriginal").src = img.original; q(".imgOriginal2").src = img.original; }
     if (img.stainA) q(".imgStainA").src = img.stainA;
     if (img.stainB) q(".imgStainB").src = img.stainB;
+    if (img.tissue) q(".imgTissue").src = img.tissue;
     if (img.original && img.score) loadSources(img.original, img.score);
     const r = d.result;
     if (r) {
@@ -437,10 +476,18 @@ function createCard(data) {
     }, 350);
   }
 
-  // ---- overlay colour ----
-  function onOverlayHex(hex) { setOverlayHex(hex); if (current.params) current.params.overlay_hex = hex; persistData(); post({ overlay_hex: hex }); }
-  q(".cHue").addEventListener("input", () => onOverlayHex(hueToHex(+q(".cHue").value)));
-  q(".oc-auto").addEventListener("click", () => { const auto = (current.result && current.result.suggested_overlay_hex) || "#00e5ff"; if (current.params) current.params.overlay_hex = null; onOverlayHex(auto); });
+  // ---- detection colour (red / blue) ----
+  function onOverlayHex(hex) {
+    setOverlayHex(hex);
+    if (current.params) current.params.overlay_hex = overlayHex;
+    persistData(); post({ overlay_hex: overlayHex });
+  }
+  node.querySelectorAll(".oc-opt").forEach((b) => b.addEventListener("click", () => onOverlayHex(b.dataset.hex)));
+  q(".oc-auto").addEventListener("click", () => {
+    const auto = (current.result && current.result.suggested_overlay_hex) || OVERLAY_DEFAULT;
+    if (current.params) current.params.overlay_hex = null;
+    onOverlayHex(auto);
+  });
 
   // ---- live detection threshold ----
   q(".cThr").addEventListener("input", () => setThr((+q(".cThr").value) / 1000, true));
@@ -456,8 +503,7 @@ function createCard(data) {
 
   // ---- downloads (always carry the CURRENT on-screen colour + threshold) ----
   function dlTif(type) {
-    const hex = q(".cHue").style.getPropertyValue("--thumb") || "";
-    const qs = `analysis_id=${analysisId}&image_type=${type}&overlay_hex=${encodeURIComponent(hex)}&score_threshold=${thrNorm.toFixed(4)}`;
+    const qs = `analysis_id=${analysisId}&image_type=${type}&overlay_hex=${encodeURIComponent(overlayHex)}&score_threshold=${thrNorm.toFixed(4)}`;
     streamedDownload(`/api/download_tif?${qs}`, null, `${stem}_${type}.tif`, `Exporting ${type}`, 2 * 1048576);
   }
   node.querySelectorAll(".dl-btn").forEach((b) => b.addEventListener("click", () => dlTif(b.dataset.type)));
@@ -480,7 +526,7 @@ $("btnDownloadZip").addEventListener("click", () => {
   const overrides = {};
   document.querySelectorAll("#resultsContainer .card").forEach((card, i) => {
     const a = analyses[i]; if (!a) return;
-    const hex = card.querySelector(".cHue").style.getPropertyValue("--thumb") || "";
+    const hex = card.dataset.overlayHex || OVERLAY_DEFAULT;
     const thr = (parseInt(card.querySelector(".cThr").value, 10) || 200) / 1000;
     overrides[a.id] = { overlay_hex: hex, score_threshold: thr.toFixed(4) };
   });
@@ -493,10 +539,12 @@ $("btnNew").addEventListener("click", () => {
   clearState(); showView("uploadView"); window.scrollTo({ top: 0, behavior: "smooth" });
 });
 
-/* ============================== global overlay color ============================== */
-function applyGlobalOverlay(hex) { document.querySelectorAll("#resultsContainer .card").forEach((card) => { if (card._setOverlayHex) card._setOverlayHex(hex); }); }
-$("gHue").addEventListener("input", () => { const hex = hueToHex(+$("gHue").value); $("gHue").style.setProperty("--thumb", hex); applyGlobalOverlay(hex); });
-$("gHue").style.setProperty("--thumb", hueToHex(200));
+/* ============================== global detection color ============================== */
+function applyGlobalOverlay(hex) {
+  $("gChoices").querySelectorAll(".oc-opt").forEach((b) => b.setAttribute("aria-checked", b.dataset.hex === hex ? "true" : "false"));
+  document.querySelectorAll("#resultsContainer .card").forEach((card) => { if (card._setOverlayHex) card._setOverlayHex(hex); });
+}
+$("gChoices").querySelectorAll(".oc-opt").forEach((b) => b.addEventListener("click", () => applyGlobalOverlay(b.dataset.hex)));
 
 /* ============================== lightbox ============================== */
 function showLightbox(src) { if (!src) return; $("lightboxImg").src = src; $("lightbox").classList.remove("hidden"); }

@@ -1,6 +1,10 @@
 """
 ImageSL — stain / chromogen registry.
 
+**ImageSL currently ships DAB-only** (see `ENABLED_KEYS` below). The rest of the
+registry stays defined, sourced and ready — it is switched off, not deleted, so
+adding the next stain is a one-line change rather than a rewrite.
+
 The user picks the **stain colour / method** (DAB, AEC, Masson trichrome, …), NOT
 the antibody: the antibody (CK19, Ki-67, …) only decides *where* the signal is —
 the colour on the slide is set by the chromogen, and that colour is what the pixel
@@ -153,6 +157,21 @@ STAINS: list[dict] = [
            "Verhoeff elastic. Black elastic fibres; Van Gieson red/yellow background.", black=True, min_px=3),
 ]
 
+# --------------------------------------------------------------------------- #
+# WHICH STAINS ARE LIVE
+# --------------------------------------------------------------------------- #
+# Only these keys are offered in "Select stain" and accepted by the API. To bring
+# another one online as it is validated:
+#
+#   1. add its key here                              → it appears in the picker
+#   2. if it is an IHC chromogen that auto-detect
+#      should also be able to find on its own, add
+#      the matching family to engine.ENABLED_FAMILIES
+#
+# Everything above this line stays exactly as it is. A request naming a stain
+# that is not enabled falls back to auto-detect rather than failing.
+ENABLED_KEYS: set[str] = {"dab"}
+
 _BY_KEY = {s["key"]: s for s in STAINS}
 # common aliases so search / URLs are forgiving
 _ALIASES = {"diaminobenzidine": "dab", "trichrome": "masson-trichrome",
@@ -167,17 +186,36 @@ def _slug(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", (s or "").lower()).strip("-")
 
 
+def is_enabled(key: str | None) -> bool:
+    """Is this stain currently shipped? (see ENABLED_KEYS)"""
+    if not key:
+        return False
+    k = _slug(key)
+    return (k in ENABLED_KEYS) or (_ALIASES.get(k, "") in ENABLED_KEYS)
+
+
 def lookup(key: str | None) -> dict | None:
+    """Resolve a stain key — ENABLED stains only. A disabled or unknown key
+    returns None, which the caller reads as "use auto-detect"."""
     if not key:
         return None
     k = _slug(key)
-    return _BY_KEY.get(k) or _BY_KEY.get(_ALIASES.get(k, ""))
+    k = k if k in _BY_KEY else _ALIASES.get(k, "")
+    if k not in ENABLED_KEYS:
+        return None
+    return _BY_KEY.get(k)
+
+
+def enabled_stains() -> list[dict]:
+    """The live stain entries, in listing order."""
+    order = {IHC: 0, SPECIAL: 1}
+    live = [s for s in STAINS if s["key"] in ENABLED_KEYS]
+    return sorted(live, key=lambda s: (order.get(s["category"], 9), s["name"].lower()))
 
 
 def as_list() -> list[dict]:
-    """UI listing (category then name). Strips the heavy OD vectors for transport."""
-    out = []
-    order = {IHC: 0, SPECIAL: 1}
-    for s in sorted(STAINS, key=lambda s: (order.get(s["category"], 9), s["name"].lower())):
-        out.append({k: s[k] for k in ("key", "name", "category", "swatch", "description", "enzyme")})
-    return out
+    """UI listing (category then name). Strips the heavy OD vectors for transport.
+    Only ENABLED stains are listed — the picker can never offer one the engine is
+    not shipping yet."""
+    return [{k: s[k] for k in ("key", "name", "category", "swatch", "description", "enzyme")}
+            for s in enabled_stains()]

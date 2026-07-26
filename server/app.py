@@ -2,8 +2,13 @@
 ImageSL backend — FastAPI application (fully online, single-page web tool).
 
 All analysis lives here; the browser is the only client. Upload a slide to get
-IHC stain quantification (color deconvolution + Macenko + Otsu), then adjust the
-analysis parameters to re-run the measurement and re-render the preview.
+IHC stain quantification (color deconvolution + per-slide background
+segmentation + Otsu), then adjust the analysis parameters to re-run the
+measurement and re-render the preview.
+
+Currently a DAB-only build — both Auto-detect and Select-stain still work, they
+just resolve to DAB. See ihc/stains.py ENABLED_KEYS and ihc/engine.py
+ENABLED_FAMILIES to bring further stains online.
 """
 
 from __future__ import annotations
@@ -209,8 +214,9 @@ def _hex_to_rgb(h: Optional[str]) -> Optional[tuple[int, int, int]]:
 
 
 def _overlay_color(p: dict) -> tuple[int, int, int]:
-    """Overlay colour: user override, else the per-slide auto-contrast colour."""
-    return _hex_to_rgb(p.get("overlay_hex")) or _hex_to_rgb(p.get("_overlay_auto")) or (0, 229, 255)
+    """Overlay colour: user override, else the per-slide auto pick (red or blue)."""
+    return (_hex_to_rgb(p.get("overlay_hex")) or _hex_to_rgb(p.get("_overlay_auto"))
+            or engine.OVERLAY_CHOICES["blue"])
 
 
 def _stain_indices(maps: dict) -> tuple[int, int]:
@@ -229,13 +235,17 @@ def _render_images(entry: dict) -> None:
     a_idx, b_idx = _stain_indices(maps)
     stainA = engine.render_stain(maps, a_idx, _hex_to_rgb(p.get("stainA_hex")))
     stainB = engine.render_stain(maps, b_idx, _hex_to_rgb(p.get("stainB_hex")))
-    # The overlay is composited IN THE BROWSER from `original` + `score` (a grayscale
-    # stainness map): the browser re-thresholds the score live, so both the detection
-    # colour AND the threshold slider update instantly with no server round-trip.
+    # The overlay AND the background-removed "stain only" view are composited IN
+    # THE BROWSER from `original` + `score` (a grayscale stainness map): the
+    # browser re-thresholds the score live, so the detection colour and the
+    # threshold slider update both panels instantly, with no server round-trip.
+    # `tissue` (glass removed, all tissue kept) does NOT depend on the threshold,
+    # so it is rendered once here.
     entry["images"] = {
         "original": entry["images"].get("original") if entry.get("images") else engine.to_data_uri(rgb, "JPEG"),
         "stainA": engine.to_data_uri(stainA, "JPEG"),
         "stainB": engine.to_data_uri(stainB, "JPEG"),
+        "tissue": engine.to_data_uri(engine.render_background_removed(rgb, maps), "JPEG"),
         "score": engine.score_data_uri(maps["score"]),
     }
 
@@ -374,7 +384,16 @@ def _render_type(entry: dict, image_type: str) -> np.ndarray:
 
     # Stain A/B and the overlay need the concentration/positive maps, which we drop
     # from the cache to stay lean — recompute on demand (honours marker + threshold).
-    if image_type in ("stainA", "stainB", "overlay", "comparison") and ("conc" not in maps or "positive" not in maps):
+    # Which cached array each variant actually needs. `_persist` drops the heavy
+    # concentration maps, so only ask for a re-analysis when the specific array
+    # this variant depends on is genuinely missing.
+    _NEEDS = {
+        "stainA": "conc", "stainB": "conc",
+        "overlay": "positive", "comparison": "positive", "stainOnly": "positive",
+        "backgroundRemoved": "tissue_mask",
+    }
+    need = _NEEDS.get(image_type)
+    if need and need not in maps:
         _, maps = engine.analyze(rgb, entry.get("source_size", (rgb.shape[1], rgb.shape[0])),
                                  **_analyze_kwargs(p))
     a_idx, b_idx = _stain_indices(maps)
@@ -383,6 +402,10 @@ def _render_type(entry: dict, image_type: str) -> np.ndarray:
         return rgb
     if image_type == "overlay":
         return engine.render_overlay(rgb, maps, color=_overlay_color(p))
+    if image_type == "stainOnly":
+        return engine.render_stain_only(rgb, maps)
+    if image_type == "backgroundRemoved":
+        return engine.render_background_removed(rgb, maps)
     if image_type == "stainA":
         return engine.render_stain(maps, a_idx, _hex_to_rgb(p.get("stainA_hex")))
     if image_type == "stainB":
@@ -480,6 +503,14 @@ _CSV_COLUMNS = [
     "detection_confidence",
     "stain_family",
     "target_stain_index",
+    # --- background segmentation (what was removed, and how it was decided) --- #
+    "dab_chromogen_detected",
+    "background_pixels",
+    "background_percent_of_image",
+    "tissue_percent_of_image",
+    "tissue_od_threshold",
+    "background_method",
+    "white_point_rgb",
     "analysis_width_px",
     "analysis_height_px",
     "source_width_px",
@@ -505,6 +536,13 @@ def _csv_row(entry: dict) -> dict:
         "detection_confidence": getattr(r, "confidence", 1.0),
         "stain_family": r.method,
         "target_stain_index": r.target_index,
+        "dab_chromogen_detected": "yes" if getattr(r, "chromogen_present", True) else "no",
+        "background_pixels": getattr(r, "background_pixels", 0),
+        "background_percent_of_image": getattr(r, "background_percent", 0.0),
+        "tissue_percent_of_image": getattr(r, "tissue_percent", 0.0),
+        "tissue_od_threshold": getattr(r, "tissue_threshold", 0.0),
+        "background_method": getattr(r, "tissue_method", ""),
+        "white_point_rgb": " ".join(str(x) for x in (getattr(r, "white_point", []) or [])),
         "analysis_width_px": r.width,
         "analysis_height_px": r.height,
         "source_width_px": r.source_width,
@@ -612,7 +650,8 @@ async def api_export_zip(request: Request, x_imagesl_key: Optional[str] = Header
     if not isinstance(analysis_ids, list) or not analysis_ids:
         raise HTTPException(status_code=400, detail="No analysis_ids provided.")
 
-    valid = {"original", "overlay", "stainA", "stainB", "comparison"}
+    valid = {"original", "overlay", "stainOnly", "backgroundRemoved",
+             "stainA", "stainB", "comparison"}
     images = [t for t in (body.get("images") or ["comparison"]) if t in valid] or ["comparison"]
     include_csv = body.get("include_csv", True)
     overrides = body.get("overrides") if isinstance(body.get("overrides"), dict) else {}

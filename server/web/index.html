@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ImageSL — IHC Stain Quantification</title>
-<meta name="description" content="ImageSL quantifies immunohistochemistry slides with automatic stain detection, color deconvolution and precise positive-area measurement. Drop one slide or a whole batch.">
+<title>ImageSL — DAB IHC Stain Quantification</title>
+<meta name="description" content="ImageSL quantifies DAB immunohistochemistry slides with automatic background removal, color deconvolution and precise positive-area measurement. Drop one slide or a whole batch.">
 <meta name="theme-color" content="#6d28d9">
 
 <!-- favicons / app icons (all the SAME stain-circle mark, so search engines match the site) -->
@@ -16,23 +16,23 @@
 <!-- Open Graph / Twitter (controls the Google + social preview card) -->
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="ImageSL">
-<meta property="og:title" content="ImageSL — IHC Stain Quantification">
-<meta property="og:description" content="Automatic stain detection and precise positive-area quantification for immunohistochemistry slides.">
+<meta property="og:title" content="ImageSL — DAB IHC Stain Quantification">
+<meta property="og:description" content="Automatic background removal and precise DAB positive-area quantification for immunohistochemistry slides.">
 <meta property="og:url" content="https://imagesl.online/">
 <meta property="og:image" content="https://imagesl.online/assets/og-image.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="ImageSL — IHC Stain Quantification">
-<meta name="twitter:description" content="Automatic stain detection and precise positive-area quantification for immunohistochemistry slides.">
+<meta name="twitter:title" content="ImageSL — DAB IHC Stain Quantification">
+<meta name="twitter:description" content="Automatic background removal and precise DAB positive-area quantification for immunohistochemistry slides.">
 <meta name="twitter:image" content="https://imagesl.online/assets/og-image.png">
 <link rel="canonical" href="https://imagesl.online/">
 
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"WebApplication","name":"ImageSL","url":"https://imagesl.online/","applicationCategory":"HealthApplication","operatingSystem":"Web","description":"ImageSL quantifies immunohistochemistry slides with automatic stain detection, color deconvolution and precise positive-area measurement.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}
+{"@context":"https://schema.org","@type":"WebApplication","name":"ImageSL","url":"https://imagesl.online/","applicationCategory":"HealthApplication","operatingSystem":"Web","description":"ImageSL quantifies DAB immunohistochemistry slides with automatic background removal, color deconvolution and precise positive-area measurement.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}
 </script>
 
-<link rel="stylesheet" href="/styles.css?v=24">
+<link rel="stylesheet" href="/styles.css?v=25">
 </head>
 <body>
 
@@ -54,7 +54,7 @@
     </span>
     <span class="wordmark">Image<b>SL</b></span>
   </div>
-  <div class="tagline">IHC Stain Quantification</div>
+  <div class="tagline">DAB Stain Quantification</div>
 </header>
 
 <main>
@@ -62,8 +62,8 @@
   <!-- ================= UPLOAD VIEW ================= -->
   <section id="uploadView" class="view">
     <div class="hero">
-      <h1>Quantify immunohistochemistry, precisely.</h1>
-      <p class="lede">Automatic stain detection · color deconvolution · positive-area measurement. Drop one slide or a whole batch — ImageSL figures out the rest.</p>
+      <h1>Quantify DAB immunohistochemistry, precisely.</h1>
+      <p class="lede">Automatic background removal · color deconvolution · positive-area measurement. Drop one slide or a whole batch — ImageSL finds the tissue, throws away the background, and measures the brown.</p>
     </div>
 
     <!-- mode selector (before upload) -->
@@ -72,13 +72,13 @@
         <span class="mode-ic">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v2M12 19v2M5 12H3M21 12h-2M6.3 6.3 4.9 4.9M19.1 19.1l-1.4-1.4M17.7 6.3l1.4-1.4M4.9 19.1l1.4-1.4"/><circle cx="12" cy="12" r="4"/></svg>
         </span>
-        <span class="mode-txt"><b>Auto-detect</b><small>ImageSL identifies the stain &amp; chromogen for you</small></span>
+        <span class="mode-txt"><b>Auto-detect</b><small>ImageSL finds the background and the DAB for you</small></span>
       </button>
       <button type="button" class="mode-card" data-mode="select" role="tab" aria-selected="false">
         <span class="mode-ic">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 2v6.5a3 3 0 0 1-.5 1.6L4 20a2 2 0 0 0 1.7 3h12.6a2 2 0 0 0 1.7-3l-6.5-9.9a3 3 0 0 1-.5-1.6V2"/><path d="M8.5 2h7M7 15h10"/></svg>
         </span>
-        <span class="mode-txt"><b>Select stain</b><small>Pick the chromogen / stain — DAB, AEC, trichrome…</small></span>
+        <span class="mode-txt"><b>Select stain</b><small>Name the stain yourself — DAB today, more coming</small></span>
       </button>
     </div>
 
@@ -86,7 +86,7 @@
     <div id="stainPicker" class="stain-picker hidden">
       <div class="sp-field">
         <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-        <input id="stainSearch" type="text" autocomplete="off" spellcheck="false" placeholder="Search stains — DAB, AEC, Fast Red, trichrome, PAS, H&amp;E…">
+        <input id="stainSearch" type="text" autocomplete="off" spellcheck="false" placeholder="Search stains — DAB (further stains are being added)">
         <button id="stainClear" class="sp-clear hidden" title="Clear" aria-label="Clear selection">✕</button>
       </div>
       <div id="stainChosen" class="sp-chosen hidden"></div>
@@ -104,8 +104,8 @@
       <input type="file" id="file" multiple accept=".tif,.tiff,.png,.jpg,.jpeg" hidden>
     </div>
     <div class="feature-row">
-      <div class="feature"><b>Any stain</b><span>DAB, red, and more — auto-detected</span></div>
-      <div class="feature"><b>Smart guarding</b><span>ignores background, debris &amp; non-slides</span></div>
+      <div class="feature"><b>DAB, done properly</b><span>brown chromogen only — nothing else counted</span></div>
+      <div class="feature"><b>Background removed</b><span>glass, debris &amp; counterstain stripped out</span></div>
       <div class="feature"><b>Batch &amp; export</b><span>ZIP of overlays + CSV in one click</span></div>
     </div>
     <div class="upload-foot">
@@ -134,10 +134,13 @@
     <div class="results-bar">
       <div class="results-count" id="resultsCount"></div>
       <div class="results-tools">
-        <label class="global-overlay" title="Set the detection overlay color for every slide">
+        <div class="global-overlay" title="Set the detection overlay color for every slide">
           <span>Overlay · all</span>
-          <input type="range" id="gHue" class="rainbow" min="0" max="359" step="1" value="200">
-        </label>
+          <div class="oc-choices" id="gChoices" role="radiogroup" aria-label="Detection color for every slide">
+            <button type="button" class="oc-opt" data-hex="#e61e2d" role="radio" aria-checked="false"><i style="background:#e61e2d"></i>Red</button>
+            <button type="button" class="oc-opt" data-hex="#2060eb" role="radio" aria-checked="false"><i style="background:#2060eb"></i>Blue</button>
+          </div>
+        </div>
         <div class="results-actions">
           <button id="btnAddMore" class="btn ghost" title="Analyze more slides into this batch">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
@@ -212,20 +215,27 @@
         <figcaption><span>Original</span><button class="vdl" data-type="original" title="Download TIFF">TIF</button></figcaption></figure>
       <figure class="variant"><div class="vwrap"><img class="vImg imgOverlay" alt="Overlay" draggable="false"></div>
         <figcaption><span>Overlay</span><button class="vdl" data-type="overlay" title="Download TIFF">TIF</button></figcaption></figure>
+      <figure class="variant"><div class="vwrap"><img class="vImg imgStainOnly" alt="Stain only — background removed" draggable="false"></div>
+        <figcaption><span title="Background removed — only the detected DAB stain remains">Stain only</span><button class="vdl" data-type="stainOnly" title="Download TIFF">TIF</button></figcaption></figure>
+      <figure class="variant"><div class="vwrap"><img class="vImg imgTissue" alt="Tissue — glass background removed" draggable="false"></div>
+        <figcaption><span title="Slide background (bare glass / mounting medium) removed, all tissue kept">Tissue</span><button class="vdl" data-type="backgroundRemoved" title="Download TIFF">TIF</button></figcaption></figure>
       <figure class="variant"><div class="vwrap"><img class="vImg imgStainA" alt="Stain A" draggable="false"></div>
         <figcaption><button class="swatch swA" title="Recolor Stain A" aria-label="Recolor Stain A"></button><span class="labA">Stain A</span><button class="vdl" data-type="stainA" title="Download TIFF">TIF</button></figcaption></figure>
       <figure class="variant"><div class="vwrap"><img class="vImg imgStainB" alt="Stain B" draggable="false"></div>
         <figcaption><button class="swatch swB" title="Recolor Stain B" aria-label="Recolor Stain B"></button><span class="labB">Stain B</span><button class="vdl" data-type="stainB" title="Download TIFF">TIF</button></figcaption></figure>
     </div>
 
-    <!-- appearance: overlay color (thumb shows the color) -->
+    <!-- appearance: detection color — two choices, red or blue -->
     <div class="overlay-color">
       <span class="oc-label">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/></svg>
-        Overlay color
+        Detection color
       </span>
-      <input type="range" class="cHue rainbow" min="0" max="359" step="1" value="200" aria-label="Overlay hue">
-      <button class="oc-auto" title="Reset to the auto-contrast color">Auto</button>
+      <div class="oc-choices" role="radiogroup" aria-label="Detection overlay color">
+        <button type="button" class="oc-opt" data-hex="#e61e2d" role="radio" aria-checked="false"><i style="background:#e61e2d"></i>Red</button>
+        <button type="button" class="oc-opt" data-hex="#2060eb" role="radio" aria-checked="false"><i style="background:#2060eb"></i>Blue</button>
+      </div>
+      <button class="oc-auto" title="Use whichever of the two contrasts better with this slide">Auto</button>
     </div>
 
     <!-- live detection-threshold slider (re-thresholds the stainness score in-browser) -->
@@ -248,6 +258,8 @@
       <span class="dl-label">Download</span>
       <button class="dl-btn" data-type="original">Original</button>
       <button class="dl-btn" data-type="overlay">Overlay</button>
+      <button class="dl-btn" data-type="stainOnly">Stain only</button>
+      <button class="dl-btn" data-type="backgroundRemoved">Tissue</button>
       <button class="dl-btn" data-type="stainA">Stain A</button>
       <button class="dl-btn" data-type="stainB">Stain B</button>
       <button class="dl-btn primary" data-type="comparison">Comparison .tif</button>
@@ -258,6 +270,6 @@
 <div id="toasts"></div>
 <div id="lightbox" class="lightbox hidden"><img id="lightboxImg" src="" alt="Expanded"></div>
 
-<script src="/app.js?v=24"></script>
+<script src="/app.js?v=25"></script>
 </body>
 </html>
