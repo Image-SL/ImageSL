@@ -7,10 +7,19 @@ is the whole brain.
 
 Design goals (2026 rewrite):
 
-*  Works on ANY chromogen, not just H-DAB. The stain basis is estimated from the
-   slide itself (robust Macenko on genuinely-absorbing, saturated tissue) and the
-   two stains are classified by hue into a family (H-DAB brown, red chromogen,
-   H&E, blue counterstain, …). A curated reference basis is the fallback.
+*  Ships DAB-only for now (see ENABLED_FAMILIES) while keeping the full
+   any-chromogen machinery intact: the stain basis is chosen from a curated
+   reference matched to the chromogen family detected on the slide itself, and
+   turning another family back on is a one-line change. Auto-detect still runs —
+   it now reports whether a brown DAB chromogen is actually present rather than
+   silently switching to a different chromogen's basis.
+
+*  Finds the real background. `segment_tissue()` estimates each slide's own
+   white point (bare glass), takes the glass-vs-tissue cut from that slide's own
+   OD histogram, rescues pale-but-coloured pixels, drops large smooth regions
+   that carry no cellular texture (vignetting, haze, defocus, scanner artefacts)
+   and cleans the mask morphologically. Every downstream statistic is anchored to
+   that mask, so a better background estimate directly sharpens positivity.
 
 *  Rejects junk. Photos of a bike / person / screenshot never reach the pixel
    math — `assess_slide()` gates them out with a human-readable reason, and the
@@ -24,9 +33,12 @@ Design goals (2026 rewrite):
        a chroma gate: genuine chromogen carries a specific hue, debris does not;
      - lumen / tear rims — defeated by eroding to the tissue core.
 
-*  Auto-picks a high-contrast overlay colour per slide (complementary to the
-   tissue) and reports natural display colours for each stain so the UI can show
-   recolourable Stain-A / Stain-B panels.
+*  Auto-picks the higher-contrast detection colour per slide from the two the UI
+   offers (red / blue) and reports natural display colours for each stain so the
+   UI can show recolourable Stain-A / Stain-B panels.
+
+*  Can erase the background entirely — `render_stain_only()` returns the slide
+   with everything except the detected chromogen replaced by a flat field.
 """
 
 from __future__ import annotations
@@ -49,6 +61,13 @@ except Exception:  # pragma: no cover - tifffile is a hard dep in prod
 from skimage.morphology import disk
 from skimage.morphology import erosion as _grey_erosion
 from skimage.measure import label as _label
+from skimage.filters import threshold_otsu as _otsu
+
+try:  # scipy ships with scikit-image; the texture gate degrades gracefully.
+    from scipy.ndimage import uniform_filter as _uniform_filter
+    _HAVE_SCIPY = True
+except Exception:  # pragma: no cover
+    _HAVE_SCIPY = False
 
 
 # --------------------------------------------------------------------------- #
@@ -58,9 +77,25 @@ from skimage.measure import label as _label
 DEFAULT_MAX_EDGE = 1024
 HARD_MAX_EDGE = 2048
 
-# A pixel whose summed optical density is below this is bright glass / mounting
-# medium — background, not tissue.
+# Absolute floor for "this pixel absorbs light at all". `segment_tissue()` picks
+# the REAL glass-vs-tissue cut per slide and never goes below this floor, so a
+# blank scan can't be talked into having tissue.
 BACKGROUND_OD_THRESHOLD = 0.15
+
+# ---- background / tissue segmentation tuning ----------------------------- #
+_WHITE_PCT          = 99.0   # brightest percentile of a scan ≈ bare glass
+_WHITE_MIN          = 48.0   # never trust an absurdly dark "white point"
+_WHITE_APPLY_BELOW  = 245.0  # only renormalise OD when the scan really is dim/tinted
+_WHITE_GLASS_SEP    = 20.0   # ... and only if that white is separated from the tissue bulk
+_TISSUE_THR_MAX     = 0.55   # clamp the per-slide Otsu cut (faint tissue must survive)
+_TISSUE_BG_MIN_FRAC = 0.02   # < 2% glass ⇒ full-field slide, Otsu would split tissue
+_CHROMA_RESCUE_SAT  = 0.22   # a pale but distinctly coloured pixel is dilute stain
+_TEXTURE_WIN        = 7      # local-std window (px) for the flat-region test
+_TEXTURE_REL        = 0.35   # "smooth" = local std below this × the tissue median
+_TEXTURE_ABS        = 0.006  # ... but never call anything above this smooth
+_TEXTURE_OD_GUARD   = 1.6    # only smooth pixels weaker than thr×this are dropped
+_HOLE_FRAC          = 0.02   # interior gaps up to 2% of frame are lumina → tissue
+_SPECK_FRAC         = 2e-5   # isolated blobs below this share of frame are debris
 
 # ---- positive-detection tuning (the accuracy core) ----------------------- #
 # Genuine chromogen is BOTH darker (higher OD) AND more saturated than the
@@ -98,18 +133,50 @@ _HDAB_REFERENCE = np.array(
 # proven fixed basis per detected family is FAR more robust than per-slide
 # Macenko (which goes degenerate on single-chromogen slides), while still
 # covering every common chromogen. `hue` is the chromogen's display hue (deg).
+# `band` is the hue window (deg) a pixel must fall inside to be that chromogen at
+# all. It is deliberately tighter than the generic ±_HUE_TOL_DEG tolerance: being
+# "within 46° of brown" is not the same as being brown, and on a DAB-only build
+# that difference is exactly what keeps a red or magenta chromogen from being
+# measured as if it were DAB.
 _REF_BASES = {
-    "H-DAB":  {"label": "H-DAB (brown)",  "hue": 32.0,
+    "H-DAB":  {"label": "H-DAB (brown)",  "hue": 32.0, "band": (10.0, 78.0),
                "od": [[0.650, 0.700, 0.290], [0.270, 0.570, 0.780]]},
-    "H-Red":  {"label": "Red chromogen",  "hue": 2.0,
+    "H-Red":  {"label": "Red chromogen",  "hue": 2.0,  "band": (330.0, 18.0),
                "od": [[0.650, 0.700, 0.290], [0.210, 0.760, 0.615]]},
-    "H-AP":   {"label": "Alk-phos (red)", "hue": 350.0,
+    "H-AP":   {"label": "Alk-phos (red)", "hue": 350.0, "band": (325.0, 12.0),
                "od": [[0.650, 0.700, 0.290], [0.190, 0.760, 0.620]]},
-    "H-GREEN":{"label": "Green chromogen","hue": 140.0,
+    "H-GREEN":{"label": "Green chromogen","hue": 140.0, "band": (95.0, 180.0),
                "od": [[0.650, 0.700, 0.290], [0.400, 0.610, 0.680]]},
-    "H&E":    {"label": "H&E (eosin)",    "hue": 330.0,
+    "H&E":    {"label": "H&E (eosin)",    "hue": 330.0, "band": (300.0, 355.0),
                "od": [[0.650, 0.700, 0.290], [0.070, 0.990, 0.110]]},
 }
+
+# --------------------------------------------------------------------------- #
+# WHICH CHROMOGENS ARE LIVE
+# --------------------------------------------------------------------------- #
+# ImageSL currently ships DAB-only detection. Every other reference basis above
+# stays defined and vetted; auto-detect simply refuses to resolve to one. To add
+# a chromogen as it is signed off:
+#
+#   1. add its key here                    → auto-detect can select it
+#   2. add the matching key to
+#      ihc/stains.py ENABLED_KEYS          → it appears in the "Select stain" list
+#
+# Nothing else in the engine or the UI needs to change.
+ENABLED_FAMILIES: tuple[str, ...] = ("H-DAB",)
+
+# Hue window (deg) that counts as "brown DAB" — see _REF_BASES["H-DAB"]["band"].
+# Outside it, auto-detect keeps the DAB basis but tells the user no DAB-range
+# chromogen was found, instead of silently measuring some other colour.
+_DAB_HUE_BAND = (10.0, 78.0)
+
+# The two detection-overlay colours the UI offers. Auto picks whichever sits
+# further from the colours actually present on the slide.
+OVERLAY_CHOICES: dict[str, tuple[int, int, int]] = {
+    "red":  (230, 30, 45),
+    "blue": (32, 96, 235),
+}
+OVERLAY_DEFAULT_HEX = "#2060eb"
 
 
 # --------------------------------------------------------------------------- #
@@ -147,7 +214,15 @@ class AnalysisResult:
     skip_reason: Optional[str] = None
     stain_label: str = ""
     confidence: float = 1.0
-    suggested_overlay_hex: str = "#00e5ff"
+    suggested_overlay_hex: str = OVERLAY_DEFAULT_HEX
+    # --- background segmentation report ------------------------------------ #
+    background_pixels: int = 0
+    background_percent: float = 0.0
+    tissue_percent: float = 0.0
+    tissue_threshold: float = 0.0     # per-slide glass-vs-tissue OD cut actually used
+    tissue_method: str = ""           # how that cut was reached (Otsu / floor / …)
+    white_point: list[float] = field(default_factory=list)   # estimated bare-glass RGB
+    chromogen_present: bool = True    # a DAB-range chromogen was actually found
     stain_a_hex: str = "#3b5bdb"
     stain_b_hex: str = "#a1531f"
     stain_a_label: str = "Stain A"
@@ -268,10 +343,40 @@ def _pil_downsample(im: Image.Image, max_edge: int) -> Image.Image:
 # Colour helpers
 # --------------------------------------------------------------------------- #
 
-def rgb_to_od(rgb: np.ndarray) -> np.ndarray:
-    """RGB uint8 → optical density (Beer-Lambert), same shape (float32)."""
+def rgb_to_od(rgb: np.ndarray, white: Optional[np.ndarray] = None) -> np.ndarray:
+    """RGB uint8 → optical density (Beer-Lambert), same shape (float32).
+
+    `white` is the slide's own bare-glass level per channel. Passing it measures
+    absorbance against the light that actually reached the sensor rather than
+    against a theoretical 255, which is what stops a dim or warm-lamp scan from
+    reading as "tissue everywhere" (and a blazing one from losing pale tissue).
+    """
     rgb = rgb.astype(np.float32)
-    return -np.log10((rgb + 1.0) / 256.0)
+    if white is None:
+        return -np.log10((rgb + 1.0) / 256.0)
+    w = np.asarray(white, dtype=np.float32).reshape(1, 1, -1)
+    return np.clip(-np.log10((rgb + 1.0) / (w + 1.0)), 0.0, None)
+
+
+def estimate_white_point(rgb: np.ndarray) -> np.ndarray:
+    """Per-channel bare-glass level for this slide: the brightest few percent of
+    a histology scan is empty mounting medium, so its level IS the true white."""
+    flat = rgb.reshape(-1, 3)
+    step = max(1, flat.shape[0] // 200_000)
+    white = np.percentile(flat[::step].astype(np.float32), _WHITE_PCT, axis=0)
+    return np.clip(white, _WHITE_MIN, 255.0)
+
+
+def white_is_glass(rgb: np.ndarray, white: np.ndarray) -> bool:
+    """Is that white point genuinely bare glass, or merely the palest tissue?
+
+    Glass forms a bright population clearly separated from the tissue bulk. On a
+    wall-to-wall tissue slide there is no such separation, and renormalising
+    against the palest tissue would wrongly flatten every density on the slide —
+    so this test gates whether the white point is trusted at all.
+    """
+    med = float(np.median(rgb[::4, ::4]))
+    return float(np.min(white)) - med > _WHITE_GLASS_SEP
 
 
 def _rgb_to_hsv(rgb01: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -302,6 +407,31 @@ def _hue_dist(h: np.ndarray, target: float) -> np.ndarray:
     """Circular distance (deg) between hue array and a target hue."""
     d = np.abs(h - target) % 360.0
     return np.minimum(d, 360.0 - d)
+
+
+def _in_hue_band(h: np.ndarray, band) -> np.ndarray:
+    """Is each hue inside `band` = (lo, hi) degrees? Bands may wrap through 0°."""
+    lo, hi = float(band[0]), float(band[1])
+    return (h >= lo) & (h <= hi) if lo <= hi else (h >= lo) | (h <= hi)
+
+
+def _hue_band_for(target_hue: float, method: str):
+    """The plausible hue window for the chromogen being measured.
+
+    Prefer the band of the reference family actually in use; otherwise find the
+    family whose band contains this target hue (covers selection mode, where
+    `method` is a stain key rather than a family key). None ⇒ no band is known
+    and only the generic ±_HUE_TOL_DEG tolerance applies.
+    """
+    ref = _REF_BASES.get(method)
+    if ref and ref.get("band"):
+        return ref["band"]
+    probe = np.array([float(target_hue) % 360.0])
+    for r in _REF_BASES.values():
+        band = r.get("band")
+        if band and bool(_in_hue_band(probe, band)[0]):
+            return band
+    return None
 
 
 def _normalize_rows(m: np.ndarray) -> np.ndarray:
@@ -346,6 +476,136 @@ def _classify_stain(rgb: list[int]) -> tuple[str, float]:
     if 170 <= h < 200:
         return ("Teal chromogen", h)
     return ("Chromogen", h)
+
+
+# --------------------------------------------------------------------------- #
+# Background / tissue segmentation
+# --------------------------------------------------------------------------- #
+
+def _local_std(x: np.ndarray, size: int = _TEXTURE_WIN) -> Optional[np.ndarray]:
+    """Local standard deviation of `x` — a cheap texture map. None without scipy."""
+    if not _HAVE_SCIPY:
+        return None
+    x = x.astype(np.float32, copy=False)
+    m = _uniform_filter(x, size)
+    m2 = _uniform_filter(x * x, size)
+    return np.sqrt(np.clip(m2 - m * m, 0.0, None))
+
+
+def _fill_small_holes(mask: np.ndarray, max_px: int) -> np.ndarray:
+    """Fill interior gaps up to `max_px` (lumina, fat vacuoles, unstained cores).
+    Anything touching the frame edge is genuine outside-background and is kept."""
+    inv = ~mask
+    if not inv.any():
+        return mask
+    lbl = _label(inv, connectivity=1)
+    if lbl.max() == 0:
+        return mask
+    counts = np.bincount(lbl.ravel())
+    fill = counts <= max_px
+    edge = np.unique(np.concatenate([lbl[0], lbl[-1], lbl[:, 0], lbl[:, -1]]))
+    fill[edge] = False          # open to the outside ⇒ real background
+    fill[0] = False             # label 0 is the mask itself
+    return mask | fill[lbl]
+
+
+def segment_tissue(
+    rgb: np.ndarray,
+    *,
+    hue=None, sat=None, val=None,
+    od_floor: float = BACKGROUND_OD_THRESHOLD,
+    white: Optional[np.ndarray] = None,
+    od: Optional[np.ndarray] = None,
+) -> tuple[np.ndarray, np.ndarray, dict]:
+    """
+    Separate SLIDE BACKGROUND (bare glass, mounting medium, scanner white) from
+    real tissue — per slide, without trusting one hard-coded global cutoff.
+
+    Four independent pieces of evidence, combined:
+
+      1. **White point.** The brightest few percent of a scan is empty glass, so
+         optical density is measured against THAT, not against a theoretical 255.
+
+      2. **Otsu on this slide's own OD histogram.** Glass-vs-tissue is genuinely
+         bimodal, so the cut comes from the data, clamped to a sane band. A slide
+         with essentially no glass in frame would make Otsu split tissue against
+         tissue, so that case is detected and falls back to the absolute floor.
+
+      3. **Chroma rescue.** A pale but distinctly *coloured* pixel is dilute
+         stain, not glass, however bright it is — saturation re-admits it.
+
+      4. **Texture.** Real tissue carries fine cellular structure; vignetting,
+         haze, defocus, smooth shadows and flat scanner artefacts do not. A local
+         standard-deviation map drops large smooth regions that slipped past the
+         intensity test — the exact thing that used to drag the background
+         statistics, and therefore the positivity threshold, off.
+
+    The mask is then cleaned morphologically: interior holes are filled so lumina
+    count as tissue, isolated specks are dropped so dust and edge debris do not.
+
+    Returns (tissue_mask, total_od, info).
+    """
+    h, w = rgb.shape[:2]
+    if hue is None or sat is None or val is None:
+        hue, sat, val = _rgb_to_hsv(rgb.astype(np.float32) / 255.0)
+    if white is None:
+        white = estimate_white_point(rgb)
+
+    # 1) OD against this slide's own white — only when the scan is genuinely dim
+    #    or tinted, so a well-exposed slide behaves exactly as it always has.
+    use_white = bool(float(np.min(white)) < _WHITE_APPLY_BELOW) and white_is_glass(rgb, white)
+    if od is None:
+        od = rgb_to_od(rgb, white if use_white else None)
+    total_od = np.clip(od, 0.0, None).sum(axis=2)
+
+    # 2) per-slide Otsu cut
+    flat = total_od.ravel()
+    step = max(1, flat.size // 200_000)
+    method = "otsu"
+    try:
+        thr = float(_otsu(flat[::step]))
+    except Exception:
+        thr = float(od_floor)
+        method = "floor (histogram unusable)"
+    thr = float(np.clip(thr, od_floor, _TISSUE_THR_MAX))
+    if float((total_od < thr).mean()) < _TISSUE_BG_MIN_FRAC:
+        # Almost nothing is background → the frame is wall-to-wall tissue and
+        # Otsu has split tissue against itself. Keep everything above the floor.
+        thr = float(od_floor)
+        method = "full-field (no glass in frame)"
+
+    # 3) intensity + chroma rescue
+    mask = (total_od >= thr) | ((sat >= _CHROMA_RESCUE_SAT) & (total_od >= od_floor * 0.55))
+
+    # 4) texture: remove large SMOOTH regions, but only weakly-absorbing ones, so
+    #    densely stained tissue can never be thrown away by this test.
+    std = _local_std(val)
+    if std is not None and mask.any():
+        med = float(np.median(std[mask]))
+        flat_cut = min(_TEXTURE_ABS, med * _TEXTURE_REL) if med > 0 else _TEXTURE_ABS
+        smooth = std < flat_cut
+        mask &= ~(smooth & (total_od < thr * _TEXTURE_OD_GUARD))
+        method += " + texture"
+
+    # 5) morphological cleanup
+    frame = h * w
+    mask = _fill_small_holes(mask, int(max(64, frame * _HOLE_FRAC)))
+    speck = int(max(16, frame * _SPECK_FRAC))
+    if mask.any():
+        mask = _remove_small(mask, speck)
+
+    tissue_px = int(mask.sum())
+    info = {
+        "tissue_threshold": round(float(thr), 4),
+        "tissue_method": method,
+        "white_point": [round(float(x), 1) for x in np.atleast_1d(white)],
+        "white_applied": use_white,
+        "tissue_pixels": tissue_px,
+        "background_pixels": int(frame - tissue_px),
+        "tissue_percent": round(tissue_px / frame * 100.0, 3) if frame else 0.0,
+        "background_percent": round((frame - tissue_px) / frame * 100.0, 3) if frame else 0.0,
+    }
+    return mask, total_od, info
 
 
 # --------------------------------------------------------------------------- #
@@ -469,10 +729,16 @@ def _detect_family(total_od, sat, hue, tissue):
     hue of the darkest, most-saturated pixels (the real stain), ignoring the
     blue/purple counterstain band. Robust and stain-agnostic.
 
-    Returns (family_key, chromogen_hue, has_counterstain).
+    Only families listed in ENABLED_FAMILIES can be selected. When the chromogen
+    that IS on the slide falls outside every enabled family, the first enabled
+    basis is kept and `in_band` comes back False, so the caller can say "no DAB
+    found here" rather than quietly measuring a colour we don't ship yet.
+
+    Returns (family_key, chromogen_hue, has_counterstain, in_band).
     """
+    default = ENABLED_FAMILIES[0]
     if not tissue.any():
-        return "H-DAB", 32.0, True
+        return default, 32.0, True, False
     t_od = total_od[tissue]
     if t_od.size > 120_000:
         t_od = t_od[::(t_od.size // 120_000 + 1)]
@@ -482,29 +748,30 @@ def _detect_family(total_od, sat, hue, tissue):
         strong = tissue & (sat >= float(np.percentile(sat[tissue], 85)))
     sh = hue[strong]
     if sh.size < 50:
-        return "H-DAB", 32.0, True
+        return default, 32.0, True, False
 
     counter_band = (sh >= 200) & (sh <= 300)
     has_counter = bool(counter_band.mean() > 0.05)
     chrom = sh[~counter_band]
     if chrom.size < 30:
-        # essentially counterstain only → no chromogen; keep DAB basis, ~0 signal
-        return "H-DAB", 32.0, has_counter
+        # essentially counterstain only → no chromogen at all; ~0 signal expected
+        return default, 32.0, has_counter, False
 
     chue = _circular_median_deg(chrom)
-    if 12 <= chue < 60:
-        fam = "H-DAB"
-    elif chue >= 330 or chue < 12:
+    lo, hi = _DAB_HUE_BAND
+    if lo <= chue < hi:
+        fam = "H-DAB"          # brown through yellow-brown
+    elif chue >= 330 or chue < lo:
         fam = "H-Red"
-    elif 60 <= chue < 90:
-        fam = "H-DAB"          # yellow-brown → still DAB family
-    elif 90 <= chue < 175:
+    elif hi <= chue < 175:
         fam = "H-GREEN"
     elif 300 <= chue < 330:
         fam = "H&E"
     else:
         fam = "H-DAB"
-    return fam, chue, has_counter
+
+    in_band = fam in ENABLED_FAMILIES
+    return (fam if in_band else default), chue, has_counter, in_band
 
 
 def _estimate_basis(od, total_od, sat, hue, tissue):
@@ -514,10 +781,10 @@ def _estimate_basis(od, total_od, sat, hue, tissue):
     two-brown-vectors failure of per-slide Macenko on single-chromogen slides.
 
     Returns (stain_matrix, counter_idx, target_idx, method, target_hue,
-             counter_label, target_label).
+             counter_label, target_label, in_band).
     """
-    fam, chrom_hue, has_counter = _detect_family(total_od, sat, hue, tissue)
-    ref = _REF_BASES.get(fam, _REF_BASES["H-DAB"])
+    fam, chrom_hue, has_counter, in_band = _detect_family(total_od, sat, hue, tissue)
+    ref = _REF_BASES.get(fam, _REF_BASES[ENABLED_FAMILIES[0]])
     stains2 = np.array(ref["od"], dtype=np.float64)
     residual = np.cross(stains2[0], stains2[1])
     if np.linalg.norm(residual) < 1e-6:
@@ -529,7 +796,8 @@ def _estimate_basis(od, total_od, sat, hue, tissue):
     target_label = ref["label"]
     # Use the reference chromogen hue (stable); the detected hue only chose family.
     target_hue = ref["hue"]
-    return stain_matrix, counter_idx, target_idx, fam, target_hue, counter_label, target_label
+    return (stain_matrix, counter_idx, target_idx, fam, target_hue,
+            counter_label, target_label, in_band)
 
 
 def _deconvolve(od: np.ndarray, stain_matrix_3x3: np.ndarray) -> np.ndarray:
@@ -545,43 +813,37 @@ def _deconvolve(od: np.ndarray, stain_matrix_3x3: np.ndarray) -> np.ndarray:
 # --------------------------------------------------------------------------- #
 
 def _auto_overlay_hex(rgb: np.ndarray, tissue: np.ndarray, avoid_hues=None) -> str:
-    """Pick a vivid overlay colour that is unambiguous — maximally distant from
-    every stain colour actually on the slide, so the highlight can never be
-    confused with the chromogen OR the (often blue) counterstain. For H-DAB
-    (brown DAB ~30° + blue haematoxylin ~270°) this lands on green.
+    """Pick the better of the two detection colours the UI offers (red / blue).
 
-    `avoid_hues` are the stain hues to stay away from; the mean tissue hue is
-    always added. Returns a full-saturation, bright hex."""
+    "Better" = whichever sits further from every colour actually on the slide, so
+    the highlight can never be confused with the chromogen OR the (usually blue)
+    counterstain. For H-DAB — brown DAB ~30° plus blue haematoxylin ~270° — red
+    collides with the brown, so this lands on blue.
+
+    `avoid_hues` is (chromogen_hue, counterstain_hue) — the FIRST entry is
+    weighted double, because the highlight is painted directly onto chromogen
+    pixels, so separating from the chromogen matters more than separating from a
+    counterstain the overlay never touches. The mean tissue hue is added too."""
     small = rgb[::3, ::3].astype(np.float32) / 255.0
     tmask = tissue[::3, ::3]
     sample = small[tmask] if tmask.any() else small.reshape(-1, 3)
     mean_rgb = sample.mean(axis=0).reshape(1, 1, 3)
     tissue_hue = float(_rgb_to_hsv(mean_rgb)[0][0, 0])
 
-    avoid = [tissue_hue] + [float(h) for h in (avoid_hues or [])]
-    # Choose the hue whose minimum circular distance to every avoided hue is
-    # largest (the emptiest part of the colour wheel).
-    best_h, best_gap = 150.0, -1.0
-    for h in range(0, 360, 3):
-        gap = min((min(abs(h - a) % 360.0, 360.0 - (abs(h - a) % 360.0)) for a in avoid))
-        if gap > best_gap:
-            best_gap, best_h = gap, float(h)
-    out = _hsv_to_rgb(best_h, 1.0, 1.0)
-    return _hex(out)
+    avoid = [float(h) for h in (avoid_hues or [])] + [tissue_hue]
+    weights = [2.0] + [1.0] * (len(avoid) - 1)   # chromogen counts double
 
+    def _score(candidate_rgb) -> float:
+        c = np.array(candidate_rgb, dtype=np.float32).reshape(1, 1, 3) / 255.0
+        ch = float(_rgb_to_hsv(c)[0][0, 0])
+        total = 0.0
+        for a, wgt in zip(avoid, weights):
+            d = abs(ch - a) % 360.0
+            total += wgt * min(d, 360.0 - d)
+        return total
 
-def _hsv_to_rgb(h: float, s: float, v: float) -> tuple[int, int, int]:
-    h = h % 360.0
-    c = v * s
-    x = c * (1 - abs((h / 60.0) % 2 - 1))
-    m = v - c
-    if h < 60:   r, g, b = c, x, 0
-    elif h < 120: r, g, b = x, c, 0
-    elif h < 180: r, g, b = 0, c, x
-    elif h < 240: r, g, b = 0, x, c
-    elif h < 300: r, g, b = x, 0, c
-    else:         r, g, b = c, 0, x
-    return (int(round((r + m) * 255)), int(round((g + m) * 255)), int(round((b + m) * 255)))
+    best = max(OVERLAY_CHOICES.values(), key=_score)
+    return _hex(best)
 
 
 # --------------------------------------------------------------------------- #
@@ -614,11 +876,23 @@ def analyze(
 
     rgb01 = rgb.astype(np.float32) / 255.0
     hue, sat, val = _rgb_to_hsv(rgb01)
-    od = rgb_to_od(rgb)
-    total_od = od.sum(axis=2)
 
-    tissue_mask = total_od > background_threshold
+    # Optical density against THIS slide's bare-glass white point (see
+    # rgb_to_od / estimate_white_point). Well-exposed scans are unaffected.
+    white = estimate_white_point(rgb)
+    use_white = bool(float(np.min(white)) < _WHITE_APPLY_BELOW) and white_is_glass(rgb, white)
+    od = rgb_to_od(rgb, white if use_white else None)
+
+    # Smart background segmentation — the tissue mask every statistic below is
+    # anchored to. `background_threshold` acts as the absolute floor.
+    tissue_mask, total_od, bg_info = segment_tissue(
+        rgb, hue=hue, sat=sat, val=val, od_floor=background_threshold,
+        white=white, od=od)
     tissue_pixels = int(tissue_mask.sum())
+    if use_white:
+        notes.append(
+            f"Background normalised to this slide's own white point "
+            f"({', '.join(str(int(x)) for x in bg_info['white_point'])}).")
 
     # ------------------------------------------------------------------ #
     # Validity gate (reuses the arrays already computed above)
@@ -630,6 +904,7 @@ def analyze(
     # Stain basis
     # ------------------------------------------------------------------ #
     black_mode = bool(stain_choice and stain_choice.get("black"))
+    chromogen_in_band = True
     if stain_choice and stain_choice.get("target_od"):
         # Selection mode: use this stain's exact deconvolution vectors
         # [counterstain, chromogen] (Ruifrok / derived).
@@ -658,9 +933,16 @@ def analyze(
         stain_matrix = _hdab_matrix()
         counter_idx, tgt_idx, method = 0, 1, "hdab-reference"
         target_hue, counter_label, target_label = 30.0, "Haematoxylin (blue)", "DAB (brown)"
+        chromogen_in_band = False
     else:
         (stain_matrix, counter_idx, tgt_idx, method, target_hue,
-         counter_label, target_label) = _estimate_basis(od, total_od, sat, hue, tissue_mask)
+         counter_label, target_label, chromogen_in_band) = _estimate_basis(
+            od, total_od, sat, hue, tissue_mask)
+        if not chromogen_in_band:
+            notes.append(
+                "No brown (DAB) chromogen found — the strongest non-counterstain "
+                "colour on this slide sits outside the DAB range, so the positive "
+                "area will read at or near zero.")
 
     if target_index is not None:
         tgt_idx = int(max(0, min(target_index, 1)))
@@ -732,7 +1014,13 @@ def analyze(
             # dark grey/blue background — even one DARKER than the stain — carries
             # little chromogen concentration, so it is excluded by colour, not by
             # intensity. This is what lets ImageSL separate stain from a darker bg.
+            # Two-part colour test: close to the chromogen's hue AND inside the
+            # window that colour can physically occupy. The band is what stops a
+            # red / magenta chromogen 37° away from brown counting as DAB.
             hue_ok = _hue_dist(hue, target_hue) <= _HUE_TOL_DEG
+            band = _hue_band_for(target_hue, method)
+            if band is not None:
+                hue_ok &= _in_hue_band(hue, band)
             candidate = (core & hue_ok & (sat >= sat_gate)
                          & (specificity >= _SPEC_MIN) & (target_conc > counter_conc)
                          & (target_conc >= _OD_ABS_FLOOR * 0.5))  # tiny floor kills noise
@@ -802,6 +1090,13 @@ def analyze(
         stain_label=stain_label,
         confidence=round(float(confidence), 3),
         suggested_overlay_hex=overlay_hex,
+        background_pixels=int(bg_info["background_pixels"]),
+        background_percent=float(bg_info["background_percent"]),
+        tissue_percent=float(bg_info["tissue_percent"]),
+        tissue_threshold=float(bg_info["tissue_threshold"]),
+        tissue_method=str(bg_info["tissue_method"]),
+        white_point=list(bg_info["white_point"]),
+        chromogen_present=bool(chromogen_in_band),
         stain_a_hex=_hex(a_rgb),
         stain_b_hex=_hex(b_rgb),
         stain_a_label=counter_label,
@@ -851,13 +1146,50 @@ def _remove_small(mask: np.ndarray, min_px: int) -> np.ndarray:
 # Rendering
 # --------------------------------------------------------------------------- #
 
-def render_overlay(rgb: np.ndarray, maps: dict[str, np.ndarray], color=(0, 229, 255), alpha=0.5) -> np.ndarray:
+def render_overlay(rgb: np.ndarray, maps: dict[str, np.ndarray],
+                   color=OVERLAY_CHOICES["blue"], alpha=0.5) -> np.ndarray:
     """Highlight positive pixels on the original image."""
     out = rgb.astype(np.float64).copy()
     pos = maps["positive"]
     overlay = np.array(color, dtype=np.float64)
     out[pos] = (1 - alpha) * out[pos] + alpha * overlay
     return np.clip(out, 0, 255).astype(np.uint8)
+
+
+def render_stain_only(
+    rgb: np.ndarray,
+    maps: dict[str, np.ndarray],
+    *,
+    background_rgb: tuple[int, int, int] = (255, 255, 255),
+    positive: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """
+    BACKGROUND REMOVED — only the detected stain survives.
+
+    Every pixel the engine did not classify as chromogen is replaced by a flat
+    field: bare glass, counterstain, unstained tissue and grey/black debris all
+    go. Positive pixels keep their ORIGINAL colour (not a synthetic tint), so
+    what is left is exactly the measured stain and nothing else — which is what
+    makes it usable as evidence for the reported positive-area number.
+    """
+    pos = maps["positive"] if positive is None else np.asarray(positive, dtype=bool)
+    out = np.empty_like(rgb)
+    out[...] = np.array(background_rgb, dtype=np.uint8)
+    out[pos] = rgb[pos]
+    return out
+
+
+def render_background_removed(
+    rgb: np.ndarray,
+    maps: dict[str, np.ndarray],
+    *,
+    background_rgb: tuple[int, int, int] = (255, 255, 255),
+) -> np.ndarray:
+    """Slide with the BACKGROUND (glass / mounting medium) erased but all tissue
+    kept — the intermediate view that shows what `segment_tissue()` decided."""
+    out = rgb.copy()
+    out[~maps["tissue_mask"]] = np.array(background_rgb, dtype=np.uint8)
+    return out
 
 
 def _recompose(conc: np.ndarray, stain_matrix: np.ndarray) -> np.ndarray:

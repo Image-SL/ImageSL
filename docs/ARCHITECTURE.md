@@ -31,35 +31,61 @@ The pixel-level work, in order:
    slides stay within Railway RAM and analyze in well under a second.
 2. **Optical density** (`rgb_to_od`) — Beer–Lambert transform, the physically
    correct space for stain math.
-3. **Automatic stain estimation** (`estimate_stains_macenko`) — the **Macenko**
-   method finds the two dominant stain color vectors from the image itself. This
-   is why ImageSL separates *any* stain color, not a hardcoded brown. A fixed
-   H-DAB matrix is the fallback for single-stain / low-contrast slides.
-4. **Deconvolution** (`_deconvolve`) — projects OD onto the stain basis to get
+3. **White point** (`estimate_white_point`, `white_is_glass`) — the brightest
+   few percent of a scan is bare glass, so absorbance is measured against *that*
+   rather than a theoretical 255. Applied only when the scan is genuinely dim or
+   tinted **and** the white forms a population separated from the tissue bulk, so
+   a well-exposed slide is untouched and a wall-to-wall-tissue slide is never
+   renormalised against its own palest tissue.
+4. **Background & tissue** (`segment_tissue`) — the mask every statistic is
+   anchored to, from four independent signals: per-slide **Otsu** on the OD
+   histogram; a **chroma rescue** so pale-but-coloured pixels count as dilute
+   stain; a **local-standard-deviation texture** test that drops large smooth
+   regions (vignetting, haze, defocus, scanner artefacts) carrying no cellular
+   structure; and morphological cleanup that fills interior lumina and drops
+   isolated specks. A frame with no glass in it is detected and falls back to the
+   absolute OD floor, so Otsu can never split tissue against itself.
+5. **Stain basis** (`_estimate_basis`) — a curated reference matrix is chosen by
+   the chromogen family detected on the slide. Only families in
+   `ENABLED_FAMILIES` (currently `H-DAB`) can be selected; when the slide's
+   chromogen falls outside them the DAB basis is kept and `chromogen_present`
+   comes back `False`, so the app says "no DAB here" instead of quietly
+   measuring some other colour.
+6. **Deconvolution** (`_deconvolve`) — projects OD onto the stain basis to get
    per-stain concentration maps.
-5. **Background & tissue** — pixels with low total OD (bright glass) are
-   background; the rest is tissue.
-6. **Quantification** — Otsu threshold on the target concentration within tissue
-   yields positive-area %, positive pixel count, and mean optical density.
-7. **Rendering** — `render_overlay` highlights counted pixels; `render_variant`
-   rescales each stain's concentration (darker/lighter) and repaints the
-   background to any color, then inverts Beer–Lambert to RGB.
+7. **Colour gating → score** — a pixel is a candidate only if it is inside the
+   chromogen's hue *band* (tighter than the generic ±46° tolerance — this is what
+   stops a red chromogen counting as brown), saturated above the slide's own
+   tissue bulk, chromogen-dominated, and in the eroded tissue core. Candidates
+   carry a normalised concentration **score**; everything else is zeroed. The
+   score is shipped to the browser as a grayscale PNG so the threshold slider
+   re-measures live.
+8. **Quantification** — threshold on that score (auto-anchored to each slide's
+   background concentration, or manual) yields positive-area %, positive pixel
+   count, and mean optical density.
+9. **Rendering** — `render_overlay` highlights counted pixels;
+   `render_stain_only` erases everything *except* the chromogen;
+   `render_background_removed` erases only the glass; `render_stain` paints one
+   separated stain; `compose_comparison` builds the labelled export.
 
 This is the same family of techniques used by QuPath and Fiji — principled, not
 a per-pixel color threshold.
 
-### `server/ai/claude_client.py` — the reasoning + conversation layer
+### `server/ihc/stains.py` — the stain registry
 
-- `vision_stain_report()` sends a small JPEG thumbnail to Claude with a
-  JSON-schema structured-output request; Claude identifies the stain type,
-  target chromogen color, tissue quality, and a suggested background color. The
-  app uses this to label and pre-tune the deterministic pipeline.
-- `chat_stream()` streams the in-app assistant. The current slide's metrics are
-  injected as a trailing `role: "system"` message (an Opus-4.8 feature) so the
-  assistant can reference real numbers without re-sending the whole prompt.
-- Default model `claude-opus-4-8` (override via `IMAGESL_CLAUDE_MODEL`). Both
-  functions **degrade gracefully** when `ANTHROPIC_API_KEY` is unset — analysis
-  still works, AI features return a clear "not configured" message.
+Every IHC chromogen and special stain is defined here with its Ruifrok &
+Johnston deconvolution vectors. `ENABLED_KEYS` decides which are actually
+shipped — currently `{"dab"}`. Disabled entries stay defined and vetted;
+`lookup()` returns `None` for them, which callers read as "use auto-detect", so
+an old or hand-written request for a non-shipped stain degrades instead of
+failing.
+
+### ~~`server/ai/claude_client.py`~~ — not in this repository
+
+An earlier design had a Claude vision + chat layer (`vision_stain_report()`,
+`chat_stream()`, `POST /api/chat`, `ANTHROPIC_API_KEY`). **That module is not
+present in this codebase** and nothing in the current app calls the Anthropic
+API. References to it below and in `DEPLOY.md` / `GETTING_STARTED.md` are stale.
 
 ### `server/app.py` — the API
 
