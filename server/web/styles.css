@@ -102,8 +102,9 @@ main { max-width:1120px; margin:0 auto; padding:38px 22px 90px; }
 .sp-chosen .sp-comp { font-size:11.5px; font-weight:700; color:var(--violet-700); }
 .sp-chosen .sp-change { margin-left:auto; font:inherit; font-size:12.5px; font-weight:700; color:var(--violet-700); background:#fff; border:1px solid var(--line); border-radius:8px; padding:5px 11px; cursor:pointer; }
 
-/* -------- live threshold slider -------- */
+/* -------- live threshold slider (sits directly under the slide image) -------- */
 .threshold-row { display:flex; align-items:center; gap:13px; margin-top:12px; }
+.oc-label { display:inline-flex; align-items:center; gap:7px; font-size:13.5px; font-weight:700; color:var(--ink-2); white-space:nowrap; }
 .threshold-row .cThr { flex:1; min-width:110px; }
 .threshold-row .thrVal { min-width:66px; text-align:right; font-size:13px; font-weight:800; color:var(--violet-700); font-variant-numeric:tabular-nums; }
 .thr-auto { font:inherit; font-size:12px; font-weight:700; color:var(--violet-700); background:var(--violet-50); border:1px solid var(--line); border-radius:8px; padding:5px 11px; cursor:pointer; white-space:nowrap; }
@@ -214,36 +215,9 @@ main { max-width:1120px; margin:0 auto; padding:38px 22px 90px; }
 .variant figcaption span { flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .vdl { font:inherit; font-size:11px; font-weight:700; color:var(--violet-700); background:var(--violet-50); border:1px solid var(--line); border-radius:7px; padding:3px 8px; cursor:pointer; }
 .vdl:hover { background:var(--violet-100); }
-.swatch { width:16px; height:16px; border-radius:50%; border:2px solid #fff; box-shadow:0 0 0 1px var(--line), 0 1px 3px rgba(0,0,0,.2); cursor:pointer; padding:0; flex:none; background:#888; }
-.swatch:hover { transform:scale(1.12); }
-
-/* -------- overlay color control (thumb shows the selected color) -------- */
-.overlay-color { display:flex; align-items:center; gap:13px; margin-top:18px; padding-top:16px; border-top:1px solid var(--line); }
-.oc-label { display:inline-flex; align-items:center; gap:7px; font-size:13.5px; font-weight:700; color:var(--ink-2); white-space:nowrap; }
-.overlay-color .oc-choices { margin-right:auto; }
-.oc-auto { font:inherit; font-size:12px; font-weight:700; color:var(--violet-700); background:var(--violet-50); border:1px solid var(--line); border-radius:8px; padding:5px 11px; cursor:pointer; white-space:nowrap; }
-.oc-auto:hover { background:var(--violet-100); }
 
 /* range sliders */
 input[type="range"]{ -webkit-appearance:none; appearance:none; height:5px; border-radius:5px; background:var(--violet-100); outline:none; }
-
-/* -------- two-colour detection picker (red / blue) --------
-   Replaces the old full-spectrum hue slider: the detection colour is a choice
-   between exactly two, so it is a segmented control, not a continuum. */
-.oc-choices { display:inline-flex; gap:0; border:1px solid var(--line); border-radius:10px; overflow:hidden; background:var(--card); box-shadow:var(--shadow-sm); flex:none; }
-.oc-opt { display:inline-flex; align-items:center; gap:7px; font:inherit; font-size:12.5px; font-weight:700; color:var(--ink-2);
-  background:transparent; border:none; padding:7px 13px; cursor:pointer; transition:background .15s ease, color .15s ease; white-space:nowrap; }
-.oc-opt + .oc-opt { border-left:1px solid var(--line); }
-.oc-opt i { width:12px; height:12px; border-radius:50%; flex:none; box-shadow:0 0 0 1px rgba(0,0,0,.18), 0 1px 2px rgba(0,0,0,.22); }
-.oc-opt:hover { background:var(--line-2); color:var(--ink); }
-.oc-opt[aria-checked="true"] { color:#fff; }
-.oc-opt[data-hex="#e61e2d"][aria-checked="true"] { background:#e61e2d; }
-.oc-opt[data-hex="#2060eb"][aria-checked="true"] { background:#2060eb; }
-.oc-opt[aria-checked="true"] i { box-shadow:0 0 0 1.5px rgba(255,255,255,.9); }
-
-.global-overlay { display:flex; align-items:center; gap:10px; font-size:12px; font-weight:700; color:var(--ink-3); }
-.global-overlay span { white-space:nowrap; text-transform:uppercase; letter-spacing:.04em; }
-.global-overlay .oc-opt { padding:6px 11px; font-size:12px; }
 
 /* -------- downloads -------- */
 .downloads { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:16px; padding-top:16px; border-top:1px solid var(--line); }
@@ -293,15 +267,10 @@ input[type="range"]{ -webkit-appearance:none; appearance:none; height:5px; borde
   .mode-select{ grid-template-columns:1fr; }
   .results-actions{ flex:1; }
   .results-actions .btn{ flex:1; justify-content:center; }
-  .global-overlay{ width:100%; }
-  .global-overlay .oc-choices{ flex:1; }
-  .global-overlay .oc-opt{ flex:1; justify-content:center; }
-  /* Appearance rows: label on its own line, controls beneath — otherwise the
+  /* Threshold row: label on its own line, controls beneath — otherwise the
      nowrap label + slider + value + Auto together overflow a phone viewport. */
-  .overlay-color, .threshold-row { flex-wrap:wrap; row-gap:10px; }
-  .overlay-color .oc-label, .threshold-row .oc-label { flex:1 0 100%; }
-  .overlay-color .oc-choices { flex:1; }
-  .overlay-color .oc-opt { flex:1; justify-content:center; }
+  .threshold-row { flex-wrap:wrap; row-gap:10px; }
+  .threshold-row .oc-label { flex:1 0 100%; }
   .threshold-row .cThr { flex:1 1 auto; min-width:80px; }
   .threshold-row .thrVal { min-width:50px; }
 }

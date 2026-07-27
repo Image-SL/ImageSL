@@ -63,10 +63,12 @@ The pixel-level work, in order:
 8. **Quantification** — threshold on that score (auto-anchored to each slide's
    background concentration, or manual) yields positive-area %, positive pixel
    count, and mean optical density.
-9. **Rendering** — `render_overlay` highlights counted pixels;
-   `render_stain_only` erases everything *except* the chromogen;
-   `render_background_removed` erases only the glass; `render_stain` paints one
-   separated stain; `compose_comparison` builds the labelled export.
+9. **Rendering** — `render_overlay` highlights counted pixels (always in the one
+   fixed blue, `engine.OVERLAY_BLUE`); `render_stain_only` erases everything
+   *except* the chromogen; `compose_comparison` builds the labelled export.
+   `render_background_removed` (glass only) and `render_stain` (one separated
+   stain) are still available for export but are no longer shown in the UI, which
+   displays exactly three panels: Original, Overlay, Stain only.
 
 This is the same family of techniques used by QuPath and Fiji — principled, not
 a per-pixel color threshold.

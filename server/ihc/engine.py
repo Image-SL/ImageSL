@@ -170,12 +170,11 @@ ENABLED_FAMILIES: tuple[str, ...] = ("H-DAB",)
 # chromogen was found, instead of silently measuring some other colour.
 _DAB_HUE_BAND = (10.0, 78.0)
 
-# The two detection-overlay colours the UI offers. Auto picks whichever sits
-# further from the colours actually present on the slide.
-OVERLAY_CHOICES: dict[str, tuple[int, int, int]] = {
-    "red":  (230, 30, 45),
-    "blue": (32, 96, 235),
-}
+# The detection-overlay colour. There is exactly ONE — blue — everywhere: no
+# picker, no per-slide auto pick, no second colour. Keep in step with app.js
+# OVERLAY_RGB.
+OVERLAY_BLUE: tuple[int, int, int] = (32, 96, 235)
+OVERLAY_CHOICES: dict[str, tuple[int, int, int]] = {"blue": OVERLAY_BLUE}
 OVERLAY_DEFAULT_HEX = "#2060eb"
 
 
@@ -809,44 +808,6 @@ def _deconvolve(od: np.ndarray, stain_matrix_3x3: np.ndarray) -> np.ndarray:
 
 
 # --------------------------------------------------------------------------- #
-# Auto overlay colour (max contrast to the tissue)
-# --------------------------------------------------------------------------- #
-
-def _auto_overlay_hex(rgb: np.ndarray, tissue: np.ndarray, avoid_hues=None) -> str:
-    """Pick the better of the two detection colours the UI offers (red / blue).
-
-    "Better" = whichever sits further from every colour actually on the slide, so
-    the highlight can never be confused with the chromogen OR the (usually blue)
-    counterstain. For H-DAB — brown DAB ~30° plus blue haematoxylin ~270° — red
-    collides with the brown, so this lands on blue.
-
-    `avoid_hues` is (chromogen_hue, counterstain_hue) — the FIRST entry is
-    weighted double, because the highlight is painted directly onto chromogen
-    pixels, so separating from the chromogen matters more than separating from a
-    counterstain the overlay never touches. The mean tissue hue is added too."""
-    small = rgb[::3, ::3].astype(np.float32) / 255.0
-    tmask = tissue[::3, ::3]
-    sample = small[tmask] if tmask.any() else small.reshape(-1, 3)
-    mean_rgb = sample.mean(axis=0).reshape(1, 1, 3)
-    tissue_hue = float(_rgb_to_hsv(mean_rgb)[0][0, 0])
-
-    avoid = [float(h) for h in (avoid_hues or [])] + [tissue_hue]
-    weights = [2.0] + [1.0] * (len(avoid) - 1)   # chromogen counts double
-
-    def _score(candidate_rgb) -> float:
-        c = np.array(candidate_rgb, dtype=np.float32).reshape(1, 1, 3) / 255.0
-        ch = float(_rgb_to_hsv(c)[0][0, 0])
-        total = 0.0
-        for a, wgt in zip(avoid, weights):
-            d = abs(ch - a) % 360.0
-            total += wgt * min(d, 360.0 - d)
-        return total
-
-    best = max(OVERLAY_CHOICES.values(), key=_score)
-    return _hex(best)
-
-
-# --------------------------------------------------------------------------- #
 # Public: analyse
 # --------------------------------------------------------------------------- #
 
@@ -1053,8 +1014,7 @@ def analyze(
     a_idx, b_idx = counter_idx, tgt_idx
     a_rgb = _od_to_rgb_unit(stain_matrix[a_idx])
     b_rgb = _od_to_rgb_unit(stain_matrix[b_idx])
-    counter_hue = _classify_stain(a_rgb)[1]
-    overlay_hex = _auto_overlay_hex(rgb, tissue_mask, avoid_hues=[float(target_hue), counter_hue])
+    overlay_hex = OVERLAY_DEFAULT_HEX      # detection overlay is always blue
 
     chromogen = target_label
     if stain_choice:
@@ -1147,7 +1107,7 @@ def _remove_small(mask: np.ndarray, min_px: int) -> np.ndarray:
 # --------------------------------------------------------------------------- #
 
 def render_overlay(rgb: np.ndarray, maps: dict[str, np.ndarray],
-                   color=OVERLAY_CHOICES["blue"], alpha=0.5) -> np.ndarray:
+                   color=OVERLAY_BLUE, alpha=0.5) -> np.ndarray:
     """Highlight positive pixels on the original image."""
     out = rgb.astype(np.float64).copy()
     pos = maps["positive"]
