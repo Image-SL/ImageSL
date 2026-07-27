@@ -5,9 +5,10 @@ const $ = (id) => document.getElementById(id);
 const RING_C = 2 * Math.PI * 52;
 const OVERLAY_ALPHA = 0.5;
 
-/* The detection overlay is ONE fixed colour — blue (#2060eb). There is no picker,
-   no auto pick and no second colour anywhere; keep in step with engine.OVERLAY_BLUE. */
-const OVERLAY_RGB = [32, 96, 235];
+/* The detection overlay is ONE fixed colour — neon green (#39ff14). There is no
+   picker, no auto pick and no second colour anywhere; keep in step with
+   engine.OVERLAY_GREEN. */
+const OVERLAY_RGB = [57, 255, 20];
 
 function headers(json) { const h = {}; if (json) h["Content-Type"] = "application/json"; return h; }
 
@@ -348,7 +349,7 @@ function createCard(data) {
   q(".fname").textContent = filename;
   function persistData() { if (entry) entry.data = current; saveStateSoon(); }
 
-  // ---- overlay redraw (threshold only — the colour is always blue) ----
+  // ---- overlay redraw (threshold only — the colour is always neon green) ----
   let rafPending = false;
   function redraw() {
     if (!st.origImg || !st.sc) return;

@@ -181,7 +181,7 @@ def _default_params() -> dict:
         "stain_method": "auto",
         "stain_key": None,          # selection mode: chosen antibody key (or None=auto)
         "score_threshold": None,    # manual intensity threshold 0..1 (None=auto)
-        # The detection overlay is a fixed blue — there is nothing to configure.
+        # The detection overlay is a fixed neon green — there is nothing to configure.
         "stainA_hex": None,         # None → stain's natural colour
         "stainB_hex": None,
     }
@@ -213,9 +213,9 @@ def _hex_to_rgb(h: Optional[str]) -> Optional[tuple[int, int, int]]:
 
 
 def _overlay_color(p: dict) -> tuple[int, int, int]:
-    """Overlay colour — always blue. There is no picker and no per-slide auto pick,
-    so every overlay (screen, TIFF, comparison, ZIP) is the one same blue."""
-    return engine.OVERLAY_BLUE
+    """Overlay colour — always neon green. There is no picker and no per-slide auto
+    pick, so every overlay (screen, TIFF, comparison, ZIP) is the one same green."""
+    return engine.OVERLAY_GREEN
 
 
 def _stain_indices(maps: dict) -> tuple[int, int]:
@@ -243,7 +243,7 @@ def _render_images(entry: dict) -> None:
 
 def _rerender(entry: dict, **updates) -> dict:
     """Apply a threshold update. The overlay is composited live in the browser (in
-    the one fixed blue), so the server only has to recompute the exact metrics at
+    the one fixed neon green), so the server only has to recompute the exact metrics at
     the new threshold, keeping CSV and exports in step with the screen."""
     p = entry["params"]
     if "score_threshold" in updates and updates["score_threshold"] is not None:
@@ -424,7 +424,7 @@ def _tiff_bytes(arr: np.ndarray) -> bytes:
 def _apply_view(entry: dict, score_threshold: Optional[str]) -> None:
     """Apply the caller's CURRENT on-screen threshold to this entry before
     rendering, so a download always matches exactly what's shown — no dependence
-    on a debounced background persist. (The overlay colour is always blue.)"""
+    on a debounced background persist. (The overlay colour is always neon green.)"""
     p = entry["params"]
     if score_threshold is not None and score_threshold != "":
         try:

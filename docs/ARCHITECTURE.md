@@ -64,7 +64,7 @@ The pixel-level work, in order:
    background concentration, or manual) yields positive-area %, positive pixel
    count, and mean optical density.
 9. **Rendering** — `render_overlay` highlights counted pixels (always in the one
-   fixed blue, `engine.OVERLAY_BLUE`); `render_stain_only` erases everything
+   fixed neon green, `engine.OVERLAY_GREEN`); `render_stain_only` erases everything
    *except* the chromogen; `compose_comparison` builds the labelled export.
    `render_background_removed` (glass only) and `render_stain` (one separated
    stain) are still available for export but are no longer shown in the UI, which

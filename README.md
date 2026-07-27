@@ -35,7 +35,7 @@ Every control re-measures live in the browser, with no server round-trip:
 | **TIF** / **Download** | exports any panel at full analysis resolution, at exactly the threshold on screen |
 
 Each result shows three panels — **Original**, **Overlay** and **Stain only**.
-The detection highlight is always blue (`#2060eb`); there is no colour picker.
+The detection highlight is always neon green (`#39ff14`); there is no colour picker.
 
 Batch work is first-class: drop a folder of slides, then export one ZIP of
 images plus a CSV of every measurement.

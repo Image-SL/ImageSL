@@ -33,9 +33,9 @@ Design goals (2026 rewrite):
        a chroma gate: genuine chromogen carries a specific hue, debris does not;
      - lumen / tear rims — defeated by eroding to the tissue core.
 
-*  Auto-picks the higher-contrast detection colour per slide from the two the UI
-   offers (red / blue) and reports natural display colours for each stain so the
-   UI can show recolourable Stain-A / Stain-B panels.
+*  Highlights detections in ONE fixed colour (neon green) on every slide, and
+   reports natural display colours for each stain so the UI can show
+   recolourable Stain-A / Stain-B panels.
 
 *  Can erase the background entirely — `render_stain_only()` returns the slide
    with everything except the detected chromogen replaced by a flat field.
@@ -172,12 +172,12 @@ ENABLED_FAMILIES: tuple[str, ...] = ("H-DAB",)
 # chromogen was found, instead of silently measuring some other colour.
 _DAB_HUE_BAND = (10.0, 78.0)
 
-# The detection-overlay colour. There is exactly ONE — blue — everywhere: no
-# picker, no per-slide auto pick, no second colour. Keep in step with app.js
+# The detection-overlay colour. There is exactly ONE — neon green — everywhere:
+# no picker, no per-slide auto pick, no second colour. Keep in step with app.js
 # OVERLAY_RGB.
-OVERLAY_BLUE: tuple[int, int, int] = (32, 96, 235)
-OVERLAY_CHOICES: dict[str, tuple[int, int, int]] = {"blue": OVERLAY_BLUE}
-OVERLAY_DEFAULT_HEX = "#2060eb"
+OVERLAY_GREEN: tuple[int, int, int] = (57, 255, 20)
+OVERLAY_CHOICES: dict[str, tuple[int, int, int]] = {"green": OVERLAY_GREEN}
+OVERLAY_DEFAULT_HEX = "#39ff14"
 
 
 # --------------------------------------------------------------------------- #
@@ -1058,7 +1058,7 @@ def analyze(
     a_idx, b_idx = counter_idx, tgt_idx
     a_rgb = _od_to_rgb_unit(stain_matrix[a_idx])
     b_rgb = _od_to_rgb_unit(stain_matrix[b_idx])
-    overlay_hex = OVERLAY_DEFAULT_HEX      # detection overlay is always blue
+    overlay_hex = OVERLAY_DEFAULT_HEX      # detection overlay is always neon green
 
     chromogen = target_label
     if stain_choice:
@@ -1151,7 +1151,7 @@ def _remove_small(mask: np.ndarray, min_px: int) -> np.ndarray:
 # --------------------------------------------------------------------------- #
 
 def render_overlay(rgb: np.ndarray, maps: dict[str, np.ndarray],
-                   color=OVERLAY_BLUE, alpha=0.5) -> np.ndarray:
+                   color=OVERLAY_GREEN, alpha=0.5) -> np.ndarray:
     """Highlight positive pixels on the original image."""
     out = rgb.astype(np.float64).copy()
     pos = maps["positive"]
