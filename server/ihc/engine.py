@@ -89,6 +89,8 @@ _WHITE_APPLY_BELOW  = 245.0  # only renormalise OD when the scan really is dim/t
 _WHITE_GLASS_SEP    = 20.0   # ... and only if that white is separated from the tissue bulk
 _TISSUE_THR_MAX     = 0.55   # clamp the per-slide Otsu cut (faint tissue must survive)
 _TISSUE_BG_MIN_FRAC = 0.02   # < 2% glass ⇒ full-field slide, Otsu would split tissue
+_BG_GLASS_GAP       = 26.0   # bare glass sits within this many levels of the white point
+_BG_GLASS_SAT       = 0.20   # ... and carries essentially no colour
 _CHROMA_RESCUE_SAT  = 0.22   # a pale but distinctly coloured pixel is dilute stain
 _TEXTURE_WIN        = 7      # local-std window (px) for the flat-region test
 _TEXTURE_REL        = 0.35   # "smooth" = local std below this × the tissue median
@@ -366,6 +368,30 @@ def estimate_white_point(rgb: np.ndarray) -> np.ndarray:
     return np.clip(white, _WHITE_MIN, 255.0)
 
 
+def _bg_class_is_glass(rgb: np.ndarray, sat: np.ndarray,
+                       below: np.ndarray, white: np.ndarray) -> bool:
+    """Does the class Otsu put BELOW its cut actually look like bare glass?
+
+    Otsu only splits a histogram in two — it cannot tell which half is glass. On
+    a wall-to-wall section (no empty slide in frame) it therefore splits *tissue
+    against tissue*, and the sub-threshold class is pale tissue, not background.
+    That failure is silent and expensive: the pale tissue is discarded, so the
+    denominator every percentage is reported against collapses, the mask left
+    behind is a filigree of the stained structures themselves (which the core
+    erosion then eats), and the "background" statistics that set the positivity
+    threshold are measured on stain.
+
+    Real glass sits within a few levels of the white point and is essentially
+    colourless. Pale tissue is clearly darker and usually tinted.
+    """
+    sub = below[::3, ::3]
+    if not sub.any():
+        return True
+    bright = float(np.median(rgb[::3, ::3][sub].max(axis=1)))
+    chroma = float(np.median(sat[::3, ::3][sub]))
+    return (float(np.min(white)) - bright) <= _BG_GLASS_GAP and chroma <= _BG_GLASS_SAT
+
+
 def white_is_glass(rgb: np.ndarray, white: np.ndarray) -> bool:
     """Is that white point genuinely bare glass, or merely the palest tissue?
 
@@ -567,11 +593,17 @@ def segment_tissue(
         thr = float(od_floor)
         method = "floor (histogram unusable)"
     thr = float(np.clip(thr, od_floor, _TISSUE_THR_MAX))
-    if float((total_od < thr).mean()) < _TISSUE_BG_MIN_FRAC:
+    below = total_od < thr
+    if float(below.mean()) < _TISSUE_BG_MIN_FRAC:
         # Almost nothing is background → the frame is wall-to-wall tissue and
         # Otsu has split tissue against itself. Keep everything above the floor.
         thr = float(od_floor)
         method = "full-field (no glass in frame)"
+    elif thr > od_floor and not _bg_class_is_glass(rgb, sat, below, white):
+        # Otsu found a split, but what it called background is too dark and too
+        # coloured to be glass — it has cut tissue against tissue. Same fallback.
+        thr = float(od_floor)
+        method = "full-field (Otsu split tissue, not glass)"
 
     # 3) intensity + chroma rescue
     mask = (total_od >= thr) | ((sat >= _CHROMA_RESCUE_SAT) & (total_od >= od_floor * 0.55))
@@ -975,13 +1007,25 @@ def analyze(
             # dark grey/blue background — even one DARKER than the stain — carries
             # little chromogen concentration, so it is excluded by colour, not by
             # intensity. This is what lets ImageSL separate stain from a darker bg.
-            # Two-part colour test: close to the chromogen's hue AND inside the
-            # window that colour can physically occupy. The band is what stops a
-            # red / magenta chromogen 37° away from brown counting as DAB.
+            # Colour test: the pixel must sit close to THIS slide's own measured
+            # chromogen hue. On a slide whose chromogen is not DAB, the reference
+            # window is applied on top (below) so it cannot be counted as DAB.
             hue_ok = _hue_dist(hue, target_hue) <= _HUE_TOL_DEG
-            band = _hue_band_for(target_hue, method)
-            if band is not None:
-                hue_ok &= _in_hue_band(hue, band)
+            # The reference band is a check on the SLIDE's chromogen, not on each
+            # pixel — `_estimate_basis` has already used it to decide
+            # `chromogen_in_band`. Re-applying it per pixel on a slide whose
+            # chromogen IS confirmed DAB only shaves the densest stain: hue gets
+            # numerically unstable as a pixel approaches black, so the darkest DAB
+            # reads a few degrees redder and falls just outside the window (here,
+            # 9.3% of unmistakable dark DAB, sitting at hue 2-10 deg against a
+            # lower edge of 10). Those pixels are already held to the +-tolerance
+            # around this slide's own measured chromogen. When the chromogen is
+            # NOT in band the gate stays, so a red / magenta chromogen still
+            # measures at or near zero instead of being counted as DAB.
+            if not chromogen_in_band:
+                band = _hue_band_for(target_hue, method)
+                if band is not None:
+                    hue_ok &= _in_hue_band(hue, band)
             candidate = (core & hue_ok & (sat >= sat_gate)
                          & (specificity >= _SPEC_MIN) & (target_conc > counter_conc)
                          & (target_conc >= _OD_ABS_FLOOR * 0.5))  # tiny floor kills noise

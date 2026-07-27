@@ -284,7 +284,12 @@ def _serve_html(name: str) -> HTMLResponse:
     path = WEB_DIR / name
     if not path.is_file():
         return HTMLResponse(f"<h1>ImageSL</h1><p>Missing {name}.</p>", status_code=500)
-    return HTMLResponse(path.read_text(encoding="utf-8"))
+    # NEVER let the browser (or the desktop client's WebView) hold on to the HTML.
+    # It is the only unversioned file we serve, so a stale copy pins the whole app
+    # to an old build: it keeps requesting the old `?v=` CSS/JS and a deploy looks
+    # like it "didn't update" until the user hard-refreshes.
+    return HTMLResponse(path.read_text(encoding="utf-8"),
+                        headers={"Cache-Control": "no-cache, must-revalidate"})
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -292,16 +297,23 @@ def home() -> HTMLResponse:
     return _serve_html("index.html")
 
 
+# CSS/JS carry a `?v=` in the HTML, so a new build always requests a new URL and
+# these can be cached hard.
+_STATIC_CACHE = {"Cache-Control": "public, max-age=31536000"}
+
+
 @app.get("/styles.css")
 def styles_css():
     path = WEB_DIR / "styles.css"
-    return FileResponse(str(path), media_type="text/css") if path.is_file() else HTMLResponse("", status_code=404)
+    return (FileResponse(str(path), media_type="text/css", headers=_STATIC_CACHE)
+            if path.is_file() else HTMLResponse("", status_code=404))
 
 
 @app.get("/app.js")
 def app_js():
     path = WEB_DIR / "app.js"
-    return FileResponse(str(path), media_type="application/javascript") if path.is_file() else HTMLResponse("", status_code=404)
+    return (FileResponse(str(path), media_type="application/javascript", headers=_STATIC_CACHE)
+            if path.is_file() else HTMLResponse("", status_code=404))
 
 
 @app.get("/api/health")
