@@ -31,10 +31,11 @@ Every control re-measures live in the browser, with no server round-trip:
 
 | Control | What it does |
 | --- | --- |
-| **Detection threshold** slider | re-thresholds the per-pixel stainness score — the %, pixel counts, overlay and *Stain only* panel all update as you drag |
-| **Detection color** — Red / Blue | recolours the highlight; *Auto* picks whichever of the two contrasts better with this slide |
-| **Stain A / B** swatches | recolours the two separated stain panels |
-| **TIF** / **Download** | exports any panel at full analysis resolution, at exactly the threshold and colour on screen |
+| **Detection threshold** slider — sits directly under the slide, so the image stays in view while you drag | re-thresholds the per-pixel stainness score — the %, pixel counts, overlay and *Stain only* panel all update as you drag |
+| **TIF** / **Download** | exports any panel at full analysis resolution, at exactly the threshold on screen |
+
+Each result shows three panels — **Original**, **Overlay** and **Stain only**.
+The detection highlight is always blue (`#2060eb`); there is no colour picker.
 
 Batch work is first-class: drop a folder of slides, then export one ZIP of
 images plus a CSV of every measurement.

@@ -181,8 +181,7 @@ def _default_params() -> dict:
         "stain_method": "auto",
         "stain_key": None,          # selection mode: chosen antibody key (or None=auto)
         "score_threshold": None,    # manual intensity threshold 0..1 (None=auto)
-        # colours — all auto-derived at analysis time; user may override any.
-        "overlay_hex": None,        # None → per-slide auto-contrast colour
+        # The detection overlay is a fixed blue — there is nothing to configure.
         "stainA_hex": None,         # None → stain's natural colour
         "stainB_hex": None,
     }
@@ -214,9 +213,9 @@ def _hex_to_rgb(h: Optional[str]) -> Optional[tuple[int, int, int]]:
 
 
 def _overlay_color(p: dict) -> tuple[int, int, int]:
-    """Overlay colour: user override, else the per-slide auto pick (red or blue)."""
-    return (_hex_to_rgb(p.get("overlay_hex")) or _hex_to_rgb(p.get("_overlay_auto"))
-            or engine.OVERLAY_CHOICES["blue"])
+    """Overlay colour — always blue. There is no picker and no per-slide auto pick,
+    so every overlay (screen, TIFF, comparison, ZIP) is the one same blue."""
+    return engine.OVERLAY_BLUE
 
 
 def _stain_indices(maps: dict) -> tuple[int, int]:
@@ -225,55 +224,33 @@ def _stain_indices(maps: dict) -> tuple[int, int]:
 
 
 def _render_images(entry: dict) -> None:
+    """The UI shows exactly three panels — Original, Overlay and Stain only — and
+    the last two are composited IN THE BROWSER from `original` + `score` (a
+    grayscale stainness map) so the threshold slider re-thresholds both live with
+    no server round-trip. So those two images are the only ones sent."""
     rgb, p = entry["rgb"], entry["params"]
     maps = entry["maps"]
-    # After caching we drop the heavy concentration maps; recompute on demand.
-    if "conc" not in maps or "score" not in maps:
+    # After caching we drop the heavy score map; recompute on demand.
+    if "score" not in maps:
         _, maps = engine.analyze(rgb, entry.get("source_size", (rgb.shape[1], rgb.shape[0])),
                                  **_analyze_kwargs(p))
         entry["maps"] = maps
-    a_idx, b_idx = _stain_indices(maps)
-    stainA = engine.render_stain(maps, a_idx, _hex_to_rgb(p.get("stainA_hex")))
-    stainB = engine.render_stain(maps, b_idx, _hex_to_rgb(p.get("stainB_hex")))
-    # The overlay AND the background-removed "stain only" view are composited IN
-    # THE BROWSER from `original` + `score` (a grayscale stainness map): the
-    # browser re-thresholds the score live, so the detection colour and the
-    # threshold slider update both panels instantly, with no server round-trip.
-    # `tissue` (glass removed, all tissue kept) does NOT depend on the threshold,
-    # so it is rendered once here.
     entry["images"] = {
         "original": entry["images"].get("original") if entry.get("images") else engine.to_data_uri(rgb, "JPEG"),
-        "stainA": engine.to_data_uri(stainA, "JPEG"),
-        "stainB": engine.to_data_uri(stainB, "JPEG"),
-        "tissue": engine.to_data_uri(engine.render_background_removed(rgb, maps), "JPEG"),
         "score": engine.score_data_uri(maps["score"]),
     }
 
 
 def _rerender(entry: dict, **updates) -> dict:
-    """Apply appearance / threshold updates. Overlay colour + threshold are
-    composited live in the browser, so this path only needs to persist the choice
-    and — for a threshold change — recompute the exact server-side metrics so CSV
-    and exports match. Recolouring Stain A / Stain B re-renders those two panels."""
+    """Apply a threshold update. The overlay is composited live in the browser (in
+    the one fixed blue), so the server only has to recompute the exact metrics at
+    the new threshold, keeping CSV and exports in step with the screen."""
     p = entry["params"]
-    recompute = False
     if "score_threshold" in updates and updates["score_threshold"] is not None:
         st = updates["score_threshold"]
         p["score_threshold"] = None if st in ("", "auto") else float(st)
-        recompute = True
-    needs_render = False
-    for k in ("stainA_hex", "stainB_hex"):
-        if k in updates and updates[k] is not None:
-            p[k] = updates[k] or None
-            needs_render = True
-    if updates.get("overlay_hex") is not None:
-        p["overlay_hex"] = updates["overlay_hex"] or None
-
-    if recompute:
         result, maps = engine.analyze(entry["rgb"], entry["source_size"], **_analyze_kwargs(p))
         entry["result"], entry["maps"] = result, maps
-        _render_images(entry)
-    elif needs_render:
         _render_images(entry)
     return entry
 
@@ -361,9 +338,6 @@ async def api_analyze(
     if stain_key and stain_registry.lookup(stain_key):
         params["stain_key"] = stain_registry.lookup(stain_key)["key"]
     result, maps = engine.analyze(rgb, source_size, **_analyze_kwargs(params))
-    # Remember the per-slide auto-contrast overlay colour; used until the user
-    # explicitly overrides it.
-    params["_overlay_auto"] = result.suggested_overlay_hex
     entry = {
         "rgb": rgb, "source_size": source_size, "maps": maps, "result": result,
         "params": params, "images": {"original": engine.to_data_uri(rgb, "JPEG")},
@@ -435,13 +409,11 @@ def _tiff_bytes(arr: np.ndarray) -> bytes:
     return buf.getvalue()
 
 
-def _apply_view(entry: dict, overlay_hex: Optional[str], score_threshold: Optional[str]) -> None:
-    """Apply the caller's CURRENT on-screen overlay colour / threshold to this
-    entry before rendering, so a download always matches exactly what's shown —
-    no dependence on a debounced background persist."""
+def _apply_view(entry: dict, score_threshold: Optional[str]) -> None:
+    """Apply the caller's CURRENT on-screen threshold to this entry before
+    rendering, so a download always matches exactly what's shown — no dependence
+    on a debounced background persist. (The overlay colour is always blue.)"""
     p = entry["params"]
-    if overlay_hex:
-        p["overlay_hex"] = overlay_hex
     if score_threshold is not None and score_threshold != "":
         try:
             p["score_threshold"] = None if score_threshold == "auto" else float(score_threshold)
@@ -451,12 +423,11 @@ def _apply_view(entry: dict, overlay_hex: Optional[str], score_threshold: Option
 
 
 @app.get("/api/download_tif")
-def api_download_tif(analysis_id: str, image_type: str,
-                     overlay_hex: Optional[str] = None, score_threshold: Optional[str] = None):
+def api_download_tif(analysis_id: str, image_type: str, score_threshold: Optional[str] = None):
     entry = _CACHE.get(analysis_id)
     if not entry:
         raise HTTPException(status_code=404, detail="Analysis expired")
-    _apply_view(entry, overlay_hex, score_threshold)
+    _apply_view(entry, score_threshold)
 
     data = _tiff_bytes(_render_type(entry, image_type))
     stem = _safe_name(entry.get("filename", "image"))
@@ -474,13 +445,7 @@ async def api_appearance(request: Request, x_imagesl_key: Optional[str] = Header
     entry = _CACHE.get(body.get("analysis_id"))
     if not entry:
         raise HTTPException(status_code=404, detail="Analysis expired; re-run analysis.")
-    _rerender(
-        entry,
-        overlay_hex=body.get("overlay_hex"),
-        stainA_hex=body.get("stainA_hex"),
-        stainB_hex=body.get("stainB_hex"),
-        score_threshold=body.get("score_threshold"),
-    )
+    _rerender(entry, score_threshold=body.get("score_threshold"))
     _persist(body.get("analysis_id"), entry)
     return JSONResponse(_public(entry))
 
@@ -606,8 +571,8 @@ class _ZipSink:
 def _zip_stream(analysis_ids, images, include_csv, overrides=None):
     """Generator that builds the ZIP incrementally, one image at a time. Only a
     single analysis entry is ever held in memory, so 40+ slides won't OOM.
-    `overrides` maps analysis_id → {overlay_hex, score_threshold} so each slide's
-    export matches its exact on-screen appearance."""
+    `overrides` maps analysis_id → {score_threshold} so each slide's export
+    matches its exact on-screen appearance."""
     overrides = overrides or {}
     sink = _ZipSink()
     zf = zipfile.ZipFile(sink, "w", zipfile.ZIP_STORED, allowZip64=True)  # TIFFs already compressed
@@ -618,7 +583,7 @@ def _zip_stream(analysis_ids, images, include_csv, overrides=None):
         if not entry:
             continue
         ov = overrides.get(aid) or {}
-        _apply_view(entry, ov.get("overlay_hex"), ov.get("score_threshold"))
+        _apply_view(entry, ov.get("score_threshold"))
         stem = _safe_name(entry.get("filename", "image"))
         for image_type in images:
             name = f"{stem}_{image_type}.tif"

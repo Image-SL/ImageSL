@@ -32,7 +32,7 @@
 {"@context":"https://schema.org","@type":"WebApplication","name":"ImageSL","url":"https://imagesl.online/","applicationCategory":"HealthApplication","operatingSystem":"Web","description":"ImageSL quantifies DAB immunohistochemistry slides with automatic background removal, color deconvolution and precise positive-area measurement.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}
 </script>
 
-<link rel="stylesheet" href="/styles.css?v=25">
+<link rel="stylesheet" href="/styles.css?v=26">
 </head>
 <body>
 
@@ -134,13 +134,6 @@
     <div class="results-bar">
       <div class="results-count" id="resultsCount"></div>
       <div class="results-tools">
-        <div class="global-overlay" title="Set the detection overlay color for every slide">
-          <span>Overlay · all</span>
-          <div class="oc-choices" id="gChoices" role="radiogroup" aria-label="Detection color for every slide">
-            <button type="button" class="oc-opt" data-hex="#e61e2d" role="radio" aria-checked="false"><i style="background:#e61e2d"></i>Red</button>
-            <button type="button" class="oc-opt" data-hex="#2060eb" role="radio" aria-checked="false"><i style="background:#2060eb"></i>Blue</button>
-          </div>
-        </div>
         <div class="results-actions">
           <button id="btnAddMore" class="btn ghost" title="Analyze more slides into this batch">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
@@ -199,6 +192,18 @@
           </div>
         </div>
       </div>
+
+      <!-- live detection-threshold slider — sits directly under the image so the
+           picture stays in view while it is dragged (re-thresholds in-browser) -->
+      <div class="threshold-row">
+        <span class="oc-label">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21v-7M4 10V3M12 21v-11M12 6V3M20 21v-5M20 12V3"/><circle cx="4" cy="12" r="2"/><circle cx="12" cy="8" r="2"/><circle cx="20" cy="14" r="2"/></svg>
+          Detection threshold
+        </span>
+        <input type="range" class="cThr" min="10" max="900" step="1" value="200" aria-label="Detection threshold">
+        <span class="thrVal">–</span>
+        <button class="thr-auto" title="Reset to the automatic threshold">Auto</button>
+      </div>
     </div>
 
     <!-- metrics -->
@@ -209,7 +214,7 @@
       <div class="metric"><b class="mThreshold">–</b><span>Intensity threshold</span></div>
     </div>
 
-    <!-- variant thumbnails (natural aspect ratio; Stain A/B carry a recolor swatch) -->
+    <!-- variant thumbnails — exactly three: Original, Overlay, Stain only -->
     <div class="variants">
       <figure class="variant"><div class="vwrap"><img class="vImg imgOriginal2" alt="Original" draggable="false"></div>
         <figcaption><span>Original</span><button class="vdl" data-type="original" title="Download TIFF">TIF</button></figcaption></figure>
@@ -217,41 +222,7 @@
         <figcaption><span>Overlay</span><button class="vdl" data-type="overlay" title="Download TIFF">TIF</button></figcaption></figure>
       <figure class="variant"><div class="vwrap"><img class="vImg imgStainOnly" alt="Stain only — background removed" draggable="false"></div>
         <figcaption><span title="Background removed — only the detected DAB stain remains">Stain only</span><button class="vdl" data-type="stainOnly" title="Download TIFF">TIF</button></figcaption></figure>
-      <figure class="variant"><div class="vwrap"><img class="vImg imgTissue" alt="Tissue — glass background removed" draggable="false"></div>
-        <figcaption><span title="Slide background (bare glass / mounting medium) removed, all tissue kept">Tissue</span><button class="vdl" data-type="backgroundRemoved" title="Download TIFF">TIF</button></figcaption></figure>
-      <figure class="variant"><div class="vwrap"><img class="vImg imgStainA" alt="Stain A" draggable="false"></div>
-        <figcaption><button class="swatch swA" title="Recolor Stain A" aria-label="Recolor Stain A"></button><span class="labA">Stain A</span><button class="vdl" data-type="stainA" title="Download TIFF">TIF</button></figcaption></figure>
-      <figure class="variant"><div class="vwrap"><img class="vImg imgStainB" alt="Stain B" draggable="false"></div>
-        <figcaption><button class="swatch swB" title="Recolor Stain B" aria-label="Recolor Stain B"></button><span class="labB">Stain B</span><button class="vdl" data-type="stainB" title="Download TIFF">TIF</button></figcaption></figure>
     </div>
-
-    <!-- appearance: detection color — two choices, red or blue -->
-    <div class="overlay-color">
-      <span class="oc-label">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/></svg>
-        Detection color
-      </span>
-      <div class="oc-choices" role="radiogroup" aria-label="Detection overlay color">
-        <button type="button" class="oc-opt" data-hex="#e61e2d" role="radio" aria-checked="false"><i style="background:#e61e2d"></i>Red</button>
-        <button type="button" class="oc-opt" data-hex="#2060eb" role="radio" aria-checked="false"><i style="background:#2060eb"></i>Blue</button>
-      </div>
-      <button class="oc-auto" title="Use whichever of the two contrasts better with this slide">Auto</button>
-    </div>
-
-    <!-- live detection-threshold slider (re-thresholds the stainness score in-browser) -->
-    <div class="threshold-row">
-      <span class="oc-label">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21v-7M4 10V3M12 21v-11M12 6V3M20 21v-5M20 12V3"/><circle cx="4" cy="12" r="2"/><circle cx="12" cy="8" r="2"/><circle cx="20" cy="14" r="2"/></svg>
-        Detection threshold
-      </span>
-      <input type="range" class="cThr" min="10" max="900" step="1" value="200" aria-label="Detection threshold">
-      <span class="thrVal">–</span>
-      <button class="thr-auto" title="Reset to the automatic threshold">Auto</button>
-    </div>
-
-    <!-- hidden native pickers driving the Stain A/B swatches -->
-    <input type="color" class="pickA" hidden>
-    <input type="color" class="pickB" hidden>
 
     <!-- downloads -->
     <div class="downloads">
@@ -259,9 +230,6 @@
       <button class="dl-btn" data-type="original">Original</button>
       <button class="dl-btn" data-type="overlay">Overlay</button>
       <button class="dl-btn" data-type="stainOnly">Stain only</button>
-      <button class="dl-btn" data-type="backgroundRemoved">Tissue</button>
-      <button class="dl-btn" data-type="stainA">Stain A</button>
-      <button class="dl-btn" data-type="stainB">Stain B</button>
       <button class="dl-btn primary" data-type="comparison">Comparison .tif</button>
     </div>
   </article>
@@ -270,6 +238,6 @@
 <div id="toasts"></div>
 <div id="lightbox" class="lightbox hidden"><img id="lightboxImg" src="" alt="Expanded"></div>
 
-<script src="/app.js?v=25"></script>
+<script src="/app.js?v=26"></script>
 </body>
 </html>
