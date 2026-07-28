@@ -105,6 +105,7 @@ _TEXTURE_WIN        = 7      # local-std window (px) for the flat-region test
 _TEXTURE_REL        = 0.35   # "smooth" = local std below this × the tissue median
 _TEXTURE_ABS        = 0.006  # ... but never call anything above this smooth
 _TEXTURE_OD_GUARD   = 1.6    # only smooth pixels weaker than thr×this are dropped
+_TEXTURE_FLAT_P95   = 0.015  # below this 95th-pct local std, nothing cellular is present
 _HOLE_FRAC          = 0.02   # interior gaps up to 2% of frame are lumina → tissue
 _SPECK_FRAC         = 2e-5   # isolated blobs below this share of frame are debris
 
@@ -226,10 +227,15 @@ class AnalysisResult:
     detection_floor: float = 0.0      # weakest excess that can belong to an object
     texture_sigma: float = 0.0        # this slide's unstained-tissue variation
     separability: float = 0.0         # how cleanly stained objects split from background
+    bar_discard: float = 0.0          # share of stained area the object split would drop
+    single_population: bool = False   # the objects were one cloud, so no split was used
     objects: int = 0                  # number of detected stained structures
     median_object_px: int = 0
     mean_object_px: float = 0.0
     region_count: int = 0             # manual regions applied
+    focus_regions: int = 0            # ... of which "measure only here"
+    ignore_regions: int = 0           # ... of which "cut this out"
+    tissue_pixels_total: int = 0      # tissue BEFORE regions (denominator if none)
     chromogen: str = ""                 # detected chromogen family label
     compartment: str = ""               # expected localisation (if a marker chosen)
     marker: str = ""                    # chosen antibody name (selection mode)
@@ -717,13 +723,29 @@ def assess_slide(rgb: np.ndarray, *, hue=None, sat=None, val=None,
         return (False, "No tissue detected — the image is essentially blank.", 0.9)
 
     # 1b) Near-uniform / textureless fill (solid colour, smooth gradient, flat
-    #     graphic). Real histology always carries fine cellular texture, so a very
-    #     low global luminance spread cannot be a genuine slide — safe to reject.
-    lum = val  # HSV value ≈ luminance proxy, already computed
-    spread = float(np.percentile(lum, 97) - np.percentile(lum, 3))
-    if spread < 0.06:
-        return (False, "Doesn't look like a stained slide — the image is a flat, "
-                       "textureless fill, so it was skipped.", 0.8)
+    #     graphic). Real histology always carries fine CELLULAR texture, and that
+    #     is what has to be measured — at the scale cells actually live at.
+    #
+    #     This used to test the global luminance spread (p97 − p3 < 0.06), which
+    #     is a different property and one a genuine slide can fail: a thin,
+    #     weakly counterstained or brightly scanned section occupies a narrow
+    #     band of luminance while being covered in cellular detail. Measured,
+    #     such a section lands at 0.059-0.067 against a 0.06 bar — so whether a
+    #     real slide was accepted or thrown out as "a flat, textureless fill"
+    #     came down to which side of the bar its noise happened to fall on.
+    #
+    #     Local standard deviation separates the two cleanly, because it asks the
+    #     question that was always meant. Measured: solid fill 0.000, smooth
+    #     gradient 0.002, flat field with sensor noise 0.004; real sections
+    #     0.050-0.091, and the faint sections that used to be rejected 0.093.
+    #     The bar below has more than 3x margin to the nearest genuine slide and
+    #     12x to the nearest non-slide.
+    std = _local_std(val)
+    if std is not None:
+        fine = float(np.percentile(std, 95))
+        if fine < _TEXTURE_FLAT_P95:
+            return (False, "Doesn't look like a stained slide — the image carries no "
+                           "cellular texture at any scale, so it was skipped.", 0.8)
 
     # 2) Vivid, broad-spectrum colour = a natural photo / graphic, not a stain.
     #    Stains live in a narrow warm/purple band at modest saturation. Count
@@ -1037,11 +1059,28 @@ def analyze(
             "chromogen, this build measures DAB only.")
 
     built = regions_mod.build(regions, h, w, detect.N_LEVELS)
+    # Keep the tissue mask as segmentation found it, BEFORE any manual region is
+    # applied. That is what the browser needs in order to apply the regions
+    # itself and arrive at the same denominator the server used; handing it the
+    # already-restricted mask would apply every region twice.
+    tissue_base = tissue_mask
+    tissue_pixels_total = tissue_pixels
     positive, tissue_mask = regions_mod.apply(
         det.level_map, tissue_mask, det.level, built, detect.N_LEVELS)
     if built["count"]:
         tissue_pixels = int(tissue_mask.sum())
-        notes.append(f"{built['count']} manual region(s) applied.")
+        bits = []
+        if built.get("focus_count"):
+            bits.append(f"{built['focus_count']} focus")
+        if built.get("ignore_count"):
+            bits.append(f"{built['ignore_count']} ignore")
+        # State the denominator explicitly. A region changes what is being
+        # measured, so the percentage after drawing one is not comparable with
+        # the percentage before it unless the reader knows the area moved too.
+        notes.append(
+            f"Manual regions applied ({', '.join(bits)}): the percentage is "
+            f"measured over {tissue_pixels:,} of this slide's {tissue_pixels_total:,} "
+            f"tissue pixels.")
 
     if not valid:
         positive = np.zeros((h, w), dtype=bool)
@@ -1111,10 +1150,15 @@ def analyze(
         detection_floor=round(float(det.floor), 4),
         texture_sigma=round(float(det.sigma), 5),
         separability=round(float(det.separability), 3),
+        bar_discard=round(float(det.bar_discard), 3),
+        single_population=bool(det.single_population),
         objects=int(object_count),
         median_object_px=int(np.median(object_areas)) if len(object_areas) else 0,
         mean_object_px=round(float(np.mean(object_areas)), 1) if len(object_areas) else 0.0,
         region_count=int(built["count"]),
+        focus_regions=int(built.get("focus_count", 0)),
+        ignore_regions=int(built.get("ignore_count", 0)),
+        tissue_pixels_total=int(tissue_pixels_total),
         chromogen=chromogen,
         compartment=compartment,
         marker=marker,
@@ -1123,6 +1167,7 @@ def analyze(
     maps = {
         "conc": conc,
         "tissue_mask": tissue_mask,
+        "tissue_base": tissue_base,
         "positive": positive,
         "level_map": det.level_map,
         "excess": det.excess,
@@ -1406,17 +1451,36 @@ def mask_data_uri(mask: np.ndarray) -> str:
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
 
 
-def level_data_uri(level_map: np.ndarray) -> str:
-    """Encode the detector's LEVEL MAP as an 8-bit grayscale PNG.
+def level_data_uri(level_map: np.ndarray, tissue_mask: Optional[np.ndarray] = None) -> str:
+    """Encode the detector's LEVEL MAP — and the tissue mask — as one RGB PNG.
 
-    Each pixel holds the first sensitivity level at which it becomes positive
-    (255 = never). One image therefore carries the complete family of results,
-    so the browser reproduces the server's object-based decision at any
-    sensitivity — and with any per-region offset from the manual tools — by a
-    single comparison, with no round-trip and no possibility of the picture and
-    the numbers disagreeing.
+    ``R`` holds the first sensitivity level at which the pixel becomes positive
+    (255 = never); ``G`` is 255 on tissue and 0 on background. One image
+    therefore carries the complete family of results *and* the denominator every
+    percentage is measured against, so the browser reproduces the server's
+    decision — at any sensitivity, under any manual region — by comparison
+    alone, with no round-trip.
+
+    Carrying the tissue mask is what makes a **percentage** reproducible in the
+    browser, not just a picture. A focus or ignore region changes the tissue the
+    measurement is made over, so it moves the denominator as well as the
+    numerator; without the mask the browser could only divide by the whole
+    slide's tissue count and every region edit showed a percentage that did not
+    match the one the server reported for the same regions.
+
+    The mask travels in a colour channel rather than in alpha deliberately:
+    canvas un-premultiplies on read, so a pixel with alpha 0 comes back with its
+    other channels zeroed — which would turn "never positive" (255) into "positive
+    at level 0" everywhere off the tissue.
     """
     arr = np.asarray(level_map, dtype=np.uint8)
+    h, w = arr.shape[:2]
+    rgb = np.zeros((h, w, 3), dtype=np.uint8)
+    rgb[..., 0] = arr
+    if tissue_mask is None:
+        rgb[..., 1] = 255
+    else:
+        rgb[..., 1] = np.asarray(tissue_mask, dtype=bool).astype(np.uint8) * 255
     buf = io.BytesIO()
-    Image.fromarray(arr, "L").save(buf, format="PNG", optimize=True)
+    Image.fromarray(rgb, "RGB").save(buf, format="PNG", optimize=True)
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")

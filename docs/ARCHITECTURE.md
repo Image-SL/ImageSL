@@ -77,13 +77,20 @@ The pixel-level work, in order:
 8. **Quantification** — positive-area %, pixel count, and the number and size of
    the stained structures found. Running the whole decision across a ladder of
    sensitivities produces the **level map**: for each pixel, the first level at
-   which it turns positive. That one 8-bit image is shipped to the browser, which
-   reproduces the server's object-based decision at any sensitivity — and with
-   any per-region offset from the manual tools — by a single comparison, so the
-   preview and the reported numbers cannot disagree.
-8b. **Manual regions** (`ihc/regions.py`) — hand-drawn `focus`, `ignore` and
-   local-sensitivity shapes, in normalised coordinates so they survive any
-   resolution or export size. They are applied by the same rule on both sides.
+   which it turns positive. That image is shipped to the browser as the red
+   channel of a small PNG whose green channel carries the tissue mask, so the
+   browser has both halves of the percentage — the positive pixels and the tissue
+   they are measured against — and reproduces the server's object-based decision,
+   at any sensitivity and under any region, by comparison alone. Shipping the
+   tissue mask is what lets a region move the denominator on screen; without it
+   the preview divided by the whole slide's tissue and disagreed with the CSV.
+8b. **Manual regions** (`ihc/regions.py`) — hand-drawn `focus` and `ignore`
+   shapes, in normalised coordinates so they survive any resolution or export
+   size. Both move the positive area and the tissue denominator together. The
+   rasterisation rule ("a pixel counts when its centre is inside the shape") is
+   written out explicitly in both `regions.py` and `app.js` rather than inherited
+   from PIL and canvas, whose conventions differ by a row and a column — enough
+   to make the on-screen percentage disagree with the exported one.
 9. **Rendering** — `render_overlay` highlights counted pixels (always in the one
    fixed neon green, `engine.OVERLAY_GREEN`); `render_stain_only` erases everything
    *except* the chromogen; `compose_comparison` builds the labelled export.

@@ -190,6 +190,10 @@ main { max-width:1120px; margin:0 auto; padding:38px 22px 90px; }
 .skipped li { display:flex; gap:9px; font-size:13px; color:var(--ink-2); align-items:baseline; }
 .skipped li b { color:var(--ink); font-weight:700; white-space:nowrap; }
 .skipped li .why { color:var(--ink-3); }
+/* a file that could not be analyzed at all, as opposed to one correctly
+   recognised as not being a stained slide */
+.skipped li.failed b::before { content:"⚠ "; color:#b91c1c; }
+.skipped li.failed .why { color:#b91c1c; }
 
 /* -------- card -------- */
 #resultsContainer { display:flex; flex-direction:column; gap:26px; }

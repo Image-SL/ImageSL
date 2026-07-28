@@ -135,7 +135,14 @@ def _grey_object_fraction(pos: np.ndarray, brown: np.ndarray, rgb: np.ndarray) -
 
 
 def check(path: str, montage_dir=None, quick: bool = False) -> dict:
-    rgb = np.asarray(Image.open(path).convert("RGB"), dtype=np.uint8)
+    # Load exactly as the server does — from the file's own bytes, through
+    # engine.load_rgb, including the downsample to the working resolution.
+    # Reading the file with PIL here instead tested a code path no upload ever
+    # takes: a pyramidal or compressed TIF is decoded differently, and the
+    # analysis ran at full resolution, so the suite could pass while real
+    # uploads behaved differently or failed outright.
+    with open(path, "rb") as fh:
+        rgb, _source_size = engine.load_rgb(fh.read())
     t0 = time.time()
     res, maps = analyse(rgb)
     secs = time.time() - t0

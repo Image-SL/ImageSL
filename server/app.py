@@ -29,10 +29,12 @@ import re
 from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 import io
 from PIL import Image
 import numpy as np
 
+from ihc import detect as detect_mod
 from ihc import engine
 from ihc import regions as region_tools
 from ihc import stains as stain_registry
@@ -66,11 +68,27 @@ CACHE_DIR = Path("/data") if Path("/data").exists() else Path(tempfile.gettempdi
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 class _DiskCache:
-    def __init__(self, max_items: int = 50, ttl_seconds: int = 300):
+    """Analysis entries on disk, keyed by analysis id.
+
+    Age is carried by the file's own mtime, and *nothing here ever opens a
+    pickle it is not about to return*. That is not a micro-optimisation: an
+    entry is several megabytes, and the previous version unpickled every cached
+    entry on each `put` (to read a timestamp it had written inside the pickle)
+    and rewrote the whole entry on each `get` (to refresh that timestamp). A
+    batch of N slides therefore did O(N²) megabyte-scale reads and N megabyte
+    writes per export — on a 46-slide batch, gigabytes of pointless I/O. On a
+    small server that is slow enough for the browser's upload to time out and
+    memory-hungry enough to be OOM-killed, which is what "some slides just say
+    failed, but only on the slower machine" actually was.
+    """
+
+    def __init__(self, max_items: int = 50, ttl_seconds: int = 300,
+                 max_bytes: int = 2 * 1024 ** 3):
         self._dir = CACHE_DIR
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._max = max_items
         self._ttl = ttl_seconds
+        self._max_bytes = max_bytes
 
     def _file(self, key: str) -> Path:
         return self._dir / f"{key}.pkl"
@@ -82,74 +100,117 @@ class _DiskCache:
         self._file(key).unlink(missing_ok=True)
         self._meta_file(key).unlink(missing_ok=True)
 
+    @staticmethod
+    def _age(path: Path) -> float:
+        try:
+            return time.time() - path.stat().st_mtime
+        except OSError:
+            return float("inf")
+
+    @staticmethod
+    def _touch(path: Path) -> None:
+        try:
+            os.utime(path, None)
+        except OSError:
+            pass
+
     def put(self, key: str, value: dict, meta: Optional[dict] = None) -> None:
         """Store the heavy analysis entry, plus a tiny JSON sidecar (`meta`) that
-        CSV export can read without unpickling the whole (megabytes) entry."""
+        CSV export can read without unpickling the whole (megabytes) entry.
+
+        Written to a temporary file and renamed into place, so a reader can
+        never observe a half-written entry — which is what turned a slow write
+        into an "analysis expired" error mid-batch."""
         with self._lock:
             self._evict()
-            with open(self._file(key), "wb") as f:
-                pickle.dump((time.time(), value), f)
+            path = self._file(key)
+            tmp = path.with_suffix(".pkl.part")
+            try:
+                with open(tmp, "wb") as f:
+                    pickle.dump(value, f, protocol=pickle.HIGHEST_PROTOCOL)
+                os.replace(tmp, path)
+            except Exception:
+                tmp.unlink(missing_ok=True)
+                raise
             if meta is not None:
-                with open(self._meta_file(key), "w", encoding="utf-8") as f:
-                    json.dump({"ts": time.time(), "row": meta}, f)
+                mp = self._meta_file(key)
+                mtmp = mp.with_suffix(".json.part")
+                try:
+                    with open(mtmp, "w", encoding="utf-8") as f:
+                        json.dump({"row": meta}, f)
+                    os.replace(mtmp, mp)
+                except Exception:
+                    mtmp.unlink(missing_ok=True)
 
     def get(self, key: str) -> Optional[dict]:
+        if not key:
+            return None
         with self._lock:
             path = self._file(key)
             if not path.exists():
                 return None
+            if self._age(path) > self._ttl:
+                self._drop(key)
+                return None
             try:
                 with open(path, "rb") as f:
-                    ts, value = pickle.load(f)
-                if time.time() - ts > self._ttl:
-                    self._drop(key)
-                    return None
-                with open(path, "wb") as f:  # refresh timestamp on read
-                    pickle.dump((time.time(), value), f)
-                return value
+                    value = pickle.load(f)
             except Exception:
                 self._drop(key)
                 return None
+            self._touch(path)                      # keep it alive; do NOT rewrite it
+            return value
 
     def get_meta(self, key: str) -> Optional[dict]:
         """Fast path for CSV export — reads the small JSON sidecar only."""
+        if not key:
+            return None
         with self._lock:
             p = self._meta_file(key)
             if not p.exists():
                 return None
+            if self._age(p) > self._ttl:
+                self._drop(key)
+                return None
             try:
                 with open(p, encoding="utf-8") as f:
                     d = json.load(f)
-                if time.time() - d.get("ts", 0) > self._ttl:
-                    self._drop(key)
-                    return None
-                d["ts"] = time.time()
-                with open(p, "w", encoding="utf-8") as f:
-                    json.dump(d, f)
-                return d.get("row")
             except Exception:
                 p.unlink(missing_ok=True)
                 return None
+            self._touch(p)
+            return d.get("row")
 
     def _evict(self) -> None:
-        now = time.time()
-        valid_files = []
-        for p in list(self._dir.glob("*.pkl")):
-            key = p.stem
-            try:
-                with open(p, "rb") as f:
-                    ts, _ = pickle.load(f)
-                if now - ts > self._ttl:
-                    self._drop(key)
-                else:
-                    valid_files.append((ts, key))
-            except Exception:
-                self._drop(key)
+        """Drop expired entries, then the oldest ones if over capacity — by
+        mtime and size alone, so this stays cheap however large the entries are.
 
-        if len(valid_files) >= self._max:
-            valid_files.sort(key=lambda x: x[0])
-            for _, key in valid_files[: len(valid_files) - self._max + 1]:
-                self._drop(key)
+        A byte budget as well as a count, because the count alone does not bound
+        anything useful: entries are several megabytes each, and the server runs
+        in a small container whose ephemeral disk a long session of large
+        batches would otherwise fill. Running out of disk mid-batch surfaces to
+        the user as slides that "failed" for no stated reason."""
+        entries = []
+        total = 0
+        for p in list(self._dir.glob("*.pkl")):
+            age = self._age(p)
+            if age > self._ttl:
+                self._drop(p.stem)
+                continue
+            try:
+                size = p.stat().st_size
+            except OSError:
+                size = 0
+            entries.append((age, p.stem, size))
+            total += size
+
+        entries.sort(reverse=True)                 # oldest (largest age) first
+        i = 0
+        while i < len(entries) and (len(entries) - i >= self._max or total > self._max_bytes):
+            _, key, size = entries[i]
+            self._drop(key)
+            total -= size
+            i += 1
 
 
 # TTL/size are generous enough that a large batch (dozens of slides) survives
@@ -157,6 +218,7 @@ class _DiskCache:
 _CACHE = _DiskCache(
     max_items=int(os.environ.get("IMAGESL_CACHE_MAX", "400")),
     ttl_seconds=int(os.environ.get("IMAGESL_CACHE_TTL", "3600")),
+    max_bytes=int(os.environ.get("IMAGESL_CACHE_MB", "3072")) * 1024 * 1024,
 )
 
 
@@ -230,7 +292,6 @@ def _clean_regions(raw) -> list:
             "mode": mode,
             "kind": str(r.get("kind", "rect")).lower()[:12],
             "points": clean_pts,
-            "delta": int(max(-64, min(64, int(r.get("delta", 0) or 0)))),
             "radius": float(min(0.5, max(0.001, float(r.get("radius", 0.02) or 0.02)))),
         })
     return out
@@ -265,17 +326,30 @@ def _render_images(entry: dict) -> None:
     detector's level map) so the sensitivity control and the manual region tools
     update both live with no server round-trip. Those two images are the only
     ones sent."""
-    rgb, p = entry["rgb"], entry["params"]
-    maps = entry["maps"]
+    rgb = entry["rgb"]
     # After caching we drop the heavy maps; recompute on demand.
-    if "level_map" not in maps:
-        _, maps = engine.analyze(rgb, entry.get("source_size", (rgb.shape[1], rgb.shape[0])),
-                                 **_analyze_kwargs(p))
-        entry["maps"] = maps
+    if "level_map" not in entry["maps"] or "tissue_base" not in entry["maps"]:
+        _reanalyze(entry)
+    maps = entry["maps"]
+    prev = entry.get("images") or {}
     entry["images"] = {
-        "original": entry["images"].get("original") if entry.get("images") else engine.to_data_uri(rgb, "JPEG"),
-        "level": engine.level_data_uri(maps["level_map"]),
+        # The original never changes, so re-encode it only if it is missing.
+        "original": prev.get("original") or engine.to_data_uri(rgb, "JPEG"),
+        "level": engine.level_data_uri(maps["level_map"], maps.get("tissue_base")),
     }
+
+
+def _reanalyze(entry: dict) -> None:
+    """Re-run the measurement for this entry's CURRENT params, replacing both the
+    result and the maps. Every path that changes a setting goes through here, so
+    the reported numbers and the pixels they describe can never come from
+    different settings."""
+    result, maps = engine.analyze(
+        entry["rgb"],
+        entry.get("source_size", (entry["rgb"].shape[1], entry["rgb"].shape[0])),
+        **_analyze_kwargs(entry["params"]),
+    )
+    entry["result"], entry["maps"] = result, maps
 
 
 def _rerender(entry: dict, **updates) -> dict:
@@ -294,8 +368,7 @@ def _rerender(entry: dict, **updates) -> dict:
         p["regions"] = _clean_regions(updates["regions"])
         touched = True
     if touched:
-        result, maps = engine.analyze(entry["rgb"], entry["source_size"], **_analyze_kwargs(p))
-        entry["result"], entry["maps"] = result, maps
+        _reanalyze(entry)
         _render_images(entry)
     return entry
 
@@ -309,6 +382,38 @@ def _public(entry: dict) -> dict:
     }
 
 
+def _view_key(params: dict) -> dict:
+    """The part of `params` that changes the measurement — used to tell whether a
+    caller's on-screen view already matches what was last measured and cached."""
+    lv = params.get("level")
+    return {
+        "level": (None if lv is None else int(lv)),
+        "regions": params.get("regions") or [],
+        "stain_key": params.get("stain_key"),
+    }
+
+
+def _requested_view(override: Optional[dict], entry_params: dict) -> dict:
+    """A caller's requested view, canonicalised the same way `_view_key` is, so
+    the two can be compared exactly."""
+    ov = override or {}
+    level = entry_params.get("level")
+    raw = ov.get("level")
+    if raw is not None and raw != "":
+        if raw == "auto":
+            level = None
+        else:
+            try:
+                level = int(float(raw))
+            except (TypeError, ValueError):
+                pass
+    regions = (_clean_regions(ov["regions"]) if ov.get("regions") is not None
+               else (entry_params.get("regions") or []))
+    return {"level": (None if level is None else int(level)),
+            "regions": regions,
+            "stain_key": entry_params.get("stain_key")}
+
+
 def _persist(analysis_id: str, entry: dict) -> None:
     """Save an entry back to cache (keeping it lean) with its CSV row sidecar, so
     later recalcs/appearance edits are reflected in downloads and exports.
@@ -319,7 +424,8 @@ def _persist(analysis_id: str, entry: dict) -> None:
     export time."""
     for k in ("od", "conc", "excess", "brownness"):
         entry["maps"].pop(k, None)
-    _CACHE.put(analysis_id, entry, meta=_csv_row(entry))
+    _CACHE.put(analysis_id, entry,
+               meta={"row": _csv_row(entry), "view": _view_key(entry["params"])})
 
 
 # --------------------------------------------------------------------------- #
@@ -377,6 +483,46 @@ def api_stains() -> JSONResponse:
     return JSONResponse({"stains": stain_registry.as_list()})
 
 
+def _analyze_upload(data: bytes, name: str, stain_key: Optional[str]) -> dict:
+    """Decode + measure + cache one slide. Runs off the event loop (see caller).
+
+    Decoding and measuring are reported separately: "this file is not an image
+    ImageSL can read" and "this image could not be measured" are different
+    problems for the user, and collapsing them into one generic failure is what
+    made a batch report "2 failed" with nothing to act on."""
+    try:
+        rgb, source_size = engine.load_rgb(data)
+    except Exception as exc:
+        raise HTTPException(status_code=400,
+                            detail=f"Could not read this file as an image ({exc}).")
+
+    params = _default_params()
+    chosen = stain_registry.lookup(stain_key) if stain_key else None
+    if chosen:
+        params["stain_key"] = chosen["key"]
+
+    try:
+        result, maps = engine.analyze(rgb, source_size, **_analyze_kwargs(params))
+    except MemoryError:
+        raise HTTPException(
+            status_code=507,
+            detail="Ran out of memory measuring this slide. Try a smaller image.")
+    except Exception as exc:
+        raise HTTPException(status_code=422,
+                            detail=f"Could not measure this slide ({exc}).")
+
+    entry = {
+        "rgb": rgb, "source_size": source_size, "maps": maps, "result": result,
+        "params": params, "images": {"original": engine.to_data_uri(rgb, "JPEG")},
+        "filename": name,
+    }
+    _render_images(entry)
+
+    analysis_id = uuid.uuid4().hex
+    _persist(analysis_id, entry)
+    return {"analysis_id": analysis_id, **_public(entry)}
+
+
 @app.post("/api/analyze")
 async def api_analyze(
     file: UploadFile = File(...),
@@ -386,48 +532,35 @@ async def api_analyze(
 ):
     _require_key(x_imagesl_key)
     data = await _read_upload(file)
-
-    try:
-        rgb, source_size = engine.load_rgb(data)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Could not decode image: {exc}")
-
-    params = _default_params()
-    if stain_key and stain_registry.lookup(stain_key):
-        params["stain_key"] = stain_registry.lookup(stain_key)["key"]
-    result, maps = engine.analyze(rgb, source_size, **_analyze_kwargs(params))
-    entry = {
-        "rgb": rgb, "source_size": source_size, "maps": maps, "result": result,
-        "params": params, "images": {"original": engine.to_data_uri(rgb, "JPEG")},
-        "filename": (filename or file.filename or "image"),
-    }
-    _render_images(entry)
-
-    analysis_id = uuid.uuid4().hex
-    _persist(analysis_id, entry)
-
-    payload = {"analysis_id": analysis_id, **_public(entry)}
+    name = filename or file.filename or "image"
+    # Measurement is seconds of numpy per slide. Running it inline blocks the
+    # event loop for the whole batch, so health checks and every other request
+    # queue behind it — long enough on a modest server for a proxy to give up
+    # and for the browser to record the slide as "failed".
+    payload = await run_in_threadpool(_analyze_upload, data, name, stain_key)
     return JSONResponse(payload)
 
 
 def _render_type(entry: dict, image_type: str) -> np.ndarray:
     """Produce the RGB array for a requested image variant (shared by download + zip)."""
-    rgb, maps, p = entry["rgb"], entry["maps"], entry["params"]
+    rgb, p = entry["rgb"], entry["params"]
 
     # Stain A/B and the overlay need the concentration/positive maps, which we drop
     # from the cache to stay lean — recompute on demand (honours marker, sensitivity
     # and manual regions). Which cached array each variant actually needs:
     # `_persist` drops the heavy maps, so only ask for a re-analysis when the
-    # specific array this variant depends on is genuinely missing.
+    # specific array this variant depends on is genuinely missing. The recomputed
+    # maps are stored back on the entry, so a ZIP asking for several variants of
+    # the same slide re-measures it once rather than once per variant.
     _NEEDS = {
         "stainA": "conc", "stainB": "conc",
         "overlay": "positive", "comparison": "positive", "stainOnly": "positive",
         "backgroundRemoved": "tissue_mask",
     }
     need = _NEEDS.get(image_type)
-    if need and need not in maps:
-        _, maps = engine.analyze(rgb, entry.get("source_size", (rgb.shape[1], rgb.shape[0])),
-                                 **_analyze_kwargs(p))
+    if need and need not in entry["maps"]:
+        _reanalyze(entry)
+    maps = entry["maps"]
     a_idx, b_idx = _stain_indices(maps)
 
     if image_type == "original":
@@ -467,29 +600,52 @@ def _tiff_bytes(arr: np.ndarray) -> bytes:
     return buf.getvalue()
 
 
-def _apply_view(entry: dict, level: Optional[str], regions=None) -> None:
-    """Apply the caller's CURRENT on-screen sensitivity and manual regions to
-    this entry before rendering, so a download always matches exactly what is
-    shown — no dependence on a debounced background persist. (The overlay colour
-    is always neon green.)"""
+def _apply_view(entry: dict, level: Optional[str], regions=None) -> bool:
+    """Adopt the caller's CURRENT on-screen sensitivity and manual regions, and
+    RE-MEASURE if either of them changed.
+
+    Re-measuring here is the whole point. Previously this only invalidated the
+    cached `positive` mask, and the re-analysis that followed was thrown into a
+    local variable — so `entry["result"]` still held the numbers from whatever
+    settings were last persisted. Every consumer of that result then reported
+    stale values against fresh pixels: the CSV row, and the percentage printed
+    into the comparison TIFF's footer. That is exactly the "I change the
+    sensitivity or a region, export, and the old number comes out" failure.
+    Returns whether anything changed."""
     p = entry["params"]
+    changed = False
+
     if level is not None and level != "":
-        try:
-            p["level"] = None if level == "auto" else int(float(level))
-            entry["maps"].pop("positive", None)   # force recompute at this level
-        except ValueError:
-            pass
+        new_level = p.get("level")
+        if level == "auto":
+            new_level = None
+        else:
+            try:
+                new_level = int(float(level))
+            except (TypeError, ValueError):
+                pass
+        if new_level != p.get("level"):
+            p["level"] = new_level
+            changed = True
+
     if regions is not None:
-        p["regions"] = _clean_regions(regions)
-        entry["maps"].pop("positive", None)
+        clean = _clean_regions(regions)
+        if clean != (p.get("regions") or []):
+            p["regions"] = clean
+            changed = True
+
+    if changed:
+        _reanalyze(entry)
+    return changed
 
 
-@app.get("/api/download_tif")
-def api_download_tif(analysis_id: str, image_type: str, level: Optional[str] = None):
+def _download_tif(analysis_id: str, image_type: str, level: Optional[str],
+                  regions=None) -> StreamingResponse:
     entry = _CACHE.get(analysis_id)
     if not entry:
         raise HTTPException(status_code=404, detail="Analysis expired")
-    _apply_view(entry, level)
+    if _apply_view(entry, level, regions):
+        _persist(analysis_id, entry)
 
     data = _tiff_bytes(_render_type(entry, image_type))
     stem = _safe_name(entry.get("filename", "image"))
@@ -500,16 +656,41 @@ def api_download_tif(analysis_id: str, image_type: str, level: Optional[str] = N
     )
 
 
+@app.post("/api/download_tif")
+async def api_download_tif_post(request: Request,
+                                x_imagesl_key: Optional[str] = Header(default=None)):
+    """Single-image download. POST rather than GET so the caller can send the
+    manual regions along with the sensitivity — a hand-drawn lasso does not fit
+    in a query string, and without it a single-slide TIFF was rendered ignoring
+    every region the user had drawn while the batch ZIP honoured them."""
+    _require_key(x_imagesl_key)
+    body = await request.json()
+    return _download_tif(str(body.get("analysis_id") or ""),
+                         str(body.get("image_type") or ""),
+                         body.get("level"), body.get("regions"))
+
+
+@app.get("/api/download_tif")
+def api_download_tif(analysis_id: str, image_type: str, level: Optional[str] = None):
+    """Kept so an older cached page keeps working; it cannot carry regions."""
+    return _download_tif(analysis_id, image_type, level)
+
+
 @app.post("/api/appearance")
 async def api_appearance(request: Request, x_imagesl_key: Optional[str] = Header(default=None)):
     _require_key(x_imagesl_key)
     body = await request.json()
-    entry = _CACHE.get(body.get("analysis_id"))
-    if not entry:
-        raise HTTPException(status_code=404, detail="Analysis expired; re-run analysis.")
-    _rerender(entry, level=body.get("level"), regions=body.get("regions"))
-    _persist(body.get("analysis_id"), entry)
-    return JSONResponse(_public(entry))
+
+    def work() -> dict:
+        aid = body.get("analysis_id")
+        entry = _CACHE.get(aid)
+        if not entry:
+            raise HTTPException(status_code=404, detail="Analysis expired; re-run analysis.")
+        _rerender(entry, level=body.get("level"), regions=body.get("regions"))
+        _persist(aid, entry)
+        return _public(entry)
+
+    return JSONResponse(await run_in_threadpool(work))
 
 
 # --------------------------------------------------------------------------- #
@@ -534,11 +715,17 @@ _CSV_COLUMNS = [
     "detection_floor_excess_od",
     "tissue_texture_sigma_od",
     "object_separability",
+    "object_split_discard_fraction",
     "staining_pattern",
     "sensitivity_level",
     "sensitivity_auto_level",
     "sensitivity_levels",
+    "sensitivity_setting",
+    # --- what area the percentage was actually measured over ----------------- #
     "manual_regions",
+    "focus_regions",
+    "ignore_regions",
+    "tissue_pixels_before_regions",
     "mean_positive_intensity",
     "detection_confidence",
     "stain_family",
@@ -564,6 +751,15 @@ def _csv_row(entry: dict) -> dict:
     total_px = int(r.width) * int(r.height)
     pct_of_image = round((r.positive_pixels / total_px * 100.0), 3) if total_px else 0.0
     sep = float(getattr(r, "separability", 0.0))
+    # What the sensitivity control was actually set to, in the terms the user
+    # sees on screen ("Auto", "Auto +3"), so a row can be reproduced from the
+    # export alone rather than from a bare ladder index.
+    lvl = int(getattr(r, "level", 0))
+    auto = int(getattr(r, "auto_level", 0))
+    delta = lvl - auto
+    setting = "Auto" if delta == 0 else (f"Auto +{delta}" if delta > 0 else f"Auto {delta}")
+    if entry.get("params", {}).get("level") is None:
+        setting = "Auto"
     return {
         "filename": entry.get("filename", "image"),
         "detected_stain": getattr(r, "stain_label", ""),
@@ -580,14 +776,28 @@ def _csv_row(entry: dict) -> dict:
         "detection_floor_excess_od": getattr(r, "detection_floor", 0.0),
         "tissue_texture_sigma_od": getattr(r, "texture_sigma", 0.0),
         "object_separability": round(sep, 3),
-        # Focal = stained structures form a population clearly apart from the
-        # background. Diffuse = they do not, so where the boundary sits is a
-        # judgement and the percentage is only comparable within a batch.
-        "staining_pattern": "focal" if sep >= 0.60 else "diffuse",
-        "sensitivity_level": getattr(r, "level", 0),
-        "sensitivity_auto_level": getattr(r, "auto_level", 0),
+        "object_split_discard_fraction": getattr(r, "bar_discard", 0.0),
+        # Focal = the stained structures formed a population clearly apart from
+        # the background, and the detector used that split to set its operating
+        # point. Even = they did not, so everything chromogen-coloured above the
+        # slide's own noise was counted and the percentage is a relative reading
+        # comparable only within a staining batch.
+        #
+        # Taken from the detector's own verdict rather than re-derived from a
+        # separability number here, so the label cannot disagree with the rule
+        # that actually produced the measurement.
+        "staining_pattern": ("even" if getattr(r, "single_population", False) else "focal"),
+        "sensitivity_level": lvl,
+        "sensitivity_auto_level": auto,
         "sensitivity_levels": getattr(r, "level_count", 0),
+        "sensitivity_setting": setting,
         "manual_regions": getattr(r, "region_count", 0),
+        "focus_regions": getattr(r, "focus_regions", 0),
+        "ignore_regions": getattr(r, "ignore_regions", 0),
+        # `tissue_pixels` above is the area the percentage was measured over.
+        # This is the slide's whole tissue area, so the two together say exactly
+        # how much a focus/ignore region removed from the denominator.
+        "tissue_pixels_before_regions": getattr(r, "tissue_pixels_total", 0) or r.tissue_pixels,
         "mean_positive_intensity": r.mean_positive_intensity,
         "detection_confidence": getattr(r, "confidence", 1.0),
         "stain_family": r.method,
@@ -616,11 +826,46 @@ def _build_csv_from_rows(rows: list[dict]) -> str:
     return out.getvalue()
 
 
-def _collect_meta(analysis_ids) -> list[dict]:
-    """Fast: read only the small JSON sidecars — never touches the heavy pickles."""
+def _collect_rows(analysis_ids, overrides: Optional[dict] = None) -> list[dict]:
+    """One CSV row per analysis, guaranteed to describe the caller's CURRENT view.
+
+    For each slide the requested view (sensitivity + manual regions) is compared
+    with the view the cached row was measured under. They match for a slide
+    nobody has touched, and that row is served straight from the small JSON
+    sidecar without going near the megabyte-scale pickle. Where they differ —
+    the user moved the slider or drew a region and exported before the debounced
+    background sync landed — the slide is re-measured under the requested view
+    and the fresh row is used.
+
+    The previous version read the sidecars unconditionally, so an export taken
+    within a third of a second of a change (or after any change that failed to
+    sync) silently carried the *old* percentage. For a measurement instrument
+    that is the worst kind of bug: the number is wrong but looks authoritative.
+    """
     if not isinstance(analysis_ids, list) or not analysis_ids:
         raise HTTPException(status_code=400, detail="No analysis_ids provided.")
-    rows = [m for m in (_CACHE.get_meta(a) for a in analysis_ids) if m]
+    overrides = overrides if isinstance(overrides, dict) else {}
+    rows: list[dict] = []
+    for aid in analysis_ids:
+        ov = overrides.get(aid)
+        meta = _CACHE.get_meta(aid)
+        if meta and ov is None:
+            rows.append(meta.get("row", {}))
+            continue
+        if meta and isinstance(meta.get("view"), dict):
+            entry_params = {"level": meta["view"].get("level"),
+                            "regions": meta["view"].get("regions"),
+                            "stain_key": meta["view"].get("stain_key")}
+            if _requested_view(ov, entry_params) == meta["view"]:
+                rows.append(meta.get("row", {}))
+                continue
+        entry = _CACHE.get(aid)
+        if not entry:
+            continue
+        _apply_view(entry, (ov or {}).get("level"), (ov or {}).get("regions"))
+        rows.append(_csv_row(entry))
+        _persist(aid, entry)
+        entry = None
     if not rows:
         raise HTTPException(status_code=404, detail="All analyses expired; re-run analysis.")
     return rows
@@ -630,7 +875,8 @@ def _collect_meta(analysis_ids) -> list[dict]:
 async def api_export_csv(request: Request, x_imagesl_key: Optional[str] = Header(default=None)):
     _require_key(x_imagesl_key)
     body = await request.json()
-    rows = _collect_meta(body.get("analysis_ids"))
+    overrides = body.get("overrides") if isinstance(body.get("overrides"), dict) else {}
+    rows = await run_in_threadpool(_collect_rows, body.get("analysis_ids"), overrides)
     csv_text = _build_csv_from_rows(rows)
     fname = "ImageSL_results.csv" if len(rows) > 1 else f"{_safe_name(rows[0].get('filename'))}_data.csv"
     return StreamingResponse(
@@ -675,7 +921,7 @@ def _zip_stream(analysis_ids, images, include_csv, overrides=None):
         if not entry:
             continue
         ov = overrides.get(aid) or {}
-        _apply_view(entry, ov.get("level"), ov.get("regions"))
+        changed = _apply_view(entry, ov.get("level"), ov.get("regions"))
         stem = _safe_name(entry.get("filename", "image"))
         for image_type in images:
             name = f"{stem}_{image_type}.tif"
@@ -689,7 +935,11 @@ def _zip_stream(analysis_ids, images, include_csv, overrides=None):
             if chunk:
                 yield chunk
         if include_csv:
+            # Built from the entry AFTER `_apply_view` re-measured it, so the row
+            # and the images beside it in the ZIP describe the same settings.
             rows.append(_csv_row(entry))
+        if changed:
+            _persist(aid, entry)      # keep later exports in step with this one
         entry = None  # release before loading the next
     if include_csv and rows:
         zf.writestr("ImageSL_results.csv", _build_csv_from_rows(rows).encode("utf-8-sig"))

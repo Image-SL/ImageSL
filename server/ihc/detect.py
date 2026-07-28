@@ -117,6 +117,23 @@ BG_GLOBAL_FG_K   = 6.0    # ... and treat material this many robust sigmas above
 # that were visible on the validation slides: detections were 8.7x more likely
 # within a few pixels of a hole than in the interior of the same section.
 MATERIAL_OD_MIN  = 0.15
+# ... but never more than this share of the section's OWN absorbance, because
+# "absorbs less than 0.15" is a statement about a hole only on a slide that
+# absorbs appreciably more than 0.15 to begin with.
+#
+# A thin, weakly counterstained or brightly scanned section can absorb barely
+# more than the constant in total. Every pixel of it then reads as a hole: the
+# background field is fitted on the 3% of the frame that survives — which is the
+# stained material itself — and the slide's noise estimate comes back ten times
+# too large (0.10 against the 0.02-0.08 real sections show). The floor and the
+# detection bar are both multiples of that noise, so they land far above the
+# staining and the section reports 0.000% with 40 obvious structures on it.
+#
+# Scaling the cut by the tissue's own median absorbance fixes that without
+# touching any normal slide: an ordinary section's median runs 0.6-1.0, so this
+# term is 0.21-0.35 and the constant above still binds. It only ever engages
+# where the constant would otherwise swallow the section.
+MATERIAL_TISSUE_FRAC = 0.35
 
 # Colour specificity of the EXCESS absorbance. `brownness` = (od_B − od_R)/‖od‖:
 # +0.51 for pure DAB, −0.36 for haematoxylin, +0.03 for eosin/red, 0.00 for
@@ -157,14 +174,47 @@ OBJ_BROWN_MEAN   = 0.14   # the object must be brown ON AVERAGE — what separat
                           # function of every pixel it counts: JPEG chroma subsampling
                           # nudges pixels across that bar and whole structures then
                           # appear or vanish, while the mean barely moves.
-# Second, independent colour reading: the raw warmth (R−B)/(R+B) of the pixels
-# themselves. The densest chromogen is channel-crushed, so its excess direction
-# flattens toward neutral and `brown_mean` alone drops the very cores a human
-# calls most obviously positive; those cores stay unmistakably WARM in the raw
-# image (0.11-0.15) while ink, dust and folds sit near zero. An object needs to
-# pass EITHER reading — and, in both cases, still carry genuinely
-# chromogen-coloured seed pixels, which is what a neutral blob never does.
-OBJ_WARM_MEAN    = 0.10
+
+# --------------------------------------------------------------------------- #
+# Reading colour on DENSE chromogen
+# --------------------------------------------------------------------------- #
+# The readings above are all taken on the EXCESS absorbance — the pixel minus its
+# own local background — which is the sensitive way to see dilute staining. On
+# the densest chromogen it fails, and it fails for a specific, unavoidable
+# reason: the local background under a stained structure is itself tinted by the
+# same chromogen, so subtracting it removes precisely the signature being tested
+# for. A near-black bile duct on a tan section measures excess-brown +0.09
+# against a +0.14 bar and is thrown away — the darkest, least ambiguous staining
+# on the slide, the material a pathologist points at first.
+#
+# Measured over 90 407 candidate objects across the 46-slide validation set: of
+# the objects whose peak excess is 12+ times the slide's own texture — material
+# nobody would call anything but stain — 8.8% were rejected as "not chromogen
+# coloured", with median excess-brown +0.091 and median excess-warmth +0.020.
+#
+# The fix is to ask the colour question of the material's OWN absorbance
+# instead. That reading does not degrade with density, because it is a direction
+# in absorbance space rather than a difference of two similar quantities:
+#
+#     raw brownness   (od_B − od_R)/‖od‖   DAB +0.51 · haematoxylin −0.36
+#                                          red chromogen +0.04 · neutral 0.00
+#     raw blue/green  (od_B − od_G)/‖od‖   DAB +0.21 · haematoxylin −0.41
+#                                          red chromogen −0.88 · neutral 0.00
+#
+# On the same 630 wrongly-rejected objects those read +0.222 and +0.103 median
+# (5th percentile +0.138 and +0.058) — nothing like neutral debris, which sits
+# at 0.00 on both. The bars below sit between the two with margin on each side,
+# and stay clear of every other chromogen rather than merely of grey.
+OBJ_RAW_BROWN    = 0.12   # ... object mean, on the material's own absorbance
+OBJ_RAW_WARM     = 0.06   # ... together with raw warmth (R−B)/(R+B) of the pixels
+SEED_RAW_BROWN   = 0.14   # a dense pixel may seed on the raw reading alone ...
+SEED_RAW_BOG     = 0.04   # ... if its channel ORDER is the chromogen's, not red's
+# "Dense" is a statement about this slide, not an absolute brightness: material
+# whose absorbance along the chromogen axis sits this many robust deviations
+# above the slide's own tissue level. That is the condition under which the
+# excess reading stops being trustworthy, so it is the condition under which the
+# raw reading is allowed to stand in — never on ordinary tissue tone.
+DENSE_SIG_K      = 4.0
 OBJ_SEED_FRAC    = 0.06   # ... and the chromogen colour must not be one stray pixel
 OBJ_SEED_MIN_PX  = 2      # ... on at least two pixels
 
@@ -227,7 +277,38 @@ PEAK_BIMODAL_MIN = 0.22   # separability below this ⇒ no stain population at a
 # overlapping, and *backwards*; and the histogram valley depth at the split is
 # higher for the single population than for most real slides, because
 # area-weighting makes a comb of spikes with deep gaps between them.
-PEAK_MIN_SPREAD  = 1.80
+#
+# The value matters more than it looks, and it is measured, not chosen. Across
+# random realisations of ONE nominally identical scene — same object count, same
+# stain density, differing only in where the structures landed — the spread ran
+# 1.11 to 2.07. At the old bar of 1.80 that straddled the decision, so the same
+# nominal specimen read anywhere between 13% and 98% recall (0.058% to 0.436%
+# positive area) depending on nothing a user could see or control. A measurement
+# instrument may not do that.
+#
+# Across the 46 real sections, where the population genuinely is background
+# bumps plus stained structures, the spread runs 2.78 to 9.61. The two
+# distributions do not overlap — 1.11-2.07 against 2.78-9.61 — and the bar sits
+# in the gap between them, 11% clear of the single-population maximum and 21%
+# clear of the real-slide minimum. No slide in the validation set is near it, so
+# raising it from 1.80 changes none of their measurements; it only stops the
+# uniform case from landing on the wrong side of a coin flip.
+#
+# Two alternatives were measured and rejected, recorded so they are not retried:
+#
+#   * Histogram valley depth at the split. Real slides 0.014-1.085, single
+#     populations 0.000-0.338 — overlapping, and BACKWARDS, because area
+#     weighting turns the population into a comb of spikes with deep gaps
+#     between them that a split can legitimately land in.
+#
+#   * The share of stained AREA the split discards. Real slides 0.11-0.88,
+#     single populations 0.20-0.98 — overlapping just as badly. Capping it was
+#     tried at 0.58 and is actively harmful: on a pale section with sparse
+#     ductular staining it drops the bar to the noise floor and paints the
+#     parenchyma's own texture green, which is the exact false-positive failure
+#     the object split exists to prevent. The split is load-bearing; only the
+#     decision of WHETHER to trust it needed fixing.
+PEAK_MIN_SPREAD  = 2.30
 # How much to trust the split. When the object peaks really are two clusters,
 # the split is a strong, meaningful statement and is used as-is. When they are a
 # continuum, it is not: the position that best separates the population is then
@@ -305,6 +386,8 @@ class Detection:
     bar: float = 0.0                     # automatic detection bar (excess OD)
     floor: float = 0.0                   # weakest excess that can belong to an object
     separability: float = 0.0            # how cleanly the object peaks split in two
+    bar_discard: float = 0.0             # share of the object area the split would drop
+    single_population: bool = False      # the peaks were one cloud, so no split was used
     chromogen_share: float = 1.0         # share of the strong excess that is THIS chromogen
     objects: int = 0                     # accepted objects at the selected level
     object_areas: list = field(default_factory=list)
@@ -561,24 +644,24 @@ def _sharpness(signal: np.ndarray, flat_lbl: np.ndarray, inside: np.ndarray,
 
 def _object_stats(lbl: np.ndarray, n: int, signal: np.ndarray,
                   brown: np.ndarray, seed: np.ndarray,
-                  warm: Optional[np.ndarray] = None) -> dict:
+                  raw_brown: Optional[np.ndarray] = None,
+                  raw_warm: Optional[np.ndarray] = None) -> dict:
     """Per-object measurements, all from bincounts over the label image."""
     flat = lbl.ravel()
     area = np.bincount(flat, minlength=n + 1).astype(np.int64)
     peak = np.zeros(n + 1, dtype=np.float32)
     np.maximum.at(peak, flat, signal.ravel())
     seeds = np.bincount(flat, weights=seed.ravel().astype(np.float64), minlength=n + 1)
-    brown_sum = np.bincount(flat, weights=brown.ravel().astype(np.float64), minlength=n + 1)
-    with np.errstate(invalid="ignore", divide="ignore"):
-        brown_mean = brown_sum / np.maximum(area, 1)
-    out = {"area": area, "peak": peak, "seeds": seeds,
-           "seed_frac": seeds / np.maximum(area, 1), "brown_mean": brown_mean}
-    if warm is None:
-        out["warm_mean"] = np.full(n + 1, -1.0)
-    else:
-        wsum = np.bincount(flat, weights=warm.ravel().astype(np.float64), minlength=n + 1)
+
+    def _mean(x):
+        s = np.bincount(flat, weights=x.ravel().astype(np.float64), minlength=n + 1)
         with np.errstate(invalid="ignore", divide="ignore"):
-            out["warm_mean"] = wsum / np.maximum(area, 1)
+            return s / np.maximum(area, 1)
+
+    out = {"area": area, "peak": peak, "seeds": seeds,
+           "seed_frac": seeds / np.maximum(area, 1), "brown_mean": _mean(brown)}
+    out["raw_brown_mean"] = _mean(raw_brown) if raw_brown is not None else np.full(n + 1, -1.0)
+    out["raw_warm_mean"] = _mean(raw_warm) if raw_warm is not None else np.full(n + 1, -1.0)
     return out
 
 
@@ -621,7 +704,15 @@ def detect(
     # section but transmit nearly all the light; averaging them into a
     # neighbourhood drags its background down and rings every hole with false
     # positives. They are interpolated across instead.
-    material = np.clip(od, 0.0, None).sum(axis=2) >= MATERIAL_OD_MIN
+    total_od = np.clip(od, 0.0, None).sum(axis=2)
+    mat_cut = MATERIAL_OD_MIN
+    if tissue.any():
+        _t = total_od[tissue]
+        if _t.size > 200_000:
+            _t = _t[:: _t.size // 200_000 + 1]
+        mat_cut = float(min(MATERIAL_OD_MIN,
+                            MATERIAL_TISSUE_FRAC * float(np.median(_t))))
+    material = total_od >= mat_cut
     win = int(max(BG_WIN_MIN, round(max(h, w) * BG_WIN_FRAC)) | 1)
     bg_od, bg_mask = background_od_field(od, tissue & material, win)
     # NOT clipped per channel: clipping negatives first would turn a pixel that
@@ -640,19 +731,23 @@ def detect(
     # taking the better evidence keeps both.
     _, brown_fine = excess_colour(od_exc, None if target_od is None else dab_vec)
     brown = brown_fine
-    # Warmth of the EXCESS, read in transmittance: the image with its own local
-    # background divided out, then asked how much redder than bluer it is.
-    #
-    # Raw warmth — (R−B)/(R+B) of the pixel itself — was used here and is wrong
-    # in general. It is an absolute measure in an engine that is otherwise
-    # entirely background-relative, so it only works when the tissue is pale and
-    # warm to begin with. On a strongly haematoxylin-counterstained or simply
-    # dark section, genuine chromogen sits on a blue base and reads NEGATIVE, and
-    # every gate resting on it then throws real staining away. Dividing the local
-    # background out first asks the question that was always meant: is this pixel
-    # warmer *than its surroundings*.
-    _t = np.power(10.0, -np.clip(od_exc, 0.0, None))
-    warm_exc = ((_t[..., 0] - _t[..., 2]) / (_t[..., 0] + _t[..., 2] + 1e-6)).astype(np.float32)
+
+    # ---- the material's OWN colour, which does not degrade with density ---- #
+    # Read on the raw absorbance rather than on the excess. See OBJ_RAW_BROWN:
+    # under a dense structure the local background carries the same chromogen, so
+    # subtracting it cancels the very signature the excess reading is looking
+    # for, and the darkest staining on the slide reads as neutral debris.
+    od_pos = np.clip(od, 0.0, None)
+    # The same colour question `excess_colour` asks, put to the raw absorbance —
+    # so it is rotated onto the chosen chromogen in selection mode exactly as the
+    # excess reading is.
+    _, raw_brown = excess_colour(od_pos, None if target_od is None else dab_vec)
+    raw_mag = np.linalg.norm(od_pos, axis=2) + 1e-6
+    raw_bog = ((od_pos[..., 2] - od_pos[..., 1]) / raw_mag).astype(np.float32)
+    # Warmth of the raw pixel, (R−B)/(R+B). Neutral material sits at 0.00 however
+    # dark it is; dense chromogen stays clearly positive.
+    _tr = np.power(10.0, -od_pos)
+    raw_warm = ((_tr[..., 0] - _tr[..., 2]) / (_tr[..., 0] + _tr[..., 2] + 1e-6)).astype(np.float32)
 
     # Which chromogen this excess belongs to — see BLUE_OVER_GREEN_MIN.
     _mag = np.linalg.norm(od_exc, axis=2) + 1e-6
@@ -686,7 +781,27 @@ def detect(
     # ---- 2. candidate objects -------------------------------------------- #
     floor = float(max(NOISE_MULT * sigma, ABS_MIN_EXCESS))
     solid = tissue & material
-    seed_px = solid & (brown >= BROWN_SEED) & (bog >= bog_min) & (signal >= floor)
+
+    # Material far darker than this slide's own tissue, measured along the
+    # chromogen axis in the slide's own robust units. This is where the
+    # excess-colour reading stops being reliable (see OBJ_RAW_BROWN), and the
+    # only place the raw reading is allowed to speak for it.
+    raw_proj = (od_pos @ dab_dir).astype(np.float32)
+    _rp = raw_proj[solid] if solid.any() else raw_proj.ravel()
+    if _rp.size > 200_000:
+        _rp = _rp[:: _rp.size // 200_000 + 1]
+    _rp_med = float(np.median(_rp)) if _rp.size else 0.0
+    _rp_sig = 1.4826 * float(np.median(np.abs(_rp - _rp_med))) + 1e-6 if _rp.size else 1.0
+    dense_px = raw_proj >= _rp_med + DENSE_SIG_K * _rp_sig
+
+    seed_colour = (brown >= BROWN_SEED) & (bog >= bog_min)
+    # A dense pixel may seed on its own absorbance direction instead. Without
+    # this a thin, uniformly near-black duct has no seed anywhere — its rim,
+    # where the excess reading still works, is under a pixel wide — and the whole
+    # structure is discarded for want of two seed pixels.
+    seed_colour |= dense_px & (raw_brown >= SEED_RAW_BROWN) & (raw_bog >= SEED_RAW_BOG)
+    seed_px = solid & seed_colour & (signal >= floor)
+
     region = solid & (brown >= BROWN_GROW) & (signal >= floor)
     if saturation is not None:
         region &= saturation > NEUTRAL_SAT_MAX      # never grow into achromatic material
@@ -701,6 +816,12 @@ def detect(
     # slide whose staining is merely faint, the excess direction of near-noise
     # pixels is meaningless, and answering anyway tells the user their chromogen
     # is the wrong colour when in truth it is simply weak.
+    #
+    # `strong` is by construction the DENSEST material on the slide, which is
+    # exactly where the excess reading collapses — so asking it whether those
+    # pixels are chromogen-coloured, on the excess alone, answered "no DAB here"
+    # for ten of the 46 validation slides, every one of them plainly DAB. The
+    # raw-reading seed path above is what makes this verdict trustworthy.
     if strong.any() and float(np.median(signal[strong])) >= 2.0 * floor:
         chromogen_share = float((seed_px & strong).sum()) / max(int(strong.sum()), 1)
     else:
@@ -713,11 +834,20 @@ def detect(
     level_map = np.full((h, w), 255, dtype=np.uint8)
     bar = bar_min
     separability = 0.0
+    bar_discard = 0.0
+    single_population = False
 
     if n:
-        st = _object_stats(lbl, n, signal, brown, seed_px, warm_exc)
+        st = _object_stats(lbl, n, signal, brown, seed_px, raw_brown, raw_warm)
+        # Either reading may vouch for the object: the excess one, which sees
+        # dilute staining a raw reading would miss against warm tissue; or the
+        # raw one, which still works when the structure is dense enough to have
+        # cancelled its own excess. Neutral debris fails both — it sits at 0.00
+        # on the raw readings however dark it is — and every object still has to
+        # carry genuine chromogen-coloured seed pixels below.
         chromogen_coloured = ((st["brown_mean"] >= OBJ_BROWN_MEAN)
-                              | (st["warm_mean"] >= OBJ_WARM_MEAN))
+                              | ((st["raw_brown_mean"] >= OBJ_RAW_BROWN)
+                                 & (st["raw_warm_mean"] >= OBJ_RAW_WARM)))
         eligible = ((st["area"] >= min_area_px) & (st["seeds"] >= OBJ_SEED_MIN_PX)
                     & (st["seed_frac"] >= OBJ_SEED_FRAC) & chromogen_coloured)
         eligible[0] = False
@@ -735,8 +865,17 @@ def detect(
         if peaks.size >= 12:
             t, separability, discrim = _otsu_log(peaks)
             lo_p, hi_p = np.percentile(peaks, [10, 90])
-            if float(hi_p / max(lo_p, 1e-6)) < PEAK_MIN_SPREAD:
+            one_population = float(hi_p / max(lo_p, 1e-6)) < PEAK_MIN_SPREAD
+            # Reported, not enforced: how much of the stained area this split
+            # throws away. It is in the export because it tells a reader how
+            # consequential the operating point was on their slide — but it is
+            # NOT a gate, because it does not separate the two cases (see
+            # PEAK_MIN_SPREAD).
+            if np.isfinite(t):
+                bar_discard = float((peaks < t).mean())
+            if one_population:
                 t = float("nan")          # one population: there is nothing to split
+                single_population = True
                 notes.append(
                     "The staining here is of an even density — the structures found do "
                     "not separate into stronger and weaker groups — so everything "
@@ -814,6 +953,8 @@ def detect(
         bar=float(bar),
         floor=float(floor),
         separability=float(separability),
+        bar_discard=float(bar_discard),
+        single_population=bool(single_population),
         chromogen_share=float(chromogen_share),
         objects=int(obj_areas.size),
         object_areas=[int(a) for a in obj_areas],

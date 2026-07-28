@@ -48,12 +48,18 @@ DEBRIS_MAX     = 0.10   # of a neutral blob's area, at most this may be counted
 TONE_MAX_PCT   = 1.20   # a slide whose only chromogen is a slow tone reads ≤ this %
 BLANK_MAX_PCT  = 0.20   # unstained tissue reads ≤ this %
 
-# Two conditions sit at the physical detection floor: staining that adds ~0.12
-# absorbance (a quarter of the light), and a section that absorbs 5% of the light
-# in total. What is achievable there was measured, not assumed — pushing the
-# engine harder either gains nothing or starts finding structure in blank tissue,
-# so the bar records the real limit instead of an aspiration.
-FLOOR_RECALL_MIN = 0.20
+# Realisations of each condition. Fixed and explicit, so a run is reproducible
+# and two runs can be compared; several of them, so a condition whose answer
+# depends on where the structures happened to land is caught rather than sampled.
+SEEDS = (1, 2, 3, 4, 5)
+# Two statistically identical scenes may not read more than this far apart.
+INSTABILITY_MAX = 0.35    # relative spread across realisations
+INSTABILITY_ABS_PP = 0.05  # ... ignoring spreads too small to matter in absolute terms
+
+# Conditions marked `floor=True` sit below the physical detection floor — see
+# the long note in `judge()`. They are still run, and their recall is still
+# printed, because a large move in it between builds is worth seeing; they are
+# just not failed on it.
 
 
 def _rgb_from_od(od: np.ndarray) -> np.ndarray:
@@ -173,7 +179,12 @@ def conditions(full: bool):
         out.append((f"tissue od={t}",
                     dict(obj_radius=5, obj_count=40, stain_od=0.55, tissue_od=t,
                          tone=0.0, lumina=6, debris=0, noise=0.02, blur=0.4),
-                    dict(floor=t <= 0.10)))
+                    # A very pale section is NOT a floor case: the stain on it is
+                    # perfectly visible, it is the section that is faint. It used
+                    # to read 0% because an absolute "is this material?" cut
+                    # classified 97% of such a section as empty space — fixed in
+                    # detect.MATERIAL_TISSUE_FRAC — and is now enforced in full.
+                    dict()))
 
     # 4. TONE — a slow gradient of genuine chromogen, with and without structures
     for tone in ([0.10, 0.25, 0.45] if full else [0.25, 0.45]):
@@ -232,12 +243,35 @@ def judge(name, r, rule):
     elif rule.get("tone_only"):
         if r["positive_pct"] > TONE_MAX_PCT:
             fails.append(f"tone alone read {r['positive_pct']:.3f}% (max {TONE_MAX_PCT})")
-    else:
-        rmin = FLOOR_RECALL_MIN if rule.get("floor") else RECALL_MIN
-        if r["recall"] < rmin:
-            fails.append(f"recall {r['recall']*100:.1f}% (min {rmin*100:.0f}%)")
+    elif rule.get("floor"):
+        # BELOW THE DETECTION FLOOR.
+        #
+        # Here the staining adds so little absorbance that the strongest
+        # excursions of the tissue's own texture out-peak it. Measured on the
+        # 0.12 OD condition: the true structures peak at ~0.15 excess while the
+        # eligible background blobs reach 0.24-0.35, so *any* unsupervised rule
+        # that separates two groups puts the boundary above the real stain.
+        # Capping the operating point to force recall was tried and rejected —
+        # the cap has to bite at the 75th percentile of the population to help
+        # here, and at that setting it also binds on six of the 46 real
+        # sections, every one of them a pale slide, where it drops the bar into
+        # the parenchyma's own texture and paints it positive.
+        #
+        # So recall is not required at the floor and neither is stability:
+        # there is no stable answer to be had, and demanding one would buy it
+        # with false positives on real slides. What IS required is that the
+        # engine does not invent staining — precision must hold — and it must
+        # say the boundary is a judgement, which it does in `notes`.
         if r["precision"] < PRECISION_MIN:
             fails.append(f"precision {r['precision']*100:.1f}% (min {PRECISION_MIN*100:.0f}%)")
+    else:
+        if r["recall"] < RECALL_MIN:
+            fails.append(f"recall {r['recall']*100:.1f}% (min {RECALL_MIN*100:.0f}%)")
+        if r["precision"] < PRECISION_MIN:
+            fails.append(f"precision {r['precision']*100:.1f}% (min {PRECISION_MIN*100:.0f}%)")
+        if r.get("instability", 0.0) > INSTABILITY_MAX:
+            fails.append(f"unstable across realisations: {r['pct_min']:.3f}%-{r['pct_max']:.3f}% "
+                         f"({r['instability']*100:.0f}% spread, max {INSTABILITY_MAX*100:.0f}%)")
     if r["debris_leak"] > DEBRIS_MAX:
         fails.append(f"debris leak {r['debris_leak']*100:.1f}% (max {DEBRIS_MAX*100:.0f}%)")
     return fails
@@ -254,13 +288,44 @@ def main() -> int:
     for name, kw, rule in conditions(args.full):
         if args.only and args.only not in name:
             continue
-        rgb, truth, deb = build_scene(seed=abs(hash(name)) % 9999, **kw)
-        r = score(rgb, truth, deb)
+        # Every condition is run over SEVERAL realisations, and judged on the
+        # worst of them.
+        #
+        # One realisation per condition is not enough, and the seed must not be
+        # `hash(name)`: Python randomises string hashing per process, so this
+        # suite silently generated different scenes on every run and its verdict
+        # was not reproducible. Worse, it hid the defect that mattered most —
+        # across realisations of one nominally identical condition (same object
+        # count, same stain density, differing only in where the structures
+        # landed) recall ranged from 13% to 98%. A single sample reported
+        # whichever of those it happened to draw, so the instability read as
+        # noise in the suite rather than as the bug it was.
+        rr = []
+        for seed in SEEDS:
+            rgb, truth, deb = build_scene(seed=seed, **kw)
+            rr.append(score(rgb, truth, deb))
+        r = {
+            "positive_pct": float(np.median([x["positive_pct"] for x in rr])),
+            "recall": min(x["recall"] for x in rr),
+            "precision": min(x["precision"] for x in rr),
+            "debris_leak": max(x["debris_leak"] for x in rr),
+            "objects": int(np.median([x["objects"] for x in rr])),
+            "pct_min": min(x["positive_pct"] for x in rr),
+            "pct_max": max(x["positive_pct"] for x in rr),
+        }
+        # A measurement instrument must give the same answer for the same
+        # specimen. Realisations of one condition are statistically identical,
+        # so a large spread between them is a defect in its own right, whatever
+        # the recall happens to be.
+        spread = r["pct_max"] - r["pct_min"]
+        rel = spread / max(r["pct_max"], 1e-9)
+        r["instability"] = rel if spread >= INSTABILITY_ABS_PP else 0.0
         fails = judge(name, r, rule)
         bad += bool(fails)
         rows.append({"case": name, **r, "fails": fails})
         flag = "FAIL " + "; ".join(fails) if fails else "ok"
-        print(f"{name:26s} pos={r['positive_pct']:6.3f}% recall={r['recall']*100:5.1f}% "
+        print(f"{name:26s} pos={r['positive_pct']:6.3f}% ({r['pct_min']:.3f}-{r['pct_max']:.3f}) "
+              f"recall={r['recall']*100:5.1f}% "
               f"prec={r['precision']*100:5.1f}% debris={r['debris_leak']*100:4.1f}% "
               f"obj={r['objects']:5d}  {flag}")
 

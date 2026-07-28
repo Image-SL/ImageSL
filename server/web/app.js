@@ -61,16 +61,27 @@ async function streamedDownload(url, body, filename, label, estBytes) {
 }
 
 /* ============================== level-map overlay ==============================
-   The server sends ONE 8-bit image: for every pixel, the first sensitivity level
-   at which the detector calls it positive (255 = never). That single image
-   carries the whole family of results, so the browser reproduces the server's
-   area-based, object-by-object decision at any sensitivity — and with any
-   per-region offset from the manual tools — with one comparison per pixel:
+   The server sends ONE image carrying two channels:
 
-       positive  =  level_map[i] <= sensitivity + offset[i]     (and not ignored)
+     R — the first sensitivity level at which the detector calls this pixel
+         positive (255 = never);
+     G — 255 on tissue, 0 on slide background.
 
-   No round-trip, and no way for the picture on screen to drift away from the
-   numbers the server reports for the same settings. */
+   Together they carry the whole family of results AND the denominator, so the
+   browser reproduces the server's area-based, object-by-object decision — and
+   its percentage — at any sensitivity and under any region, by comparison
+   alone:
+
+       positive =  level[i] <= sensitivity  &&  tissue[i]  &&  allowed[i]
+       measured =  tissue[i] && allowed[i]
+       percent  =  positive / measured
+
+   Carrying the tissue channel is what makes the on-screen percentage move
+   correctly when a region is drawn. A focus or ignore region changes the area
+   being measured, so it moves the denominator as well as the numerator;
+   without the mask the browser divided by the whole slide's tissue count and
+   showed a percentage that did not match the one the server reported — and
+   therefore did not match the CSV — for the very same regions. */
 const NEVER = 255;
 
 function buildLevelData(levelImg) {
@@ -79,8 +90,29 @@ function buildLevelData(levelImg) {
   const cx = cv.getContext("2d", { willReadFrequently: true });
   cx.drawImage(levelImg, 0, 0);
   const raw = cx.getImageData(0, 0, W, H).data;
-  const data = new Uint8Array(W * H);
-  for (let i = 0, j = 0; i < data.length; i++, j += 4) data[i] = raw[j];
+  const n = W * H;
+  const data = new Uint8Array(n);
+  const tissue = new Uint8Array(n);
+
+  // Older builds sent a GRAYSCALE level map with no tissue channel, and a
+  // returning user's saved batch still holds one. There R === G, so reading the
+  // green channel as a tissue mask would mark every pixel the detector called
+  // positive (level 0-24) as *background* and report 0.00% for the whole slide.
+  // The new encoding puts only 0 or 255 in green, so anything in between
+  // identifies the old format, which is then treated as all-tissue — exactly
+  // what that build assumed.
+  let hasTissueChannel = true;
+  for (let j = 1; j < raw.length; j += 4) {
+    const g = raw[j];
+    if (g !== 0 && g !== 255) { hasTissueChannel = false; break; }
+  }
+
+  let tissueCount = 0;
+  for (let i = 0, j = 0; i < n; i++, j += 4) {
+    data[i] = raw[j];
+    const t = hasTissueChannel ? (raw[j + 1] === 255 ? 1 : 0) : 1;
+    tissue[i] = t; tissueCount += t;
+  }
 
   const ov = document.createElement("canvas"); ov.width = W; ov.height = H;
   const ovCtx = ov.getContext("2d");
@@ -88,52 +120,68 @@ function buildLevelData(levelImg) {
   const isoCtx = iso.getContext("2d");
   const tmp = document.createElement("canvas"); tmp.width = W; tmp.height = H;
   const tmpCtx = tmp.getContext("2d");
-  const reg = document.createElement("canvas"); reg.width = W; reg.height = H;
-  const regCtx = reg.getContext("2d", { willReadFrequently: true });
 
   return {
-    W, H, data,
-    offset: new Int16Array(W * H),      // per-pixel sensitivity shift (boost/damp)
+    W, H, data, tissue, tissueCount,
     allow: null,                        // null = everywhere; else 0/1 per pixel
-    mask: new Uint8Array(W * H),
-    count: 0,
+    mask: new Uint8Array(n),
+    count: 0,                           // positive pixels at the current setting
+    measured: tissueCount,              // tissue pixels the percentage divides by
     ov, ovCtx, ovData: ovCtx.createImageData(W, H),
     iso, isoCtx, isoData: isoCtx.createImageData(W, H),
-    tmp, tmpCtx, reg, regCtx,
+    tmp, tmpCtx,
   };
 }
 
-/* Rasterise the drawn regions into a per-pixel sensitivity offset plus an
-   allow-mask. Mirrors ihc/regions.py: focus keeps only what it covers, ignore
-   removes what it covers, boost/damp shift the level locally. */
+/* Rasterise one drawn region into a 0/1 mask.
+
+   A pixel is inside when its CENTRE is inside the shape. That is the same rule
+   ihc/regions.py states and implements, written out here rather than delegated
+   to a canvas fill — because a canvas fill is not that rule. It excludes the far
+   edge of a rect where PIL includes it, and it antialiases the boundary, so the
+   two sides disagreed by a row and a column: 368 pixels of denominator on a
+   512x384 frame, i.e. an on-screen percentage that did not match the exported
+   one. Both sides now compute the mask arithmetically and agree exactly. */
 function rasterRegion(ld, region) {
-  const { W, H, regCtx: cx } = ld;
-  cx.setTransform(1, 0, 0, 1, 0, 0);
-  cx.clearRect(0, 0, W, H);
-  cx.fillStyle = "#fff";
-  cx.strokeStyle = "#fff";
-  cx.lineJoin = "round";
-  cx.lineCap = "round";
+  const { W, H } = ld;
   const pts = (region.points || []).map((p) => [p[0] * (W - 1), p[1] * (H - 1)]);
   if (!pts.length) return null;
+  const mask = new Uint8Array(W * H);
+
   if (region.kind === "rect" && pts.length >= 2) {
-    const [x0, y0] = pts[0], [x1, y1] = pts[1];
-    cx.fillRect(Math.min(x0, x1), Math.min(y0, y1), Math.abs(x1 - x0), Math.abs(y1 - y0));
-  } else if (pts.length >= 3) {
-    cx.beginPath();
-    cx.moveTo(pts[0][0], pts[0][1]);
-    for (let i = 1; i < pts.length; i++) cx.lineTo(pts[i][0], pts[i][1]);
-    cx.closePath();
-    cx.fill();
-  } else {
-    return null;
+    const xa = Math.min(pts[0][0], pts[1][0]), xb = Math.max(pts[0][0], pts[1][0]);
+    const ya = Math.min(pts[0][1], pts[1][1]), yb = Math.max(pts[0][1], pts[1][1]);
+    const c0 = Math.max(0, Math.ceil(xa - 0.5)), c1 = Math.min(W - 1, Math.floor(xb - 0.5));
+    const r0 = Math.max(0, Math.ceil(ya - 0.5)), r1 = Math.min(H - 1, Math.floor(yb - 0.5));
+    for (let r = r0; r <= r1; r++) mask.fill(1, r * W + c0, r * W + c1 + 1);
+    return mask;
   }
-  return cx.getImageData(0, 0, W, H).data;
+  if (pts.length < 3) return null;
+
+  // Even-odd scanline fill at pixel centres — the mirror of `_polygon_mask`.
+  const n = pts.length;
+  const xi = new Float64Array(n);
+  for (let r = 0; r < H; r++) {
+    const yy = r + 0.5;
+    let m = 0;
+    for (let i = 0, j = n - 1; i < n; j = i++) {
+      const [xI, yI] = pts[i], [xJ, yJ] = pts[j];
+      if (yI === yJ) continue;
+      if ((yI > yy) !== (yJ > yy)) xi[m++] = xI + ((yy - yI) * (xJ - xI)) / (yJ - yI);
+    }
+    if (m < 2) continue;
+    const cross = Array.prototype.slice.call(xi, 0, m).sort((a, b) => a - b);
+    for (let k = 0; k + 1 < m; k += 2) {
+      const c0 = Math.max(0, Math.ceil(cross[k] - 0.5));
+      const c1 = Math.min(W - 1, Math.floor(cross[k + 1] - 0.5));
+      if (c1 >= c0) mask.fill(1, r * W + c0, r * W + c1 + 1);
+    }
+  }
+  return mask;
 }
 
 function applyRegions(ld, regions) {
   const n = ld.W * ld.H;
-  ld.offset.fill(0);
   ld.allow = null;
   if (!regions || !regions.length) return;
   let focus = null, ignore = null;
@@ -142,13 +190,10 @@ function applyRegions(ld, regions) {
     if (!px) continue;
     if (r.mode === "focus") {
       if (!focus) focus = new Uint8Array(n);
-      for (let i = 0, j = 3; i < n; i++, j += 4) if (px[j]) focus[i] = 1;
+      for (let i = 0; i < n; i++) if (px[i]) focus[i] = 1;
     } else if (r.mode === "ignore") {
       if (!ignore) ignore = new Uint8Array(n);
-      for (let i = 0, j = 3; i < n; i++, j += 4) if (px[j]) ignore[i] = 1;
-    } else {
-      const d = r.delta | 0;
-      for (let i = 0, j = 3; i < n; i++, j += 4) if (px[j]) ld.offset[i] += d;
+      for (let i = 0; i < n; i++) if (px[i]) ignore[i] = 1;
     }
   }
   if (focus || ignore) {
@@ -160,19 +205,21 @@ function applyRegions(ld, regions) {
   }
 }
 
+/* Reproduces ihc/regions.py `apply()` exactly, and counts BOTH sides of the
+   percentage: the positive pixels and the tissue they are measured against. */
 function computeMask(ld, level, maxLevel) {
-  const { data, offset, allow, mask } = ld;
-  let count = 0;
+  const { data, tissue, allow, mask } = ld;
+  const lim = level < 0 ? 0 : (level > maxLevel ? maxLevel : level);
+  let count = 0, measured = 0;
   for (let i = 0; i < data.length; i++) {
-    const v = data[i];
-    if (v === NEVER) { mask[i] = 0; continue; }
-    let lim = level + offset[i];
-    if (lim < 0) lim = 0; else if (lim > maxLevel) lim = maxLevel;
-    const on = v <= lim && (!allow || allow[i]);
+    const inArea = tissue[i] && (!allow || allow[i]);
+    if (inArea) measured++;
+    const on = inArea && data[i] <= lim && data[i] !== NEVER;
     mask[i] = on ? 1 : 0;
     if (on) count++;
   }
   ld.count = count;
+  ld.measured = measured;
   return count;
 }
 
@@ -250,7 +297,7 @@ async function saveState() {
   try {
     const db = await idb();
     const tx = db.transaction(STORE, "readwrite");
-    tx.objectStore(STORE).put({ analyses, skipped, ts: Date.now() }, KEY);
+    tx.objectStore(STORE).put({ analyses, skipped, failures, ts: Date.now() }, KEY);
     await new Promise((r) => (tx.oncomplete = r));
   } catch (e) {}
 }
@@ -267,7 +314,8 @@ async function clearState() { try { const db = await idb(); const tx = db.transa
 
 /* ============================== state ============================== */
 let analyses = [];   // [{ id, filename, data }]
-let skipped = [];    // [{ filename, reason }]
+let skipped = [];    // [{ filename, reason }] — read, but not a stained slide
+let failures = [];   // [{ filename, reason }] — could not be analyzed at all
 let mode = "auto";   // "auto" | "select"
 let selectedStain = null;   // { key, name, compartment_name, ... }
 let stainList = null;       // cached /api/stains
@@ -343,21 +391,51 @@ function setRing(fraction) {
   $("ringFill").style.strokeDashoffset = String(RING_C * (1 - fraction));
   $("ringPct").innerHTML = Math.round(fraction * 100) + "<small>%</small>";
 }
-async function analyzeOne(file) {
+/* A 4xx is a verdict about this file — retrying cannot change it. Anything else
+   (a dropped connection, a gateway timeout, a server briefly out of memory
+   under a big batch) is transient, and a single unlucky slide in a 46-slide run
+   should not come back as "failed" when simply asking again would have worked. */
+const RETRY_ATTEMPTS = 3;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function analyzeOnce(file) {
   const fd = new FormData();
   fd.append("file", file); fd.append("filename", file.name);
   const key = currentStainKey();
   if (key) fd.append("stain_key", key);
   const res = await fetch("/api/analyze", { method: "POST", headers: headers(false), body: fd });
-  if (!res.ok) { let msg = res.statusText; try { msg = (await res.json()).detail || msg; } catch (e) {} throw new Error(msg); }
-  const data = await res.json();
-  data.filename = data.filename || file.name;
-  return data;
+  if (res.ok) {
+    const data = await res.json();
+    data.filename = data.filename || file.name;
+    return data;
+  }
+  let msg = res.statusText;
+  try { msg = (await res.json()).detail || msg; } catch (e) {}
+  const err = new Error(msg);
+  err.permanent = res.status >= 400 && res.status < 500 && res.status !== 408 && res.status !== 429;
+  throw err;
+}
+
+async function analyzeOne(file, onRetry) {
+  let last = null;
+  for (let attempt = 1; attempt <= RETRY_ATTEMPTS; attempt++) {
+    try {
+      return await analyzeOnce(file);
+    } catch (e) {
+      last = e;
+      if (e && e.permanent) throw e;          // a verdict about the file itself
+    }
+    if (attempt < RETRY_ATTEMPTS) {
+      if (onRetry) onRetry(attempt);
+      await sleep(700 * attempt);
+    }
+  }
+  throw last || new Error("Analysis failed");
 }
 async function runBatch(fileList, append) {
   const files = Array.from(fileList);
   $("uploadError").classList.add("hidden");
-  if (!append) { analyses = []; skipped = []; $("resultsContainer").innerHTML = ""; }
+  if (!append) { analyses = []; skipped = []; failures = []; $("resultsContainer").innerHTML = ""; }
   showView("loadingView"); setRing(0);
   $("loaderSub").textContent = "Preparing…";
   const container = $("resultsContainer");
@@ -366,7 +444,10 @@ async function runBatch(fileList, append) {
   for (let i = 0; i < files.length; i++) {
     $("loaderSub").textContent = `Analyzing ${i + 1} of ${files.length} — ${files[i].name}`;
     try {
-      const data = await analyzeOne(files[i]);
+      const data = await analyzeOne(files[i], (n) => {
+        $("loaderSub").textContent =
+          `Retrying ${files[i].name} (attempt ${n + 1} of ${RETRY_ATTEMPTS})…`;
+      });
       const r = data.result || {};
       if (r.valid === false) {
         skipped.push({ filename: data.filename, reason: r.skip_reason || "Not recognized as a stained slide." });
@@ -376,46 +457,55 @@ async function runBatch(fileList, append) {
         card.style.animationDelay = Math.min(added * 60, 400) + "ms";
         container.appendChild(card); added++;
       }
-    } catch (e) { errors.push(`${files[i].name}: ${e.message}`); }
+    } catch (e) { errors.push({ filename: files[i].name, reason: (e && e.message) || "Analysis failed" }); }
     setRing((i + 1) / files.length);
   }
+  failures = append ? failures.concat(errors) : errors;
   if (!analyses.length && !skipped.length) {
     showView("uploadView");
-    const box = $("uploadError"); box.textContent = "Could not analyze: " + errors.join(" · "); box.classList.remove("hidden");
+    const box = $("uploadError");
+    box.textContent = "Could not analyze: " + errors.map((e) => `${e.filename}: ${e.reason}`).join(" · ");
+    box.classList.remove("hidden");
     return;
   }
   await new Promise((r) => setTimeout(r, 300));
-  renderSummary(errors);
+  renderSummary();
   showView("resultsView");
   if (!append) window.scrollTo({ top: 0, behavior: "smooth" });
   saveState();
 }
 
 /* ============================== results ============================== */
-function renderSummary(errors) {
+function renderSummary() {
   const n = analyses.length;
   const bits = [];
   if (skipped.length) bits.push(`${skipped.length} skipped`);
-  if (errors && errors.length) bits.push(`${errors.length} failed`);
+  if (failures.length) bits.push(`${failures.length} failed`);
   const note = bits.length ? ` <span class="sub">· ${bits.join(" · ")}</span>` : "";
   $("resultsCount").innerHTML = `${n} slide${n === 1 ? "" : "s"} analyzed${note}`;
+
+  // Name every file that did not produce a measurement, and say why. A bare
+  // "2 failed" is not something anyone can act on.
   const panel = $("skippedPanel"), list = $("skippedList");
-  if (skipped.length) {
-    $("skippedTitle").textContent = `${skipped.length} file${skipped.length === 1 ? "" : "s"} skipped — not stained slides`;
+  const items = skipped.map((s) => ({ ...s, kind: "skipped" }))
+    .concat(failures.map((f) => ({ ...f, kind: "failed" })));
+  if (items.length) {
+    const parts = [];
+    if (skipped.length) parts.push(`${skipped.length} skipped — not stained slides`);
+    if (failures.length) parts.push(`${failures.length} could not be analyzed`);
+    $("skippedTitle").textContent = parts.join(" · ");
     list.innerHTML = "";
-    skipped.forEach((s) => {
+    items.forEach((s) => {
       const li = document.createElement("li");
       li.innerHTML = `<b></b><span class="why"></span>`;
       li.querySelector("b").textContent = s.filename;
       li.querySelector(".why").textContent = s.reason;
+      if (s.kind === "failed") li.classList.add("failed");
       list.appendChild(li);
     });
     panel.classList.remove("hidden");
   } else panel.classList.add("hidden");
 }
-
-/* How far a "More/Less here" region shifts the sensitivity inside itself. */
-const REGION_DELTA = 5;
 
 function currentLevel(data) {
   const p = data.params || {}, r = data.result || {};
@@ -457,14 +547,19 @@ function createCard(data) {
     requestAnimationFrame(() => { rafPending = false; redraw(); });
   }
 
+  /* The live readout uses the SAME two counts the server divides — positive
+     pixels over the tissue actually being measured — so drawing or removing a
+     region moves the percentage to the value the server will report, and the
+     CSV, for those exact regions. */
   function liveMetrics() {
     if (!st.ld) return;
     const pos = st.ld.count;
-    const tissue = (current.result && current.result.tissue_pixels) || 0;
-    const pct = tissue ? (pos / tissue * 100) : 0;
+    const measured = st.ld.measured;
+    const pct = measured ? (pos / measured * 100) : 0;
     q(".mPercent").textContent = pct.toFixed(2) + "%";
     q(".mPositive").textContent = pos.toLocaleString();
-    [".mPercent", ".mPositive"].forEach((s) => { const b = q(s); b.classList.remove("flash"); void b.offsetWidth; b.classList.add("flash"); });
+    q(".mTissue").textContent = measured.toLocaleString();
+    [".mPercent", ".mPositive", ".mTissue"].forEach((s) => { const b = q(s); b.classList.remove("flash"); void b.offsetWidth; b.classList.add("flash"); });
   }
 
   function levelLabel() {
@@ -572,9 +667,7 @@ function createCard(data) {
   const draw = q(".cmpDraw");
 
   function regionColour(mode) {
-    return mode === "focus" ? "#38bdf8"
-      : mode === "ignore" ? "#f43f5e"
-      : mode === "boost" ? "#22c55e" : "#f59e0b";
+    return mode === "focus" ? "#38bdf8" : "#f43f5e";
   }
 
   function sizeDrawCanvas() {
@@ -643,10 +736,7 @@ function createCard(data) {
     if (tool === "off") return;
     e.preventDefault(); e.stopPropagation();
     try { draw.setPointerCapture(e.pointerId); } catch (x) {}
-    // "Less here" is the same tool as "More here" with the shift reversed.
-    const mode = tool === "damp" ? "boost" : tool;
-    const delta = tool === "boost" ? REGION_DELTA : (tool === "damp" ? -REGION_DELTA : 0);
-    drawing = { mode, kind: shape, delta, points: [toPoint(e)] };
+    drawing = { mode: tool, kind: shape, points: [toPoint(e)] };
     if (shape === "rect") drawing.points.push(drawing.points[0].slice());
     drawRegionOutlines();
   });
@@ -672,40 +762,60 @@ function createCard(data) {
   window.addEventListener("resize", drawRegionOutlines);
   regionCountLabel();
 
-  /* ---- downloads (always carry the CURRENT on-screen view) ---- */
+  /* ---- downloads (always carry the CURRENT on-screen view) ----
+     Sent as a POST body rather than a query string so the drawn regions travel
+     with the sensitivity; a lasso does not fit in a URL, and without it a
+     single-slide TIFF came back ignoring every region on screen. */
   function dlTif(type) {
-    const qs = `analysis_id=${analysisId}&image_type=${type}&level=${level}`;
-    streamedDownload(`/api/download_tif?${qs}`, null, `${stem}_${type}.tif`, `Exporting ${type}`, 2 * 1048576);
+    streamedDownload("/api/download_tif",
+      { analysis_id: analysisId, image_type: type, level, regions },
+      `${stem}_${type}.tif`, `Exporting ${type}`, 2 * 1048576);
   }
   node.querySelectorAll(".dl-btn").forEach((b) => b.addEventListener("click", () => dlTif(b.dataset.type)));
   node.querySelectorAll(".vdl").forEach((b) => b.addEventListener("click", (e) => { e.stopPropagation(); dlTif(b.dataset.type); }));
-  q(".export-one").addEventListener("click", () => streamedDownload("/api/export_csv", { analysis_ids: [analysisId] }, `${stem}_data.csv`, "Exporting CSV", 0));
+  q(".export-one").addEventListener("click", () => streamedDownload(
+    "/api/export_csv",
+    { analysis_ids: [analysisId], overrides: { [analysisId]: { level, regions } } },
+    `${stem}_data.csv`, "Exporting CSV", 0));
 
+  node.dataset.analysisId = analysisId;
   node._view = () => ({ level, regions });
   return node;
 }
 
-/* ============================== mass export ============================== */
+/* ============================== mass export ==============================
+   Every export carries each card's CURRENT sensitivity and regions. The server
+   re-measures any slide whose view differs from the one it last cached, so an
+   export taken immediately after a change can never fall back on the previous
+   settings' numbers. */
+function currentOverrides() {
+  // Keyed by the card's own analysis id, not by its position. Pairing the Nth
+  // card with the Nth entry breaks the moment the two lists differ — and they
+  // do, whenever a file is skipped or a batch is appended — which would attach
+  // one slide's regions to another slide's export.
+  const overrides = {};
+  document.querySelectorAll("#resultsContainer .card").forEach((card) => {
+    const id = card.dataset.analysisId;
+    if (!id) return;
+    const v = card._view ? card._view() : null;
+    overrides[id] = v ? { level: v.level, regions: v.regions } : {};
+  });
+  return overrides;
+}
 $("btnExportCsv").addEventListener("click", () => {
   const ids = analyses.map((a) => a.id); if (!ids.length) return;
-  streamedDownload("/api/export_csv", { analysis_ids: ids }, "ImageSL_results.csv", "Exporting data (CSV)", 0);
+  streamedDownload("/api/export_csv", { analysis_ids: ids, overrides: currentOverrides() },
+    "ImageSL_results.csv", "Exporting data (CSV)", 0);
 });
 $("btnDownloadZip").addEventListener("click", () => {
   const ids = analyses.map((a) => a.id); if (!ids.length) return;
   const n = ids.length;
-  // carry each slide's current sensitivity AND its manual regions, so every
-  // image in the ZIP is exactly what that card shows on screen
-  const overrides = {};
-  document.querySelectorAll("#resultsContainer .card").forEach((card, i) => {
-    const a = analyses[i]; if (!a) return;
-    const v = card._view ? card._view() : null;
-    overrides[a.id] = v ? { level: v.level, regions: v.regions } : {};
-  });
-  streamedDownload("/api/export_zip", { analysis_ids: ids, images: ["comparison"], include_csv: true, overrides },
+  streamedDownload("/api/export_zip",
+    { analysis_ids: ids, images: ["comparison"], include_csv: true, overrides: currentOverrides() },
     "ImageSL_export.zip", `Packaging ${n} slide${n === 1 ? "" : "s"} (ZIP)`, n * 1.6 * 1048576);
 });
 $("btnNew").addEventListener("click", () => {
-  analyses = []; skipped = [];
+  analyses = []; skipped = []; failures = [];
   $("resultsContainer").innerHTML = ""; $("skippedPanel").classList.add("hidden");
   clearState(); showView("uploadView"); window.scrollTo({ top: 0, behavior: "smooth" });
 });
@@ -720,8 +830,9 @@ $("lightbox").addEventListener("click", () => $("lightbox").classList.add("hidde
   if (!stt || (!(stt.analyses || []).length && !(stt.skipped || []).length)) return;
   analyses = (stt.analyses || []).filter((a) => a && a.data);
   skipped = stt.skipped || [];
+  failures = stt.failures || [];
   const container = $("resultsContainer"); container.innerHTML = "";
   analyses.forEach((a) => container.appendChild(createCard(a.data)));
-  renderSummary([]);
+  renderSummary();
   showView("resultsView");
 })();

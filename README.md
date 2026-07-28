@@ -48,10 +48,19 @@ never judged by how dark it is. Instead, for each slide:
    hue, because hue stops meaning anything as a pixel approaches black — which is
    why dense, unmistakable DAB used to be dropped while its pale halo was kept.
    It is read at two spatial scales and the stronger reading wins, so a
-   two-pixel-wide streak is not diluted by the unstained tissue beside it. A
-   second, independent reading of the *raw* warmth backs it up on the densest
-   cores, where every channel is crushed: those stay clearly warm while ink,
-   dust and folds sit at zero, which is what keeps dark grey deposits out.
+   two-pixel-wide streak is not diluted by the unstained tissue beside it.
+
+   On the *densest* staining that reading fails, unavoidably: the local
+   background under a dark structure is itself tinted by the same chromogen, so
+   subtracting it cancels the signature being tested for, and a near-black bile
+   duct measures as neutral debris. So the colour question is also put to the
+   material's **own** absorbance direction, which does not degrade with density —
+   DAB reads +0.51 on it, haematoxylin −0.36, a red chromogen +0.04 and ink,
+   dust or a fold 0.00. Either reading may vouch for a structure; neutral
+   material fails both. This is what recovered the darkest, least ambiguous
+   staining on the validation set, and with it the "is there DAB on this slide?"
+   verdict, which had been answering *no* for ten of forty-six plainly DAB
+   sections.
 3. The excess is grouped into **connected structures**, and stained objects are
    separated from background bumps by clustering the population of object peaks.
    The decision is made about structures, not pixels.
@@ -73,12 +82,22 @@ because both sides apply the same rule to the same level map.
 | **Sensitivity** slider — sits directly under the slide, so the image stays in view while you drag | moves the bar a structure's peak has to clear, around the operating point this slide chose for itself. `Auto` returns to it |
 | **Focus** region | measure only inside the shapes you draw — one cortical layer, one TMA core, one half of a section. Tissue outside stops counting, denominator included |
 | **Ignore** region | cut a fold, pen mark, bubble or torn edge out of the measurement entirely, denominator included |
-| **More here** / **Less here** region | shift sensitivity *locally*, for an area that is genuinely weaker or stronger, without moving the whole slide's operating point |
 | **TIF** / **Download** | exports any panel at full analysis resolution, at exactly the sensitivity and regions on screen |
 
-A boosted region cannot invent staining: it still only admits chromogen-coloured
-structures. The strongest boost means "count everything this slide could
-plausibly call stain, here", not "paint this area positive".
+A region says **where** to measure and nothing else. Both modes move the positive
+area and the tissue it is measured against together, so the reported percentage
+is always "positive area ÷ tissue actually measured" over exactly the area you
+drew — and the figure on screen is the figure in the CSV, to the pixel. The
+browser and the server rasterise a drawn shape with the identical rule (a pixel
+counts when its centre is inside), so the two cannot drift apart.
+
+There is no longer a *More here* / *Less here* region. A per-region operating
+point made the headline percentage a mixture of several different decision
+rules, which is not a quantity that can be compared between slides or written
+into a method — and because the shift applied only inside the shape, the same
+structure was counted or not depending on which side of a hand-drawn line it
+fell. Sensitivity is one setting for the whole slide, and the export records
+which setting produced each number.
 
 Each result shows three panels — **Original**, **Overlay** and **Stain only**.
 The detection highlight is always neon green (`#39ff14`); there is no colour picker.
@@ -97,7 +116,7 @@ ImageSL/
 │   │                        #   detect() → metrics → renderers
 │   ├── ihc/detect.py        # THE detection: local background → excess colour →
 │   │                        #   objects → per-object area → level map
-│   ├── ihc/regions.py       # manual focus / ignore / local-sensitivity shapes
+│   ├── ihc/regions.py       # manual focus / ignore shapes (exact, centre-in-pixel)
 │   ├── ihc/stains.py        # stain registry + ENABLED_KEYS (what is shipped)
 │   ├── web/                 # plain single-page UI (index.html, styles.css, app.js)
 │   └── requirements.txt
@@ -125,7 +144,10 @@ python scripts/synthetic_matrix.py            # --full for the dense grid
 truth: unmistakable stain that was missed (in the engine's own units, and again
 in raw-image units), background counted as signal, positive structures that are
 not chromogen-coloured, tissue-mask collapse, and stability under illumination,
-resolution and compression change.
+resolution and compression change. It loads each slide through
+`engine.load_rgb` from the file's own bytes — the exact path an upload takes,
+including the downsample to the working resolution — so the suite cannot pass on
+a code path no user ever exercises.
 
 `synthetic_cases.py` runs constructed scenes where the answer is known exactly —
 a plaque wider than the background window, spots stained to one even density,
@@ -142,12 +164,30 @@ medium puncta in pale tan tissue passes the real-slide suite and fails most of
 these. It found, among others, that an HSV hue window was discarding genuine DAB
 (dense chromogen shifts red, landing just outside a window drawn around DAB),
 that a raw-warmth test only worked because the validation slides happened to
-have pale warm tissue, and that a stained region wider than the background
-window was erasing itself.
+have pale warm tissue, that a stained region wider than the background window
+was erasing itself, and that an absolute "is this material?" cut was classifying
+97% of a very pale section as empty space — after which its noise estimate came
+back ten times too large and the section reported 0.000% with forty obvious
+structures on it.
+
+Each condition is run over **five fixed realisations** and judged on the worst
+of them, and a condition whose answer moves more than 35% between realisations
+fails on that alone. Statistically identical scenes must measure the same: one
+sample per condition hid a case where recall ranged from 13% to 98% — and the
+reported area from 0.058% to 0.436% — depending only on where the structures
+happened to land. (The seeds are fixed constants for the same reason. They were
+`hash(name)`, and Python randomises string hashing per process, so the suite
+generated different scenes on every run and its verdict was not reproducible.)
 
 Every check is a statement that must hold for any correct quantifier, and each
 failure names the case and the number. Exit status is non-zero if anything
 fails.
+
+Conditions marked as sitting *below the detection floor* are run and reported
+but not failed on recall. At ~0.12 OD of added stain the tissue's own texture
+out-peaks the staining, so no unsupervised rule separates them; what is still
+required there is that the engine does not invent staining, and that it says the
+boundary is a judgement rather than presenting it as a measurement.
 
 ## How the background is removed
 

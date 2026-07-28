@@ -32,7 +32,7 @@
 {"@context":"https://schema.org","@type":"WebApplication","name":"ImageSL","url":"https://imagesl.online/","applicationCategory":"HealthApplication","operatingSystem":"Web","description":"ImageSL quantifies DAB immunohistochemistry slides with automatic background removal, color deconvolution and precise positive-area measurement.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}
 </script>
 
-<link rel="stylesheet" href="/styles.css?v=26">
+<link rel="stylesheet" href="/styles.css?v=28">
 </head>
 <body>
 
@@ -207,9 +207,9 @@
         <button class="thr-auto" title="Back to the operating point this slide chose">Auto</button>
       </div>
 
-      <!-- Manual region tools. Everything here is an instruction about WHERE to
-           measure, never an instruction to call something positive: a boosted
-           region still only admits chromogen-coloured structures. -->
+      <!-- Manual region tools. Each one says WHERE to measure, and nothing else:
+           both move the positive area and the tissue it is measured against
+           together, so the percentage always reads over exactly the area drawn. -->
       <div class="tool-row">
         <span class="oc-label">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h7v7H3zM14 14h7v7h-7zM14 3h7v7h-7z"/></svg>
@@ -217,10 +217,8 @@
         </span>
         <div class="tool-group">
           <button class="tool is-on" data-tool="off" title="Stop drawing">Off</button>
-          <button class="tool" data-tool="focus" title="Measure only inside the regions you draw">Focus</button>
+          <button class="tool" data-tool="focus" title="Measure only inside the regions you draw — tissue outside stops counting">Focus</button>
           <button class="tool" data-tool="ignore" title="Cut a fold, pen mark or bubble out of the measurement entirely">Ignore</button>
-          <button class="tool" data-tool="boost" title="Catch fainter structures in this area only">More here</button>
-          <button class="tool" data-tool="damp" title="Be stricter in this area only">Less here</button>
         </div>
         <select class="tool-shape" aria-label="Region shape">
           <option value="rect">Rectangle</option>
@@ -265,6 +263,6 @@
 <div id="toasts"></div>
 <div id="lightbox" class="lightbox hidden"><img id="lightboxImg" src="" alt="Expanded"></div>
 
-<script src="/app.js?v=26"></script>
+<script src="/app.js?v=28"></script>
 </body>
 </html>
