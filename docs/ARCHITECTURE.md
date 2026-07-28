@@ -60,6 +60,12 @@ The pixel-level work, in order:
 7. **Detection** (`ihc/detect.py`) — area based, with **no global intensity
    threshold**. A foreground-excluded background field is fitted to the optical
    density, and everything after it is measured on the *excess* over that field.
+   The window of that fit is the scale that divides staining from tone: slower
+   variation is absorbed, more compact variation survives. Three things keep the
+   fit honest — lumina and holes are not material and are excluded from it;
+   anything far darker than the slide's own tissue is excluded wherever it is,
+   so a plaque wider than the window cannot hide inside its own background; and
+   the fit is iterated with the foreground removed.
    The excess's colour is read as an absorbance signature (blue-over-red for DAB)
    rather than a hue, because hue collapses as a pixel approaches black — which
    is exactly why the previous build dropped the densest, least ambiguous stain

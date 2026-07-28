@@ -16,6 +16,19 @@ any correct IHC quantifier, and each failure names the slide and the number.
   GREY      Positive pixels whose excess absorbance is not chromogen-coloured:
             folds, ink, dust, haematoxylin.
 
+  COVER     Reported, not enforced. The share of material that is chromogen by
+            the RAW image — absorbing strongly AND clearly warm — that was
+            detected. It is a useful second opinion on under-detection, in the
+            units a person looking at the slide would use rather than the
+            engine's own.
+
+            It is NOT a pass/fail gate, because on a diffusely stained section
+            the tissue itself meets that description: the metric cannot tell
+            "missed a structure" from "correctly declined to count the tissue's
+            own tone", and the two have opposite meanings. Requiring local
+            prominence to separate them just turns it back into MISS. Watch it
+            for large moves between runs; judge under-detection by MISS.
+
   TISSUE    A tissue mask that has thrown away material which is plainly not
             bare glass (the collapse that silently changes every denominator).
 
@@ -64,6 +77,10 @@ NOISE_TOL     = 0.30    # ≤30% relative change under JPEG q80
 OBVIOUS_OD    = 0.40    # excess OD that is unmistakably chromogen
 OBVIOUS_SIG   = 7.0     # ... and this many texture sigmas above background
 OBVIOUS_BROWN = 0.30    # ... and this clearly the chromogen's own colour
+
+COVER_RAW_OD  = 0.60    # raw absorbance along the chromogen axis that qualifies
+COVER_WARM    = 0.15    # ... together with this much raw warmth, (R−B)/(R+B)
+COVER_MIN_PX  = 400     # below this the population is too small to judge
 GREEN = np.array([57, 255, 20], dtype=np.float64)
 
 
@@ -143,6 +160,22 @@ def check(path: str, montage_dir=None, quick: bool = False) -> dict:
     # neutral — a fold, an ink mark, a dust speck.
     grey = _grey_object_fraction(pos, brown, rgb)
 
+    # Independent of the engine's own excess units: what a person would call
+    # obviously stained in the raw image.
+    from ihc import detect as _detect
+    dab = _detect.DAB_OD / np.linalg.norm(_detect.DAB_OD)
+    raw_abs = (maps["od"] @ dab).astype(np.float32)
+    fl = rgb.astype(np.float32)
+    warm_raw = (fl[..., 0] - fl[..., 2]) / (fl[..., 0] + fl[..., 2] + 1.0)
+    # ... and locally prominent, if only slightly. Without that clause the
+    # population swallows the tissue tone of a diffusely stained section — which
+    # is exactly the material the engine is right not to count — and the check
+    # would punish correct behaviour.
+    unambiguous = (tissue & (raw_abs >= COVER_RAW_OD) & (warm_raw >= COVER_WARM)
+                   & (sig >= max(0.05, 1.5 * sigma)))
+    unamb_px = int(unambiguous.sum())
+    cover = float((unambiguous & pos).sum()) / unamb_px if unamb_px else 1.0
+
     glass = glass_estimate(rgb)
     tissue_ratio = (tis_px / rgb[..., 0].size) / max(1e-6, 1.0 - glass)
 
@@ -220,6 +253,8 @@ def check(path: str, montage_dir=None, quick: bool = False) -> dict:
         "miss": round(miss, 4),
         "flood": round(flood, 4),
         "grey": round(grey, 4),
+        "cover": round(cover, 4),
+        "unambiguous_px": unamb_px,
         "tissue_ratio": round(tissue_ratio, 3),
         "light": round(light, 3),
         "scale": round(scale, 3),
@@ -257,7 +292,7 @@ def main() -> int:
         failed += bool(r["fails"])
         print(f"{r['file'][:30]:32s} pos={r['positive_pct']:6.3f}% tis={r['tissue_pct']:6.2f} "
               f"obj={r['objects']:5d} bar={r['bar']:.3f} sig={r['sigma']:.3f} "
-              f"miss={r['miss']*100:5.1f}% flood={r['flood']*100:4.1f}% grey={r['grey']*100:4.1f}% "
+              f"miss={r['miss']*100:5.1f}% cover={r['cover']*100:5.1f}% grey={r['grey']*100:4.1f}% "
               f"L/S/N={r['light']*100:3.0f}/{r['scale']*100:3.0f}/{r['noise']*100:3.0f}% {flag}")
 
     if args.json:
@@ -271,6 +306,9 @@ def main() -> int:
         vals = [r[key] for r in rows]
         print(f"{key:10s}: median {sorted(vals)[len(vals)//2]*100:5.1f}%  worst {max(vals)*100:6.1f}% "
               f"({max(rows, key=lambda r: r[key])['file'][:24]})")
+    cov = [r["cover"] for r in rows]
+    worst = min(rows, key=lambda r: r["cover"])
+    print(f"{'cover':10s}: median {sorted(cov)[len(cov)//2]*100:5.1f}%  worst {min(cov)*100:6.1f}% ({worst['file'][:24]})")
     return 1 if failed else 0
 
 

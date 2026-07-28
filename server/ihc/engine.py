@@ -97,6 +97,8 @@ _WHITE_GLASS_SEP    = 20.0   # ... and only if that white is separated from the 
 _TISSUE_THR_MAX     = 0.55   # clamp the per-slide Otsu cut (faint tissue must survive)
 _TISSUE_BG_MIN_FRAC = 0.02   # < 2% glass ⇒ full-field slide, Otsu would split tissue
 _BG_GLASS_OD_MAX    = 0.075  # bare glass absorbs essentially NOTHING (summed OD)
+_GLASS_MAX_FRAC     = 0.92   # a slide this empty is either blank or a faint section
+_GLASS_CONTRAST_K   = 4.0    # ... told apart by whether anything on it absorbs strongly
 _BG_GLASS_SAT       = 0.20   # ... and carries essentially no colour
 _CHROMA_RESCUE_SAT  = 0.22   # a pale but distinctly coloured pixel is dilute stain
 _TEXTURE_WIN        = 7      # local-std window (px) for the flat-region test
@@ -356,11 +358,48 @@ def rgb_to_od(rgb: np.ndarray, white: Optional[np.ndarray] = None) -> np.ndarray
 
 
 def estimate_white_point(rgb: np.ndarray) -> np.ndarray:
-    """Per-channel bare-glass level for this slide: the brightest few percent of
-    a histology scan is empty mounting medium, so its level IS the true white."""
+    """Per-channel bare-glass level for this slide.
+
+    Glass is not simply "the brightest few percent": on a very pale section the
+    brightest few percent is the palest TISSUE, and taking it as white makes the
+    whole section read as transparent — the mask then collapses to nothing and
+    every percentage is measured against a denominator of almost zero.
+
+    So look for pixels that actually behave like glass — bright *and*
+    colourless — and use their level. Only when no such population exists does
+    the brightest-percentile estimate stand in, which is the right answer for a
+    frame that genuinely has no glass in it.
+    """
     flat = rgb.reshape(-1, 3)
     step = max(1, flat.shape[0] // 200_000)
-    white = np.percentile(flat[::step].astype(np.float32), _WHITE_PCT, axis=0)
+    sample = flat[::step].astype(np.float32)
+    fallback = np.percentile(sample, _WHITE_PCT, axis=0)
+
+    # Glass is bright, colourless AND featureless. The third condition is what
+    # keeps pale tissue out: a faintly counterstained section is bright and
+    # nearly colourless too, but it carries cellular texture, and mistaking it
+    # for glass sets the white point at the tissue's own level — after which the
+    # section reads as transparent and the mask collapses to nothing.
+    val = rgb.max(axis=2).astype(np.float32) / 255.0
+    smooth = None
+    if _HAVE_SCIPY:
+        m = _uniform_filter(val, 9)
+        m2 = _uniform_filter(val * val, 9)
+        std = np.sqrt(np.clip(m2 - m * m, 0.0, None))
+        smooth = (std < 0.012).reshape(-1)[::step]
+
+    mx = sample.max(axis=1)
+    mn = sample.min(axis=1)
+    sat = np.where(mx > 1e-6, (mx - mn) / np.maximum(mx, 1e-6), 0.0)
+    bright = mx >= float(np.percentile(mx, 90.0))
+    glassy = bright & (sat <= _BG_GLASS_SAT)
+    if smooth is not None and smooth.shape == glassy.shape:
+        glassy &= smooth
+    if int(glassy.sum()) >= max(50, int(0.002 * sample.shape[0])):
+        white = np.percentile(sample[glassy], 60.0, axis=0)
+        white = np.maximum(white, fallback)
+    else:
+        white = fallback
     return np.clip(white, _WHITE_MIN, 255.0)
 
 
@@ -600,6 +639,20 @@ def segment_tissue(
         thr = 0.0
         below = np.zeros_like(below)
         method = "full-field (palest class is tissue, not glass)"
+    elif float(below.mean()) > _GLASS_MAX_FRAC and total_od.size:
+        # The cut says the slide is almost entirely glass. That is true of a
+        # genuinely blank scan — and false of a very faintly stained section,
+        # which absorbs little but is not empty. The two are told apart by
+        # whether anything on the slide absorbs strongly: a blank scan has no
+        # such material anywhere, while a pale section with structures in it
+        # does. Without this a whole faint section is discarded as background
+        # and every percentage is then measured against almost nothing.
+        strong = float(np.percentile(total_od, 99.5))
+        base = max(float(np.median(total_od[below])), 0.02)
+        if strong > _GLASS_CONTRAST_K * base:
+            thr = 0.0
+            below = np.zeros_like(below)
+            method = "full-field (faint section, not an empty slide)"
 
     # 3) intensity + chroma rescue
     mask = (total_od >= thr) | ((sat >= _CHROMA_RESCUE_SAT) & (total_od >= od_floor * 0.55))
@@ -920,13 +973,13 @@ def analyze(
         chromogen_in_band = False
     else:
         (stain_matrix, counter_idx, tgt_idx, method, target_hue,
-         counter_label, target_label, chromogen_in_band) = _estimate_basis(
+         counter_label, target_label, _hue_in_band) = _estimate_basis(
             od, total_od, sat, hue, tissue_mask)
-        if not chromogen_in_band:
-            notes.append(
-                "No brown (DAB) chromogen found — the strongest non-counterstain "
-                "colour on this slide sits outside the DAB range, so the positive "
-                "area will read at or near zero.")
+        # Whether the chromogen on this slide really is the one being measured
+        # is decided AFTER detection, from the absorbance direction of the
+        # strongly stained material (`chromogen_share`) rather than from a hue
+        # window here. Assume yes until the detector says otherwise.
+        chromogen_in_band = True
 
     if target_index is not None:
         tgt_idx = int(max(0, min(target_index, 1)))
@@ -952,11 +1005,12 @@ def analyze(
     # here for the numbers — and the two can never disagree.
     # ------------------------------------------------------------------ #
     min_px = int(stain_choice.get("min_px", 0)) if stain_choice else 0
+    # No HSV hue window is applied to pixels. Hue is unusable on dense chromogen
+    # — it shifts red as a pixel darkens, so real DAB lands just outside a window
+    # drawn around DAB — and the detector answers "is this that chromogen?" by
+    # absorbance direction instead, which holds at any density. See
+    # detect.BLUE_OVER_GREEN_MIN.
     band_mask = None
-    if not chromogen_in_band:
-        band = _hue_band_for(target_hue, method)
-        if band is not None:
-            band_mask = _in_hue_band(hue, band)
 
     det = detect.detect(
         od, tissue_mask,
@@ -964,8 +1018,23 @@ def analyze(
         min_area_px=(min_px or None),
         hue_band_mask=band_mask,
         target_od=(stain_matrix[tgt_idx] if (stain_choice or stain_override_od) else None),
+        # Raw saturation: whether the material carries any colour AT ALL. Used to
+        # keep achromatic debris out — an absolute property, because relative to
+        # a blue counterstain a grey blob looks warm.
+        saturation=sat,
     )
     notes.extend(det.notes)
+
+    # Now that the strongly absorbing material has been looked at, decide whether
+    # the chromogen on this slide really is the one being measured — by the
+    # direction of its absorbance, which is readable at any density.
+    if det.chromogen_share < detect.CHROMOGEN_SHARE_MIN and not stain_choice:
+        chromogen_in_band = False
+        notes.append(
+            "No brown (DAB) chromogen found — the strongly absorbing material on "
+            "this slide does not have DAB's absorbance signature, so the positive "
+            "area reads at or near zero. If this slide carries a different "
+            "chromogen, this build measures DAB only.")
 
     built = regions_mod.build(regions, h, w, detect.N_LEVELS)
     positive, tissue_mask = regions_mod.apply(

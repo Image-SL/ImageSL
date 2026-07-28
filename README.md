@@ -34,9 +34,24 @@ never judged by how dark it is. Instead, for each slide:
    excluded, so a diffuse tan wash, a lamp gradient or genuinely darker tissue is
    subtracted away *where it occurs*. Everything after this is measured on the
    **excess** over that background.
+
+   The size of that neighbourhood is what separates *staining* from *tone*:
+   anything varying more slowly than the window is absorbed into the background,
+   anything more compact survives. Tissue tone — the centrilobular gradient of a
+   diffusely stained liver — varies over hundreds of pixels; stained structures
+   are a handful across. Lumina and holes are excluded from the fit (they are
+   inside the section but transmit nearly all the light, and averaging them in
+   rings every hole with false positives), and material far darker than the
+   slide's own tissue is excluded wherever it is, so a stained region *wider*
+   than the window cannot end up inside its own background.
 2. The **colour of the excess** is read as an absorbance signature rather than a
    hue, because hue stops meaning anything as a pixel approaches black — which is
    why dense, unmistakable DAB used to be dropped while its pale halo was kept.
+   It is read at two spatial scales and the stronger reading wins, so a
+   two-pixel-wide streak is not diluted by the unstained tissue beside it. A
+   second, independent reading of the *raw* warmth backs it up on the densest
+   cores, where every channel is crushed: those stay clearly warm while ink,
+   dust and folds sit at zero, which is what keeps dark grey deposits out.
 3. The excess is grouped into **connected structures**, and stained objects are
    separated from background bumps by clustering the population of object peaks.
    The decision is made about structures, not pixels.
@@ -86,22 +101,52 @@ ImageSL/
 │   ├── ihc/stains.py        # stain registry + ENABLED_KEYS (what is shipped)
 │   ├── web/                 # plain single-page UI (index.html, styles.css, app.js)
 │   └── requirements.txt
-├── scripts/backtest.py      # regression suite: runs a folder of slides through the
-│                            #   engine and checks misses, flooding, grey debris,
-│                            #   tissue-mask collapse and stability under
-│                            #   illumination / resolution / compression change
+├── scripts/backtest.py      # regression suite on real slides: misses, flooding,
+│                            #   grey debris, tissue-mask collapse, and stability
+│                            #   under illumination / resolution / compression
+├── scripts/synthetic_cases.py  # constructed scenes with a known answer
+├── scripts/synthetic_matrix.py # parameter grid: recall/precision vs ground truth
 ├── Dockerfile, railway.json, .env.example
 └── docs/                    # ARCHITECTURE.md, SECURITY.md, DEPLOY.md
 ```
 
 ## Regression testing
 
+Three suites, all run after any engine change. The point of the last two is to
+stop the engine being right about a handful of slides and wrong in general.
+
 ```bash
 python scripts/backtest.py /path/to/slides --montage out/ --json results.json
+python scripts/synthetic_cases.py
+python scripts/synthetic_matrix.py            # --full for the dense grid
 ```
 
+`backtest.py` runs real sections and applies checks that need no hand-drawn
+truth: unmistakable stain that was missed (in the engine's own units, and again
+in raw-image units), background counted as signal, positive structures that are
+not chromogen-coloured, tissue-mask collapse, and stability under illumination,
+resolution and compression change.
+
+`synthetic_cases.py` runs constructed scenes where the answer is known exactly —
+a plaque wider than the background window, spots stained to one even density,
+neutral grey debris, blank tissue, and a slow tonal gradient. Each case exists
+because that failure actually happened.
+
+`synthetic_matrix.py` sweeps a grid of conditions and measures **recall and
+precision against exact ground truth** in each: structure size from a 2-pixel
+punctum to a 120-pixel plaque, staining from barely visible to saturated, tissue
+from nearly transparent to heavily counterstained, slow tonal gradients with and
+without structures in them, lumina density, neutral debris, noise, and blur.
+Every axis is one on which a detector can be accidentally right — one tuned on
+medium puncta in pale tan tissue passes the real-slide suite and fails most of
+these. It found, among others, that an HSV hue window was discarding genuine DAB
+(dense chromogen shifts red, landing just outside a window drawn around DAB),
+that a raw-warmth test only worked because the validation slides happened to
+have pale warm tissue, and that a stained region wider than the background
+window was erasing itself.
+
 Every check is a statement that must hold for any correct quantifier, and each
-failure names the slide and the number. Exit status is non-zero if any slide
+failure names the case and the number. Exit status is non-zero if anything
 fails.
 
 ## How the background is removed

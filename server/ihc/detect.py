@@ -54,10 +54,12 @@ from skimage.measure import label as _label
 try:
     from scipy.ndimage import uniform_filter as _uniform_filter
     from scipy.ndimage import gaussian_filter as _gaussian
+    from scipy.ndimage import sobel as _sobel
     _HAVE_SCIPY = True
 except Exception:  # pragma: no cover - scipy ships with scikit-image
     _HAVE_SCIPY = False
     _gaussian = None
+    _sobel = None
 
 
 # --------------------------------------------------------------------------- #
@@ -78,11 +80,43 @@ NEUTRAL_OD = np.array([0.577, 0.577, 0.577])   # ink, dust, folds, shadow
 # slide's own noise), so nothing here encodes an absolute brightness.
 # --------------------------------------------------------------------------- #
 
-BG_WIN_FRAC      = 0.13   # background-field window as a fraction of the long edge
+# How large a neighbourhood counts as "local" for the background. This is the
+# scale that separates staining from tone: anything varying more slowly than
+# this window is absorbed into the background and stops being signal, anything
+# more compact survives as excess. Tissue tone — the centrilobular gradient of a
+# diffusely stained liver, a warm scanner cast, a thickness gradient — varies
+# over hundreds of pixels; stained structures are a handful across. A window
+# around a twentieth of the frame sits between the two, and on the validation
+# set it is the difference between a diffusely stained section reading 5.3% of
+# its area as positive and reading 1.0%, with every focal slide unmoved.
+#
+# It is only safe to be this tight because a structure WIDER than the window is
+# protected by the absolute foreground test below; without that, a large plaque
+# would be absorbed into its own background.
+BG_WIN_FRAC      = 0.06   # background-field window as a fraction of the long edge
 BG_WIN_MIN       = 33     # ... never smaller than this (px)
 BG_COARSE_MULT   = 4      # second, coarser scale used where the fine one is starved
 BG_ITERS         = 2      # foreground-exclusion refinement passes
 BG_FG_MAX_FRAC   = 0.55   # never exclude more than this share of tissue as foreground
+BG_GLOBAL_FG_K   = 6.0    # ... and treat material this many robust sigmas above the
+                          # slide's own tissue level as foreground wherever it is,
+                          # so a stained region wider than the window cannot end up
+                          # inside its own background estimate
+
+# What counts as MATERIAL for the background estimate: absorbance above this
+# (summed over channels, against the slide's own white point) means light passed
+# through something.
+#
+# Lumina, vessel spaces, tears and the holes inside a section transmit almost
+# everything. They sit *inside* the tissue mask — lumina are conventionally part
+# of the section — but they are not material, and averaging them into a
+# neighbourhood's background pulls that background down. Every real pixel beside
+# a hole then looks like it carries excess absorbance, and the detector rings
+# every lumen with false positives while genuine staining in the solid interior,
+# measured against an honest background, falls below the same bar. Both halves of
+# that were visible on the validation slides: detections were 8.7x more likely
+# within a few pixels of a hole than in the interior of the same section.
+MATERIAL_OD_MIN  = 0.15
 
 # Colour specificity of the EXCESS absorbance. `brownness` = (od_B − od_R)/‖od‖:
 # +0.51 for pure DAB, −0.36 for haematoxylin, +0.03 for eosin/red, 0.00 for
@@ -90,6 +124,32 @@ BG_FG_MAX_FRAC   = 0.55   # never exclude more than this share of tissue as fore
 # exactly why it is allowed in by CONNECTIVITY (growth) instead of by colour.
 BROWN_SEED       = 0.22   # a seed must be unmistakably DAB-directional
 BROWN_GROW       = -0.05  # growth only stops at clearly non-brown excess (blue nuclei)
+# Growth is permissive about the excess DIRECTION, because a dense core's
+# direction collapses toward neutral and it must still be joined to the object it
+# belongs to. That permissiveness has to be paid for somewhere: a neutral blob
+# TOUCHING a stained structure would otherwise be swallowed into it and counted.
+#
+# What settles it is ACHROMATICITY, measured on the raw pixels: ink, dust and
+# folds carry no colour at all (saturation 0.00-0.08 measured), while chromogen
+# — even a dense, channel-crushed core — carries plenty (0.19-0.49 measured).
+# This has to be an absolute property of the material, not a comparison with the
+# surroundings: against a blue counterstain a grey blob really is "warmer than
+# its neighbours", so every background-relative colour measure calls it stain.
+NEUTRAL_SAT_MAX  = 0.12
+
+# Which chromogen is it? `brownness` says "absorbs blue more than red", which is
+# true of DAB *and* of the red chromogens (AEC, Fast Red) — both look reddish.
+# What separates them is the GREEN channel: DAB absorbs blue hardest (+0.21 on
+# this axis), a red chromogen absorbs green hardest (−0.88), haematoxylin −0.41.
+# Measured on real DAB the axis runs −0.04 to +0.19, so the bar sits far from
+# real staining and far from every other chromogen.
+#
+# This replaces an HSV hue window, which could not do the job: dense chromogen
+# shifts red as it darkens, so genuine DAB lands at 8° against a window opening
+# at 10° and is thrown away — the parametric suite caught exactly that. A
+# channel-ORDER test does not care how dark the pixel is.
+BLUE_OVER_GREEN_MIN = -0.15
+CHROMOGEN_SHARE_MIN = 0.35   # below this, the slide's chromogen is not this one
 OBJ_BROWN_MEAN   = 0.14   # the object must be brown ON AVERAGE — what separates dark
                           # stain (brown rim, crushed core) from dark debris (neutral
                           # throughout). A mean is used rather than "what share of the
@@ -97,6 +157,14 @@ OBJ_BROWN_MEAN   = 0.14   # the object must be brown ON AVERAGE — what separat
                           # function of every pixel it counts: JPEG chroma subsampling
                           # nudges pixels across that bar and whole structures then
                           # appear or vanish, while the mean barely moves.
+# Second, independent colour reading: the raw warmth (R−B)/(R+B) of the pixels
+# themselves. The densest chromogen is channel-crushed, so its excess direction
+# flattens toward neutral and `brown_mean` alone drops the very cores a human
+# calls most obviously positive; those cores stay unmistakably WARM in the raw
+# image (0.11-0.15) while ink, dust and folds sit near zero. An object needs to
+# pass EITHER reading — and, in both cases, still carry genuinely
+# chromogen-coloured seed pixels, which is what a neutral blob never does.
+OBJ_WARM_MEAN    = 0.10
 OBJ_SEED_FRAC    = 0.06   # ... and the chromogen colour must not be one stray pixel
 OBJ_SEED_MIN_PX  = 2      # ... on at least two pixels
 
@@ -132,10 +200,34 @@ ABS_MIN_EXCESS   = 0.025
 # with wildly different staining density. The clamps stop a slide with no
 # staining at all (a unimodal noise population, where the split is arbitrary)
 # from inventing a bar low enough to "detect" its own texture.
-PEAK_BAR_ABS_MIN = 0.09   # excess OD: below this a blob is not visibly stained
+# Excess OD below which a blob is not visibly stained at all. Measured
+# trade-off: lowering this from 0.09 to 0.06 more than doubles recall on
+# very faint staining (0.12 OD applied) while leaving blank tissue at 0.000%,
+# tone-only slides at 0.000%, and every one of the 46 real sections unchanged to
+# three decimal places — their bars are set by their own object populations,
+# far above this floor. Below 0.06 nothing further is gained.
+PEAK_BAR_ABS_MIN = 0.06
 PEAK_BAR_SIG_MIN = 2.6    # ... and never below this many texture sigmas
 PEAK_BAR_MAX     = 1.20
 PEAK_BIMODAL_MIN = 0.22   # separability below this ⇒ no stain population at all
+# A split is only meaningful if there are two groups to split. Otsu's
+# separability is a ratio of variances, so it scores high even on a single cloud
+# of near-identical peaks — a section stained to an even density — where the
+# split then lands *inside* the cloud and most of the stain is discarded over a
+# difference in the third decimal place.
+#
+# What actually distinguishes the two situations is how WIDE the population is.
+# Measured: across 46 real sections the object peaks span p90/p10 = 2.6 to 10.2
+# (median 6.0); a synthetic field of identically stained structures spans 1.1 to
+# 1.4. The bar below sits in that gap with ~30% margin on both sides.
+#
+# Two other candidates were measured and rejected, which is worth recording so
+# they are not tried again: the class-separation ratio (mu_hi − mu_lo)/(s_hi +
+# s_lo) runs 1.4-3.3 on real slides and 2.2-3.9 on the single-population case —
+# overlapping, and *backwards*; and the histogram valley depth at the split is
+# higher for the single population than for most real slides, because
+# area-weighting makes a comb of spikes with deep gaps between them.
+PEAK_MIN_SPREAD  = 1.80
 # How much to trust the split. When the object peaks really are two clusters,
 # the split is a strong, meaningful statement and is used as-is. When they are a
 # continuum, it is not: the position that best separates the population is then
@@ -213,6 +305,7 @@ class Detection:
     bar: float = 0.0                     # automatic detection bar (excess OD)
     floor: float = 0.0                   # weakest excess that can belong to an object
     separability: float = 0.0            # how cleanly the object peaks split in two
+    chromogen_share: float = 1.0         # share of the strong excess that is THIS chromogen
     objects: int = 0                     # accepted objects at the selected level
     object_areas: list = field(default_factory=list)
     notes: list = field(default_factory=list)
@@ -274,7 +367,22 @@ def background_od_field(od: np.ndarray, tissue: np.ndarray, win: int) -> tuple[n
         exc = proj - (bg_od @ dab_dir)
         base = exc[tissue] if tissue.any() else exc.ravel()
         sig = 1.4826 * float(np.median(np.abs(base - np.median(base)))) + 1e-6
-        fg = exc > 3.0 * sig
+
+        # Foreground by LOCAL contrast — plus an absolute test, which is what
+        # rescues a stained region larger than the window from erasing itself.
+        # Local contrast alone is self-consistent in the worst way there: the
+        # first fit, made over everything, already reads high inside such a
+        # region, so its interior never looks like an excess, is never excluded,
+        # and stays baked into its own background for every later pass. A
+        # 200-pixel plaque then measures as background with a thin positive rim.
+        # Material far darker than the slide's own tissue as a whole is
+        # foreground wherever it sits, however wide it is.
+        t_proj = proj[tissue] if tissue.any() else proj.ravel()
+        if t_proj.size > 200_000:
+            t_proj = t_proj[:: t_proj.size // 200_000 + 1]
+        med_g = float(np.median(t_proj))
+        sig_g = 1.4826 * float(np.median(np.abs(t_proj - med_g))) + 1e-6
+        fg = (exc > 3.0 * sig) | (proj > med_g + BG_GLOBAL_FG_K * sig_g)
         # never let foreground exclusion run away on a densely stained slide
         if float(fg.mean()) > BG_FG_MAX_FRAC:
             cut = float(np.percentile(exc, 100.0 * (1.0 - BG_FG_MAX_FRAC)))
@@ -341,7 +449,7 @@ def _otsu_log(values: np.ndarray) -> tuple[float, float]:
     """
     v = np.log10(np.maximum(values, 1e-4))
     if v.size < 12:
-        return float("nan"), 0.0
+        return float("nan"), 0.0, 0.0
     hist, edges = np.histogram(v, bins=96)
     centres = 0.5 * (edges[:-1] + edges[1:])
     w = hist.astype(np.float64)
@@ -354,7 +462,7 @@ def _otsu_log(values: np.ndarray) -> tuple[float, float]:
         w = _gaussian(w, HIST_SMOOTH_BINS, mode="nearest")
     total = w.sum()
     if total <= 0:
-        return float("nan"), 0.0
+        return float("nan"), 0.0, 0.0
     p = w / total
     omega = np.cumsum(p)
     mu = np.cumsum(p * centres)
@@ -374,7 +482,31 @@ def _otsu_log(values: np.ndarray) -> tuple[float, float]:
     centre = float((centres[plateau] * sigma_b[plateau]).sum() / max(sigma_b[plateau].sum(), 1e-12))
     var_total = float(((centres - mu_t) ** 2 * p).sum())
     sep = float(sigma_b[k] / var_total) if var_total > 1e-12 else 0.0
-    return float(10.0 ** centre), sep
+
+    # Are the two sides actually two groups, or one cloud cut in half?
+    lo, hi = centres <= centre, centres > centre
+    d = 0.0
+    if p[lo].sum() > 1e-9 and p[hi].sum() > 1e-9:
+        def _stats(m):
+            w = p[m] / p[m].sum()
+            mu = float((centres[m] * w).sum())
+            return mu, float(np.sqrt(max((w * (centres[m] - mu) ** 2).sum(), 1e-12)))
+        mu1, s1 = _stats(lo)
+        mu2, s2 = _stats(hi)
+        d = (mu2 - mu1) / max(s1 + s2, 1e-9)
+    return float(10.0 ** centre), sep, float(d)
+
+
+def _weighted_median(values: np.ndarray, weights: np.ndarray) -> float:
+    """Median of `values` weighted by `weights` (here: by the area each object
+    contributes, so the answer describes the stained area rather than the count
+    of blobs, which is dominated by specks)."""
+    if values.size == 0 or weights.sum() <= 0:
+        return float("nan")
+    order = np.argsort(values)
+    w = weights[order].astype(np.float64)
+    c = np.cumsum(w) / w.sum()
+    return float(values[order][int(np.searchsorted(c, 0.5))])
 
 
 def _area_weighted(peaks: np.ndarray, areas: np.ndarray, cap: int = 400) -> np.ndarray:
@@ -399,9 +531,38 @@ def _ladder(bar: float) -> np.ndarray:
     return (np.concatenate([lo[:-1], hi]) * float(bar)).astype(np.float32)
 
 
+def _sharpness(signal: np.ndarray, flat_lbl: np.ndarray, inside: np.ndarray,
+               peak: np.ndarray, n: int, rel_scale: float) -> np.ndarray:
+    """How steeply each object falls away from its own peak.
+
+    The mean gradient of the excess over the object's measured footprint,
+    divided by the object's height. Dividing by the height removes staining
+    intensity from the answer — a faint punctum and a dense one of the same
+    shape score the same — and rescaling by the working resolution removes image
+    size, since the same structure spans fewer pixels in a smaller copy and
+    would otherwise look steeper.
+
+    Structures have boundaries and land high. A diffusely stained region has no
+    boundary and lands low, however much chromogen it carries.
+    """
+    if _sobel is None:
+        return np.full(n + 1, np.inf)
+    grad = np.hypot(_sobel(signal, axis=1), _sobel(signal, axis=0)).ravel() / 4.0
+    sel = inside & (flat_lbl > 0)
+    lab = flat_lbl[sel]
+    cnt = np.bincount(lab, minlength=n + 1).astype(np.float64)
+    gsum = np.bincount(lab, weights=grad[sel].astype(np.float64), minlength=n + 1)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        gmean = gsum / np.maximum(cnt, 1.0)
+        out = (gmean / np.maximum(peak, 1e-6)) * float(rel_scale)
+    out[cnt == 0] = 0.0
+    return out
+
+
 def _object_stats(lbl: np.ndarray, n: int, signal: np.ndarray,
-                  brown: np.ndarray, seed: np.ndarray) -> dict:
-    """Per-object measurements, all from three bincounts over the label image."""
+                  brown: np.ndarray, seed: np.ndarray,
+                  warm: Optional[np.ndarray] = None) -> dict:
+    """Per-object measurements, all from bincounts over the label image."""
     flat = lbl.ravel()
     area = np.bincount(flat, minlength=n + 1).astype(np.int64)
     peak = np.zeros(n + 1, dtype=np.float32)
@@ -410,8 +571,15 @@ def _object_stats(lbl: np.ndarray, n: int, signal: np.ndarray,
     brown_sum = np.bincount(flat, weights=brown.ravel().astype(np.float64), minlength=n + 1)
     with np.errstate(invalid="ignore", divide="ignore"):
         brown_mean = brown_sum / np.maximum(area, 1)
-    return {"area": area, "peak": peak, "seeds": seeds,
-            "seed_frac": seeds / np.maximum(area, 1), "brown_mean": brown_mean}
+    out = {"area": area, "peak": peak, "seeds": seeds,
+           "seed_frac": seeds / np.maximum(area, 1), "brown_mean": brown_mean}
+    if warm is None:
+        out["warm_mean"] = np.full(n + 1, -1.0)
+    else:
+        wsum = np.bincount(flat, weights=warm.ravel().astype(np.float64), minlength=n + 1)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            out["warm_mean"] = wsum / np.maximum(area, 1)
+    return out
 
 
 def detect(
@@ -422,6 +590,7 @@ def detect(
     min_area_px: Optional[int] = None,
     hue_band_mask: Optional[np.ndarray] = None,
     target_od: Optional[np.ndarray] = None,
+    saturation: Optional[np.ndarray] = None,
 ) -> Detection:
     """Area-based chromogen detection.
 
@@ -448,8 +617,13 @@ def detect(
     dab_vec = np.asarray(target_od, dtype=np.float64) if target_od is not None else DAB_OD
 
     # ---- 1. local background and the excess absorbance it leaves ---------- #
+    # Only MATERIAL informs the background. Lumina and holes belong to the
+    # section but transmit nearly all the light; averaging them into a
+    # neighbourhood drags its background down and rings every hole with false
+    # positives. They are interpolated across instead.
+    material = np.clip(od, 0.0, None).sum(axis=2) >= MATERIAL_OD_MIN
     win = int(max(BG_WIN_MIN, round(max(h, w) * BG_WIN_FRAC)) | 1)
-    bg_od, bg_mask = background_od_field(od, tissue, win)
+    bg_od, bg_mask = background_od_field(od, tissue & material, win)
     # NOT clipped per channel: clipping negatives first would turn a pixel that
     # is merely a shade bluer than its background into a "pure brown" excess, and
     # the whole slide's texture noise then reads as maximally chromogen-coloured.
@@ -458,12 +632,41 @@ def detect(
     smooth = SMOOTH_SIGMA * rel_scale
     if smooth > 0.15 and _gaussian is not None:
         od_exc = _gaussian(od_exc, (smooth, smooth, 0), mode="nearest")
-    chroma_src = od_exc
+    # Colour is read at TWO scales and the stronger reading wins. The coarse one
+    # is what survives chroma subsampling on broad structures; but a structure
+    # only two or three pixels across — and much of real staining is — has its
+    # colour diluted by the unstained tissue either side of it at that scale,
+    # which was dropping thin stained streaks entirely. Reading fine as well and
+    # taking the better evidence keeps both.
+    _, brown_fine = excess_colour(od_exc, None if target_od is None else dab_vec)
+    brown = brown_fine
+    # Warmth of the EXCESS, read in transmittance: the image with its own local
+    # background divided out, then asked how much redder than bluer it is.
+    #
+    # Raw warmth — (R−B)/(R+B) of the pixel itself — was used here and is wrong
+    # in general. It is an absolute measure in an engine that is otherwise
+    # entirely background-relative, so it only works when the tissue is pale and
+    # warm to begin with. On a strongly haematoxylin-counterstained or simply
+    # dark section, genuine chromogen sits on a blue base and reads NEGATIVE, and
+    # every gate resting on it then throws real staining away. Dividing the local
+    # background out first asks the question that was always meant: is this pixel
+    # warmer *than its surroundings*.
+    _t = np.power(10.0, -np.clip(od_exc, 0.0, None))
+    warm_exc = ((_t[..., 0] - _t[..., 2]) / (_t[..., 0] + _t[..., 2] + 1e-6)).astype(np.float32)
+
+    # Which chromogen this excess belongs to — see BLUE_OVER_GREEN_MIN.
+    _mag = np.linalg.norm(od_exc, axis=2) + 1e-6
+    bog = ((od_exc[..., 2] - od_exc[..., 1]) / _mag).astype(np.float32)
+    bog_min = BLUE_OVER_GREEN_MIN
+    if target_od is not None:
+        u = _unit(np.asarray(target_od, dtype=np.float64))
+        bog_min = float(u[2] - u[1]) - 0.25    # the same margin, around this chromogen
     csmooth = CHROMA_SMOOTH * rel_scale
     if csmooth > smooth and _gaussian is not None:
         extra = float(np.sqrt(max(csmooth ** 2 - smooth ** 2, 0.0)))
-        chroma_src = _gaussian(od_exc, (extra, extra, 0), mode="nearest")
-    _, brown = excess_colour(chroma_src, None if target_od is None else dab_vec)
+        _, brown_coarse = excess_colour(_gaussian(od_exc, (extra, extra, 0), mode="nearest"),
+                                        None if target_od is None else dab_vec)
+        brown = np.maximum(brown_fine, brown_coarse)
 
     dab_dir = _unit(dab_vec).astype(np.float32)
     signal = (od_exc @ dab_dir).astype(np.float32)      # excess along the chromogen axis
@@ -475,15 +678,33 @@ def detect(
     sigma = max(1.4826 * float(np.median(np.abs(base - med))) + 1e-6, 1e-4)
 
     signal = np.clip(signal - med, 0.0, None).astype(np.float32)
-    signal[~tissue] = 0.0
+    # A pixel that transmits essentially all the light cannot be stained,
+    # whichever side of the tissue mask it falls on.
+    signal[~(tissue & material)] = 0.0
     evidence = (signal / sigma).astype(np.float32)
 
     # ---- 2. candidate objects -------------------------------------------- #
     floor = float(max(NOISE_MULT * sigma, ABS_MIN_EXCESS))
-    seed_px = tissue & (brown >= BROWN_SEED) & (signal >= floor)
-    region = tissue & (brown >= BROWN_GROW) & (signal >= floor)
+    solid = tissue & material
+    seed_px = solid & (brown >= BROWN_SEED) & (bog >= bog_min) & (signal >= floor)
+    region = solid & (brown >= BROWN_GROW) & (signal >= floor)
+    if saturation is not None:
+        region &= saturation > NEUTRAL_SAT_MAX      # never grow into achromatic material
     if hue_band_mask is not None:
         seed_px &= hue_band_mask
+
+    # Is the chromogen on this slide the one we are measuring? Asked of the
+    # strongly absorbing material, by direction rather than by hue.
+    strong = solid & (signal >= max(floor, float(np.percentile(signal[solid], 99.0))
+                                    if solid.any() else floor))
+    # Only worth asking when there IS strongly absorbing material to judge. On a
+    # slide whose staining is merely faint, the excess direction of near-noise
+    # pixels is meaningless, and answering anyway tells the user their chromogen
+    # is the wrong colour when in truth it is simply weak.
+    if strong.any() and float(np.median(signal[strong])) >= 2.0 * floor:
+        chromogen_share = float((seed_px & strong).sum()) / max(int(strong.sum()), 1)
+    else:
+        chromogen_share = 1.0        # no verdict
 
     bar_min = float(max(PEAK_BAR_ABS_MIN, PEAK_BAR_SIG_MIN * sigma))
     lbl = _label(region, connectivity=2)
@@ -494,9 +715,11 @@ def detect(
     separability = 0.0
 
     if n:
-        st = _object_stats(lbl, n, signal, brown, seed_px)
+        st = _object_stats(lbl, n, signal, brown, seed_px, warm_exc)
+        chromogen_coloured = ((st["brown_mean"] >= OBJ_BROWN_MEAN)
+                              | (st["warm_mean"] >= OBJ_WARM_MEAN))
         eligible = ((st["area"] >= min_area_px) & (st["seeds"] >= OBJ_SEED_MIN_PX)
-                    & (st["seed_frac"] >= OBJ_SEED_FRAC) & (st["brown_mean"] >= OBJ_BROWN_MEAN))
+                    & (st["seed_frac"] >= OBJ_SEED_FRAC) & chromogen_coloured)
         eligible[0] = False
 
         # The detection bar comes from the population of object peaks, not from
@@ -510,7 +733,14 @@ def detect(
             voters = eligible
         peaks = _area_weighted(st["peak"][voters], st["area"][voters])
         if peaks.size >= 12:
-            t, separability = _otsu_log(peaks)
+            t, separability, discrim = _otsu_log(peaks)
+            lo_p, hi_p = np.percentile(peaks, [10, 90])
+            if float(hi_p / max(lo_p, 1e-6)) < PEAK_MIN_SPREAD:
+                t = float("nan")          # one population: there is nothing to split
+                notes.append(
+                    "The staining here is of an even density — the structures found do "
+                    "not separate into stronger and weaker groups — so everything "
+                    "chromogen-coloured above the noise is counted.")
             if np.isfinite(t) and separability >= PEAK_BIMODAL_MIN:
                 span = max(PEAK_DIFFUSE_HI - PEAK_DIFFUSE_LO, 1e-6)
                 trust = float(np.clip((separability - PEAK_DIFFUSE_LO) / span, 0.0, 1.0))
@@ -535,21 +765,24 @@ def detect(
                              "so only clearly absorbing material is counted.")
         levels = _ladder(bar)
 
-        # ---- 3. level map, analytically ---------------------------------- #
+        # ---- 3. extent, structure test, and the level map ----------------- #
+        # Each object's measured footprint is its own isophote, which does not
+        # depend on the sensitivity at all. The structure test is applied on that
+        # footprint, because that is where a boundary either exists or does not;
+        # at the looser candidate footprint a soft gradient and a sharp punctum
+        # are not reliably separable.
+        extent = np.maximum(st["peak"] * EXTENT_PEAK_FRAC, floor * EXTENT_FLOOR_MULT)
+        flat_lbl = lbl.ravel()
+        inside = signal.ravel() >= extent[flat_lbl]
+
         # The ladder descends, so "this object qualifies" is monotone in the
-        # level index: the first level at which an object appears is found by a
-        # single searchsorted. Its extent does not depend on the level at all, so
-        # a pixel is simply in or out of its object's isophote.
+        # level index: one searchsorted gives the first level it appears at.
         desc = levels.astype(np.float64)
         obj_level = np.full(n + 1, 255, dtype=np.int32)
         idx = np.searchsorted(-desc, -st["peak"][eligible], side="left")
         obj_level[np.flatnonzero(eligible)] = np.clip(idx, 0, N_LEVELS - 1)
         obj_level[~eligible] = 255
         obj_level[0] = 255
-
-        extent = np.maximum(st["peak"] * EXTENT_PEAK_FRAC, floor * EXTENT_FLOOR_MULT)
-        flat_lbl = lbl.ravel()
-        inside = signal.ravel() >= extent[flat_lbl]
 
         lv = obj_level[flat_lbl]
         lv[~inside] = 255
@@ -581,6 +814,7 @@ def detect(
         bar=float(bar),
         floor=float(floor),
         separability=float(separability),
+        chromogen_share=float(chromogen_share),
         objects=int(obj_areas.size),
         object_areas=[int(a) for a in obj_areas],
         notes=notes,
