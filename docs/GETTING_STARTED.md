@@ -96,22 +96,36 @@ Open <http://localhost:8000>.
 
 ## Using it
 
-1. **Upload** a `.tif` / `.png` / `.jpg` slide and click **Analyze**.
-   You get: the original, the green *positive overlay*, a recolored preview, and
-   the numbers (positive-area %, positive/tissue pixels, threshold).
-2. **Sliders** (manual control):
-   - *Background threshold* — how much faint tissue counts as tissue.
-   - *Sensitivity* — strict (fewer positives) ↔ loose (more positives).
-   - *Target stain* — chromogen vs counterstain.
-   - *Preview target darkness* / *background color* — appearance only.
-3. **Assistant** (the AI way — it recalculates for you). Try:
-   - *"You're counting too much of the pale background as positive — be stricter."*
-   - *"The stain I care about is the blue one, not the brown."*
-   - *"Ignore the faint tissue at the edges."*
-   - *"Make the target staining darker and set the background to white."*
+1. **Upload** one slide or a whole folder of `.tif` / `.png` / `.jpg` and click
+   **Analyze**. Each slide gets three panels — Original, Overlay, Stain only —
+   plus the numbers: positive area % of tissue, positive pixels, how many stained
+   structures were found, and tissue pixels.
 
-   It calls a tool, the server re-runs the analysis, and the numbers/images on the
-   page update, followed by a short explanation of what it changed.
+2. **Sensitivity** — the slider under the slide. It does not move a brightness
+   cut; it moves the bar a stained structure's own peak has to clear, around the
+   operating point the slide chose for itself. The label reads `Auto`, `Auto +3`,
+   `Auto −2` and so on, and **Auto** returns to the slide's own point. The
+   overlay, the *Stain only* panel and the numbers all update as you drag.
+
+3. **Regions** — the tools under the slider, for the cases automation should not
+   decide on its own. Pick a tool, then drag a rectangle or trace a freehand
+   shape on the slide:
+
+   | Tool | Use it for |
+   | --- | --- |
+   | **Focus** | measure only inside what you draw — one cortical layer, one TMA core, one half of a section. Tissue outside stops counting, denominator included |
+   | **Ignore** | a fold, pen mark, bubble or torn edge. Removed from the measurement *and* from the denominator, so it cannot quietly dilute the percentage |
+   | **More here** | an area that is genuinely more weakly stained — catch its fainter structures without loosening the whole slide |
+   | **Less here** | the opposite, for an area that is over-stained |
+
+   **Undo** removes the last region, **Clear** removes them all, and **Off**
+   returns the drag to the before/after split handle. A boosted region still only
+   admits chromogen-coloured structures — it cannot paint an area positive.
+
+4. **Export** — every download carries exactly the sensitivity and the regions
+   on screen, so a saved TIFF or a batch ZIP always matches what you were
+   looking at. The CSV records the operating point, the structure counts and
+   whether the slide's staining was focal or diffuse.
 
 ---
 

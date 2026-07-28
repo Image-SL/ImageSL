@@ -60,86 +60,172 @@ async function streamedDownload(url, body, filename, label, estBytes) {
   } catch (e) { t.fail("Export failed: " + e.message); }
 }
 
-/* ============================== score-map overlay ==============================
-   The server sends a grayscale "stainness" score (0..255) per pixel. The browser
-   thresholds it live: positive = score ≥ threshold. This makes the threshold
-   slider (and the overlay colour) update instantly with no server round-trip. */
-function buildScoreData(scoreImg) {
-  const W = scoreImg.naturalWidth, H = scoreImg.naturalHeight;
+/* ============================== level-map overlay ==============================
+   The server sends ONE 8-bit image: for every pixel, the first sensitivity level
+   at which the detector calls it positive (255 = never). That single image
+   carries the whole family of results, so the browser reproduces the server's
+   area-based, object-by-object decision at any sensitivity — and with any
+   per-region offset from the manual tools — with one comparison per pixel:
+
+       positive  =  level_map[i] <= sensitivity + offset[i]     (and not ignored)
+
+   No round-trip, and no way for the picture on screen to drift away from the
+   numbers the server reports for the same settings. */
+const NEVER = 255;
+
+function buildLevelData(levelImg) {
+  const W = levelImg.naturalWidth, H = levelImg.naturalHeight;
   const cv = document.createElement("canvas"); cv.width = W; cv.height = H;
   const cx = cv.getContext("2d", { willReadFrequently: true });
-  cx.drawImage(scoreImg, 0, 0);
+  cx.drawImage(levelImg, 0, 0);
   const raw = cx.getImageData(0, 0, W, H).data;
   const data = new Uint8Array(W * H);
   for (let i = 0, j = 0; i < data.length; i++, j += 4) data[i] = raw[j];
-  const hist = new Int32Array(258);
-  for (let i = 0; i < data.length; i++) hist[data[i]]++;
-  const suffix = new Int32Array(258);      // suffix[t] = # pixels with value ≥ t
-  for (let t = 256; t >= 0; t--) suffix[t] = suffix[t + 1] + (hist[t] || 0);
+
   const ov = document.createElement("canvas"); ov.width = W; ov.height = H;
   const ovCtx = ov.getContext("2d");
-  // separate buffers for the "stain only" isolate so it never fights the overlay
   const iso = document.createElement("canvas"); iso.width = W; iso.height = H;
   const isoCtx = iso.getContext("2d");
   const tmp = document.createElement("canvas"); tmp.width = W; tmp.height = H;
   const tmpCtx = tmp.getContext("2d");
+  const reg = document.createElement("canvas"); reg.width = W; reg.height = H;
+  const regCtx = reg.getContext("2d", { willReadFrequently: true });
+
   return {
-    W, H, data, suffix,
+    W, H, data,
+    offset: new Int16Array(W * H),      // per-pixel sensitivity shift (boost/damp)
+    allow: null,                        // null = everywhere; else 0/1 per pixel
+    mask: new Uint8Array(W * H),
+    count: 0,
     ov, ovCtx, ovData: ovCtx.createImageData(W, H),
-    iso, isoCtx, isoData: isoCtx.createImageData(W, H), tmp, tmpCtx,
+    iso, isoCtx, isoData: isoCtx.createImageData(W, H),
+    tmp, tmpCtx, reg, regCtx,
   };
 }
-function scoreTint(sc, thrNorm, alpha) {
-  const t = Math.max(1, Math.round(thrNorm * 255));
+
+/* Rasterise the drawn regions into a per-pixel sensitivity offset plus an
+   allow-mask. Mirrors ihc/regions.py: focus keeps only what it covers, ignore
+   removes what it covers, boost/damp shift the level locally. */
+function rasterRegion(ld, region) {
+  const { W, H, regCtx: cx } = ld;
+  cx.setTransform(1, 0, 0, 1, 0, 0);
+  cx.clearRect(0, 0, W, H);
+  cx.fillStyle = "#fff";
+  cx.strokeStyle = "#fff";
+  cx.lineJoin = "round";
+  cx.lineCap = "round";
+  const pts = (region.points || []).map((p) => [p[0] * (W - 1), p[1] * (H - 1)]);
+  if (!pts.length) return null;
+  if (region.kind === "rect" && pts.length >= 2) {
+    const [x0, y0] = pts[0], [x1, y1] = pts[1];
+    cx.fillRect(Math.min(x0, x1), Math.min(y0, y1), Math.abs(x1 - x0), Math.abs(y1 - y0));
+  } else if (pts.length >= 3) {
+    cx.beginPath();
+    cx.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) cx.lineTo(pts[i][0], pts[i][1]);
+    cx.closePath();
+    cx.fill();
+  } else {
+    return null;
+  }
+  return cx.getImageData(0, 0, W, H).data;
+}
+
+function applyRegions(ld, regions) {
+  const n = ld.W * ld.H;
+  ld.offset.fill(0);
+  ld.allow = null;
+  if (!regions || !regions.length) return;
+  let focus = null, ignore = null;
+  for (const r of regions) {
+    const px = rasterRegion(ld, r);
+    if (!px) continue;
+    if (r.mode === "focus") {
+      if (!focus) focus = new Uint8Array(n);
+      for (let i = 0, j = 3; i < n; i++, j += 4) if (px[j]) focus[i] = 1;
+    } else if (r.mode === "ignore") {
+      if (!ignore) ignore = new Uint8Array(n);
+      for (let i = 0, j = 3; i < n; i++, j += 4) if (px[j]) ignore[i] = 1;
+    } else {
+      const d = r.delta | 0;
+      for (let i = 0, j = 3; i < n; i++, j += 4) if (px[j]) ld.offset[i] += d;
+    }
+  }
+  if (focus || ignore) {
+    const allow = new Uint8Array(n);
+    for (let i = 0; i < n; i++) {
+      allow[i] = (focus ? focus[i] : 1) && !(ignore && ignore[i]) ? 1 : 0;
+    }
+    ld.allow = allow;
+  }
+}
+
+function computeMask(ld, level, maxLevel) {
+  const { data, offset, allow, mask } = ld;
+  let count = 0;
+  for (let i = 0; i < data.length; i++) {
+    const v = data[i];
+    if (v === NEVER) { mask[i] = 0; continue; }
+    let lim = level + offset[i];
+    if (lim < 0) lim = 0; else if (lim > maxLevel) lim = maxLevel;
+    const on = v <= lim && (!allow || allow[i]);
+    mask[i] = on ? 1 : 0;
+    if (on) count++;
+  }
+  ld.count = count;
+  return count;
+}
+
+function tintOverlay(ld) {
   const [r, g, b] = OVERLAY_RGB;
-  const a = Math.round((alpha == null ? OVERLAY_ALPHA : alpha) * 255);
-  const px = sc.ovData.data, data = sc.data;
-  for (let i = 0, j = 0; i < data.length; i++, j += 4) {
-    if (data[i] >= t) { px[j] = r; px[j + 1] = g; px[j + 2] = b; px[j + 3] = a; }
+  const a = Math.round(OVERLAY_ALPHA * 255);
+  const px = ld.ovData.data, mask = ld.mask;
+  for (let i = 0, j = 0; i < mask.length; i++, j += 4) {
+    if (mask[i]) { px[j] = r; px[j + 1] = g; px[j + 2] = b; px[j + 3] = a; }
     else px[j + 3] = 0;
   }
-  sc.ovCtx.putImageData(sc.ovData, 0, 0);
+  ld.ovCtx.putImageData(ld.ovData, 0, 0);
 }
-function drawScoreOverlay(canvas, origImg, sc, thrNorm) {
-  const W = sc.W, H = sc.H;
+
+function drawLevelOverlay(canvas, origImg, ld) {
+  const W = ld.W, H = ld.H;
   if (canvas.width !== W) canvas.width = W;
   if (canvas.height !== H) canvas.height = H;
-  scoreTint(sc, thrNorm, OVERLAY_ALPHA);
+  tintOverlay(ld);
   const cx = canvas.getContext("2d");
   cx.clearRect(0, 0, W, H);
   cx.drawImage(origImg, 0, 0, W, H);
-  cx.drawImage(sc.ov, 0, 0, W, H);
+  cx.drawImage(ld.ov, 0, 0, W, H);
 }
-function scoreThumb(origImg, sc, thrNorm, maxW) {
-  let w = sc.W, h = sc.H;
+
+function overlayThumb(origImg, ld, maxW) {
+  let w = ld.W, h = ld.H;
   if (maxW && w > maxW) { h = Math.round(h * maxW / w); w = maxW; }
   const cv = document.createElement("canvas"); cv.width = w; cv.height = h;
   const cx = cv.getContext("2d");
-  scoreTint(sc, thrNorm, OVERLAY_ALPHA);
+  tintOverlay(ld);
   cx.drawImage(origImg, 0, 0, w, h);
-  cx.drawImage(sc.ov, 0, 0, w, h);
+  cx.drawImage(ld.ov, 0, 0, w, h);
   return cv.toDataURL("image/jpeg", 0.85);
 }
 
-/* BACKGROUND REMOVED — keep only the pixels above threshold, in their true
-   colours, on white. Same live re-thresholding as the overlay, so the "stain
-   only" panel tracks the slider with no server round-trip. */
-function scoreIsolate(origImg, sc, thrNorm, maxW) {
-  const W = sc.W, H = sc.H;
-  const t = Math.max(1, Math.round(thrNorm * 255));
-  const px = sc.isoData.data, data = sc.data;
-  for (let i = 0, j = 0; i < data.length; i++, j += 4) {
-    if (data[i] >= t) { px[j] = px[j + 1] = px[j + 2] = 255; px[j + 3] = 255; }
+/* STAIN ONLY — keep the detected structures in their true colours, on white.
+   Same live rule as the overlay, so the panel tracks the controls exactly. */
+function isolateThumb(origImg, ld, maxW) {
+  const W = ld.W, H = ld.H;
+  const px = ld.isoData.data, mask = ld.mask;
+  for (let i = 0, j = 0; i < mask.length; i++, j += 4) {
+    if (mask[i]) { px[j] = px[j + 1] = px[j + 2] = 255; px[j + 3] = 255; }
     else px[j + 3] = 0;
   }
-  sc.isoCtx.putImageData(sc.isoData, 0, 0);
+  ld.isoCtx.putImageData(ld.isoData, 0, 0);
 
-  const tc = sc.tmpCtx;                       // original ∩ mask
+  const tc = ld.tmpCtx;                       // original ∩ mask
   tc.globalCompositeOperation = "source-over";
   tc.clearRect(0, 0, W, H);
   tc.drawImage(origImg, 0, 0, W, H);
   tc.globalCompositeOperation = "destination-in";
-  tc.drawImage(sc.iso, 0, 0);
+  tc.drawImage(ld.iso, 0, 0);
   tc.globalCompositeOperation = "source-over";
 
   let w = W, h = H;                           // flatten onto white
@@ -147,7 +233,7 @@ function scoreIsolate(origImg, sc, thrNorm, maxW) {
   const cv = document.createElement("canvas"); cv.width = w; cv.height = h;
   const cx = cv.getContext("2d");
   cx.fillStyle = "#ffffff"; cx.fillRect(0, 0, w, h);
-  cx.drawImage(sc.tmp, 0, 0, w, h);
+  cx.drawImage(ld.tmp, 0, 0, w, h);
   return cv.toDataURL("image/jpeg", 0.85);
 }
 
@@ -328,10 +414,13 @@ function renderSummary(errors) {
   } else panel.classList.add("hidden");
 }
 
-function currentThr(data) {
+/* How far a "More/Less here" region shifts the sensitivity inside itself. */
+const REGION_DELTA = 5;
+
+function currentLevel(data) {
   const p = data.params || {}, r = data.result || {};
-  const st = (p.score_threshold != null) ? p.score_threshold : r.score_auto_threshold;
-  return (st == null ? 0.2 : st);
+  const lv = (p.level != null) ? p.level : r.level;
+  return (lv == null ? (r.auto_level == null ? 12 : r.auto_level) : lv);
 }
 
 function createCard(data) {
@@ -342,20 +431,24 @@ function createCard(data) {
   const stem = safeStem(filename);
   let current = data;
   const entry = analyses.find((a) => a.id === analysisId);
-  const st = { origImg: null, sc: null };
-  let thrNorm = currentThr(data);
-  const scoreFull = (data.result && data.result.score_full) || 1.8;
+  const st = { origImg: null, ld: null };
+  const maxLevel = ((data.result && data.result.level_count) || 25) - 1;
+  let level = currentLevel(data);
+  let regions = ((data.params && data.params.regions) || []).slice();
 
   q(".fname").textContent = filename;
+  q(".cThr").max = String(maxLevel);
   function persistData() { if (entry) entry.data = current; saveStateSoon(); }
 
-  // ---- overlay redraw (threshold only — the colour is always neon green) ----
+  /* ---- redraw: sensitivity + regions, entirely in the browser ---- */
   let rafPending = false;
   function redraw() {
-    if (!st.origImg || !st.sc) return;
-    drawScoreOverlay(q(".cmpFront"), st.origImg, st.sc, thrNorm);
-    q(".imgOverlay").src = scoreThumb(st.origImg, st.sc, thrNorm, 560);
-    q(".imgStainOnly").src = scoreIsolate(st.origImg, st.sc, thrNorm, 560);
+    if (!st.origImg || !st.ld) return;
+    computeMask(st.ld, level, maxLevel);
+    drawLevelOverlay(q(".cmpFront"), st.origImg, st.ld);
+    q(".imgOverlay").src = overlayThumb(st.origImg, st.ld, 560);
+    q(".imgStainOnly").src = isolateThumb(st.origImg, st.ld, 560);
+    drawRegionOutlines();
   }
   function redrawSoon() {
     if (document.hidden) { redraw(); return; }   // rAF is paused when hidden
@@ -365,52 +458,67 @@ function createCard(data) {
   }
 
   function liveMetrics() {
-    if (!st.sc) return;
-    const t = Math.max(1, Math.round(thrNorm * 255));
-    const pos = st.sc.suffix[t] || 0;
+    if (!st.ld) return;
+    const pos = st.ld.count;
     const tissue = (current.result && current.result.tissue_pixels) || 0;
     const pct = tissue ? (pos / tissue * 100) : 0;
     q(".mPercent").textContent = pct.toFixed(2) + "%";
     q(".mPositive").textContent = pos.toLocaleString();
-    const concThr = thrNorm * scoreFull;
-    q(".mThreshold").textContent = concThr.toFixed(3);
-    q(".thrVal").textContent = concThr.toFixed(3);
     [".mPercent", ".mPositive"].forEach((s) => { const b = q(s); b.classList.remove("flash"); void b.offsetWidth; b.classList.add("flash"); });
   }
 
-  function setThr(norm, persist) {
-    thrNorm = Math.max(0.001, Math.min(0.999, norm));
-    q(".cThr").value = Math.round(thrNorm * 1000);
+  function levelLabel() {
+    const r = current.result || {};
+    const auto = (r.auto_level == null ? 12 : r.auto_level);
+    const d = level - auto;
+    q(".thrVal").textContent = d === 0 ? "Auto" : (d > 0 ? `Auto +${d}` : `Auto ${d}`);
+  }
+
+  function setLevel(v, persist) {
+    level = Math.max(0, Math.min(maxLevel, v | 0));
+    q(".cThr").value = String(level);
+    levelLabel();
     redrawSoon(); liveMetrics();
-    if (current.params) current.params.score_threshold = thrNorm;
-    if (persist) { persistData(); postThreshold(thrNorm); }
+    if (current.params) current.params.level = level;
+    if (persist) { persistData(); postView(); }
   }
 
-  function loadSources(origSrc, scoreSrc) {
+  function loadSources(origSrc, levelSrc) {
     const o = new Image(), s = new Image();
-    let n = 0; const done = () => { if (++n === 2) { st.origImg = o; st.sc = buildScoreData(s); redraw(); liveMetrics(); } };
-    o.onload = done; s.onload = done; o.src = origSrc; s.src = scoreSrc;
+    let n = 0;
+    const done = () => {
+      if (++n !== 2) return;
+      st.origImg = o;
+      st.ld = buildLevelData(s);
+      applyRegions(st.ld, regions);
+      redraw(); liveMetrics();
+    };
+    o.onload = done; s.onload = done; o.src = origSrc; s.src = levelSrc;
   }
 
-  function paint(d, keepThr) {
+  function paint(d, keepView) {
     current = d;
     const img = d.images || {};
     if (img.original) { q(".imgOriginal").src = img.original; q(".imgOriginal2").src = img.original; }
-    if (img.original && img.score) loadSources(img.original, img.score);
+    if (img.original && img.level) loadSources(img.original, img.level);
     const r = d.result;
     if (r) {
       q(".badge").textContent = r.stain_label || r.method || "";
       q(".mTissue").textContent = (r.tissue_pixels || 0).toLocaleString();
-      if (!keepThr) { thrNorm = currentThr(d); q(".cThr").value = Math.round(thrNorm * 1000); }
+      q(".mObjects").textContent = (r.objects || 0).toLocaleString();
+      if (!keepView) { level = currentLevel(d); q(".cThr").value = String(level); }
       q(".mPercent").textContent = (r.positive_percent || 0).toFixed(2) + "%";
       q(".mPositive").textContent = (r.positive_pixels || 0).toLocaleString();
-      q(".mThreshold").textContent = (r.threshold || 0).toFixed(3);
-      q(".thrVal").textContent = (r.threshold || 0).toFixed(3);
+      levelLabel();
+      const note = q(".card-note");
+      const text = (r.notes || []).join(" ");
+      note.textContent = text;
+      note.classList.toggle("hidden", !text);
     }
   }
   paint(data);
 
-  // ---- comparison slider ----
+  /* ---- comparison slider ---- */
   const vp = q(".cmp-viewport");
   let dragging = false;
   function setSplit(clientX) {
@@ -418,37 +526,162 @@ function createCard(data) {
     let pct = ((clientX - rect.left) / rect.width) * 100;
     vp.style.setProperty("--split", Math.max(0, Math.min(100, pct)) + "%");
   }
-  vp.addEventListener("pointerdown", (e) => { dragging = true; vp.setPointerCapture(e.pointerId); setSplit(e.clientX); });
+  vp.addEventListener("pointerdown", (e) => {
+    if (tool !== "off") return;                // drawing takes precedence
+    dragging = true; vp.setPointerCapture(e.pointerId); setSplit(e.clientX);
+  });
   vp.addEventListener("pointermove", (e) => { if (dragging) setSplit(e.clientX); });
   vp.addEventListener("pointerup", (e) => { dragging = false; try { vp.releasePointerCapture(e.pointerId); } catch (x) {} });
   vp.addEventListener("pointercancel", () => { dragging = false; });
   node.querySelectorAll(".vImg").forEach((im) => im.addEventListener("click", () => showLightbox(im.src)));
 
-  // ---- server threshold recompute (debounced) ----
-  let thrDeb;
-  function postThreshold(norm) {
-    clearTimeout(thrDeb);
-    thrDeb = setTimeout(async () => {
+  /* ---- server recompute (debounced) ------------------------------------ #
+     The browser has already redrawn; this is what makes the REPORTED numbers,
+     the CSV and every export agree with what is on screen. */
+  let viewDeb;
+  function postView() {
+    clearTimeout(viewDeb);
+    viewDeb = setTimeout(async () => {
       try {
-        const res = await fetch("/api/appearance", { method: "POST", headers: headers(true), body: JSON.stringify({ analysis_id: analysisId, score_threshold: norm }) });
-        if (res.ok) { const d = await res.json(); if (d.result) { current.result = d.result; paint(d, true); persistData(); } }
+        const body = { analysis_id: analysisId, level: level, regions: regions };
+        const res = await fetch("/api/appearance", { method: "POST", headers: headers(true), body: JSON.stringify(body) });
+        if (res.ok) {
+          const d = await res.json();
+          if (d.result) { current.result = d.result; paint(d, true); persistData(); }
+        }
       } catch (e) {}
     }, 350);
   }
 
-  // ---- live detection threshold ----
-  q(".cThr").addEventListener("input", () => setThr((+q(".cThr").value) / 1000, true));
-  q(".thr-auto").addEventListener("click", () => { const auto = (current.result && current.result.score_auto_threshold) || 0.2; if (current.params) current.params.score_threshold = null; setThr(auto, false); postThreshold(""); persistData(); });
+  /* ---- sensitivity ---- */
+  q(".cThr").addEventListener("input", () => setLevel(+q(".cThr").value, true));
+  q(".thr-auto").addEventListener("click", () => {
+    const auto = (current.result && current.result.auto_level);
+    if (current.params) current.params.level = null;
+    setLevel(auto == null ? 12 : auto, false);
+    persistData(); postView();
+  });
 
-  // ---- downloads (always carry the CURRENT on-screen threshold) ----
+  /* ============================ manual regions ============================
+     Coordinates are stored normalised, so a region drawn on screen is the same
+     region the server rasterises for the numbers and for every export, at any
+     resolution. */
+  let tool = "off";
+  let shape = "rect";
+  let drawing = null;
+  const draw = q(".cmpDraw");
+
+  function regionColour(mode) {
+    return mode === "focus" ? "#38bdf8"
+      : mode === "ignore" ? "#f43f5e"
+      : mode === "boost" ? "#22c55e" : "#f59e0b";
+  }
+
+  function sizeDrawCanvas() {
+    const w = vp.clientWidth, h = vp.clientHeight;
+    if (!w || !h) return;
+    if (draw.width !== w || draw.height !== h) { draw.width = w; draw.height = h; }
+  }
+
+  function drawRegionOutlines() {
+    sizeDrawCanvas();
+    const cx = draw.getContext("2d");
+    cx.clearRect(0, 0, draw.width, draw.height);
+    const all = drawing ? regions.concat([drawing]) : regions;
+    for (const r of all) {
+      const pts = (r.points || []).map((p) => [p[0] * draw.width, p[1] * draw.height]);
+      if (!pts.length) continue;
+      cx.lineWidth = 2;
+      cx.setLineDash(r.mode === "ignore" ? [6, 4] : []);
+      cx.strokeStyle = regionColour(r.mode);
+      cx.fillStyle = regionColour(r.mode) + "22";
+      cx.beginPath();
+      if (r.kind === "rect" && pts.length >= 2) {
+        cx.rect(pts[0][0], pts[0][1], pts[1][0] - pts[0][0], pts[1][1] - pts[0][1]);
+      } else {
+        cx.moveTo(pts[0][0], pts[0][1]);
+        for (let i = 1; i < pts.length; i++) cx.lineTo(pts[i][0], pts[i][1]);
+        if (r !== drawing) cx.closePath();
+      }
+      cx.fill(); cx.stroke();
+    }
+    cx.setLineDash([]);
+  }
+
+  function regionCountLabel() {
+    const n = regions.length;
+    q(".rcount").textContent = n === 0 ? "No regions" : (n === 1 ? "1 region" : n + " regions");
+  }
+
+  function commitRegions() {
+    if (!st.ld) return;
+    applyRegions(st.ld, regions);
+    regionCountLabel();
+    redrawSoon(); liveMetrics();
+    if (current.params) current.params.regions = regions;
+    persistData(); postView();
+  }
+
+  function toPoint(e) {
+    const rect = vp.getBoundingClientRect();
+    return [
+      Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)),
+      Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height)),
+    ];
+  }
+
+  node.querySelectorAll(".tool").forEach((b) => b.addEventListener("click", () => {
+    tool = b.dataset.tool;
+    node.querySelectorAll(".tool").forEach((o) => o.classList.toggle("is-on", o === b));
+    vp.classList.toggle("drawing", tool !== "off");
+  }));
+  q(".tool-shape").addEventListener("change", (e) => { shape = e.target.value; });
+  q(".tool-undo").addEventListener("click", () => { if (regions.length) { regions = regions.slice(0, -1); commitRegions(); } });
+  q(".tool-clear").addEventListener("click", () => { if (regions.length) { regions = []; commitRegions(); } });
+
+  draw.addEventListener("pointerdown", (e) => {
+    if (tool === "off") return;
+    e.preventDefault(); e.stopPropagation();
+    try { draw.setPointerCapture(e.pointerId); } catch (x) {}
+    // "Less here" is the same tool as "More here" with the shift reversed.
+    const mode = tool === "damp" ? "boost" : tool;
+    const delta = tool === "boost" ? REGION_DELTA : (tool === "damp" ? -REGION_DELTA : 0);
+    drawing = { mode, kind: shape, delta, points: [toPoint(e)] };
+    if (shape === "rect") drawing.points.push(drawing.points[0].slice());
+    drawRegionOutlines();
+  });
+  draw.addEventListener("pointermove", (e) => {
+    if (!drawing) return;
+    const p = toPoint(e);
+    if (drawing.kind === "rect") drawing.points[1] = p;
+    else if (drawing.points.length < 2048) drawing.points.push(p);
+    drawRegionOutlines();
+  });
+  function endDraw(e) {
+    if (!drawing) return;
+    try { draw.releasePointerCapture(e.pointerId); } catch (x) {}
+    const r = drawing; drawing = null;
+    const big = r.kind === "rect"
+      ? Math.abs(r.points[1][0] - r.points[0][0]) > 0.01 && Math.abs(r.points[1][1] - r.points[0][1]) > 0.01
+      : r.points.length >= 3;
+    if (big) { regions = regions.concat([r]); commitRegions(); }
+    else drawRegionOutlines();
+  }
+  draw.addEventListener("pointerup", endDraw);
+  draw.addEventListener("pointercancel", endDraw);
+  window.addEventListener("resize", drawRegionOutlines);
+  regionCountLabel();
+
+  /* ---- downloads (always carry the CURRENT on-screen view) ---- */
   function dlTif(type) {
-    const qs = `analysis_id=${analysisId}&image_type=${type}&score_threshold=${thrNorm.toFixed(4)}`;
+    const qs = `analysis_id=${analysisId}&image_type=${type}&level=${level}`;
     streamedDownload(`/api/download_tif?${qs}`, null, `${stem}_${type}.tif`, `Exporting ${type}`, 2 * 1048576);
   }
   node.querySelectorAll(".dl-btn").forEach((b) => b.addEventListener("click", () => dlTif(b.dataset.type)));
   node.querySelectorAll(".vdl").forEach((b) => b.addEventListener("click", (e) => { e.stopPropagation(); dlTif(b.dataset.type); }));
   q(".export-one").addEventListener("click", () => streamedDownload("/api/export_csv", { analysis_ids: [analysisId] }, `${stem}_data.csv`, "Exporting CSV", 0));
 
+  node._view = () => ({ level, regions });
   return node;
 }
 
@@ -460,12 +693,13 @@ $("btnExportCsv").addEventListener("click", () => {
 $("btnDownloadZip").addEventListener("click", () => {
   const ids = analyses.map((a) => a.id); if (!ids.length) return;
   const n = ids.length;
-  // carry each slide's current threshold so the ZIP matches screen
+  // carry each slide's current sensitivity AND its manual regions, so every
+  // image in the ZIP is exactly what that card shows on screen
   const overrides = {};
   document.querySelectorAll("#resultsContainer .card").forEach((card, i) => {
     const a = analyses[i]; if (!a) return;
-    const thr = (parseInt(card.querySelector(".cThr").value, 10) || 200) / 1000;
-    overrides[a.id] = { score_threshold: thr.toFixed(4) };
+    const v = card._view ? card._view() : null;
+    overrides[a.id] = v ? { level: v.level, regions: v.regions } : {};
   });
   streamedDownload("/api/export_zip", { analysis_ids: ids, images: ["comparison"], include_csv: true, overrides },
     "ImageSL_export.zip", `Packaging ${n} slide${n === 1 ? "" : "s"} (ZIP)`, n * 1.6 * 1048576);

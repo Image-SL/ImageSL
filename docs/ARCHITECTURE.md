@@ -38,13 +38,17 @@ The pixel-level work, in order:
    a well-exposed slide is untouched and a wall-to-wall-tissue slide is never
    renormalised against its own palest tissue.
 4. **Background & tissue** (`segment_tissue`) — the mask every statistic is
-   anchored to, from four independent signals: per-slide **Otsu** on the OD
-   histogram; a **chroma rescue** so pale-but-coloured pixels count as dilute
-   stain; a **local-standard-deviation texture** test that drops large smooth
-   regions (vignetting, haze, defocus, scanner artefacts) carrying no cellular
-   structure; and morphological cleanup that fills interior lumina and drops
-   isolated specks. A frame with no glass in it is detected and falls back to the
-   absolute OD floor, so Otsu can never split tissue against itself.
+   anchored to. Density is measured against the slide's own white point
+   **always**, so the mask is a statement about how much light the material
+   absorbs rather than about how bright the scan is: brighten the whole image and
+   nothing here moves. Glass is then defined physically — it absorbs essentially
+   nothing and carries no colour — with a **chroma rescue** so pale-but-coloured
+   pixels count as dilute stain, a **texture** test that drops large smooth
+   regions (vignetting, haze, defocus, scanner artefacts), and morphological
+   cleanup that fills interior lumina and drops isolated specks. A wall-to-wall
+   section is recognised explicitly: when the palest class still absorbs, it is
+   pale tissue and the whole frame counts, so the mask can never be cut against
+   itself.
 5. **Stain basis** (`_estimate_basis`) — a curated reference matrix is chosen by
    the chromogen family detected on the slide. Only families in
    `ENABLED_FAMILIES` (currently `H-DAB`) can be selected; when the slide's
@@ -53,16 +57,27 @@ The pixel-level work, in order:
    measuring some other colour.
 6. **Deconvolution** (`_deconvolve`) — projects OD onto the stain basis to get
    per-stain concentration maps.
-7. **Colour gating → score** — a pixel is a candidate only if it is inside the
-   chromogen's hue *band* (tighter than the generic ±46° tolerance — this is what
-   stops a red chromogen counting as brown), saturated above the slide's own
-   tissue bulk, chromogen-dominated, and in the eroded tissue core. Candidates
-   carry a normalised concentration **score**; everything else is zeroed. The
-   score is shipped to the browser as a grayscale PNG so the threshold slider
-   re-measures live.
-8. **Quantification** — threshold on that score (auto-anchored to each slide's
-   background concentration, or manual) yields positive-area %, positive pixel
-   count, and mean optical density.
+7. **Detection** (`ihc/detect.py`) — area based, with **no global intensity
+   threshold**. A foreground-excluded background field is fitted to the optical
+   density, and everything after it is measured on the *excess* over that field.
+   The excess's colour is read as an absorbance signature (blue-over-red for DAB)
+   rather than a hue, because hue collapses as a pixel approaches black — which
+   is exactly why the previous build dropped the densest, least ambiguous stain
+   and kept its halo. Colour-specific **seeds** are grown through contiguous
+   excess into **objects**, and stained objects are separated from background
+   bumps by clustering the population of object peaks: a decision about
+   structures, not pixels. Each accepted object is then measured at **its own
+   isophote**, so area does not inherit intensity.
+8. **Quantification** — positive-area %, pixel count, and the number and size of
+   the stained structures found. Running the whole decision across a ladder of
+   sensitivities produces the **level map**: for each pixel, the first level at
+   which it turns positive. That one 8-bit image is shipped to the browser, which
+   reproduces the server's object-based decision at any sensitivity — and with
+   any per-region offset from the manual tools — by a single comparison, so the
+   preview and the reported numbers cannot disagree.
+8b. **Manual regions** (`ihc/regions.py`) — hand-drawn `focus`, `ignore` and
+   local-sensitivity shapes, in normalised coordinates so they survive any
+   resolution or export size. They are applied by the same rule on both sides.
 9. **Rendering** — `render_overlay` highlights counted pixels (always in the one
    fixed neon green, `engine.OVERLAY_GREEN`); `render_stain_only` erases everything
    *except* the chromogen; `compose_comparison` builds the labelled export.

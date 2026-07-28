@@ -116,6 +116,29 @@ main { max-width:1120px; margin:0 auto; padding:38px 22px 90px; }
 .metric b.flash { animation:mflash .4s ease; }
 @keyframes mflash { 0%{ color:var(--violet-600);} 100%{} }
 
+/* -------- manual region tools -------- */
+.tool-row { display:flex; align-items:center; gap:10px; margin-top:10px; flex-wrap:wrap; }
+.tool-group { display:inline-flex; border:1px solid var(--line); border-radius:9px; overflow:hidden; }
+.tool { font:inherit; font-size:12px; font-weight:700; color:var(--ink-2); background:#fff; border:0;
+  border-right:1px solid var(--line); padding:6px 11px; cursor:pointer; white-space:nowrap; }
+.tool:last-child { border-right:0; }
+.tool:hover { background:var(--violet-50); }
+.tool.is-on { background:var(--violet-600); color:#fff; }
+.tool-shape { font:inherit; font-size:12px; font-weight:700; color:var(--ink-2); background:#fff;
+  border:1px solid var(--line); border-radius:9px; padding:6px 8px; cursor:pointer; }
+.rcount { font-size:12px; font-weight:700; color:var(--ink-3); font-variant-numeric:tabular-nums; margin-left:auto; }
+.tool-undo, .tool-clear { font:inherit; font-size:12px; font-weight:700; color:var(--ink-2); background:#fff;
+  border:1px solid var(--line); border-radius:8px; padding:5px 10px; cursor:pointer; }
+.tool-undo:hover, .tool-clear:hover { background:var(--violet-50); color:var(--violet-700); }
+.card-note { margin:10px 0 0; padding:9px 12px; border-left:3px solid var(--violet-400,#a78bfa);
+  background:var(--violet-50); border-radius:0 8px 8px 0; font-size:12.5px; line-height:1.5; color:var(--ink-2); }
+
+/* The drawing surface sits above the comparison, but only takes the pointer
+   while a region tool is armed — otherwise the split handle stays usable. */
+.cmpDraw { position:absolute; inset:0; z-index:4; width:100%; height:100%; pointer-events:none; }
+.cmp-viewport.drawing .cmpDraw { pointer-events:auto; cursor:crosshair; }
+.cmp-viewport.drawing .cmp-handle { opacity:.35; }
+
 .feature-row { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-top:22px; }
 .feature { background:var(--card); border:1px solid var(--line); border-radius:var(--radius); padding:15px 17px; box-shadow:var(--shadow-sm); }
 .feature b { display:block; font-size:14px; font-weight:800; letter-spacing:-.01em; }

@@ -25,14 +25,45 @@ runs on the server.
 > is **not present in this repository** — `docs/` still describes it in places.
 > Nothing in the current app calls the Anthropic API.
 
+## How detection works
+
+There is **no global intensity threshold** anywhere in the engine. A pixel is
+never judged by how dark it is. Instead, for each slide:
+
+1. A **local background field** of optical density is fitted with the stain
+   excluded, so a diffuse tan wash, a lamp gradient or genuinely darker tissue is
+   subtracted away *where it occurs*. Everything after this is measured on the
+   **excess** over that background.
+2. The **colour of the excess** is read as an absorbance signature rather than a
+   hue, because hue stops meaning anything as a pixel approaches black — which is
+   why dense, unmistakable DAB used to be dropped while its pale halo was kept.
+3. The excess is grouped into **connected structures**, and stained objects are
+   separated from background bumps by clustering the population of object peaks.
+   The decision is made about structures, not pixels.
+4. Each accepted structure is measured at **its own isophote**, so area does not
+   inherit intensity: two structures of the same size measure the same area even
+   if one is twice as dark.
+
+Where a slide's staining is diffuse rather than focal, the engine says so in the
+result notes instead of presenting an arbitrary boundary as a measurement.
+
 ## Adjusting a result
 
-Every control re-measures live in the browser, with no server round-trip:
+Every control re-measures live in the browser, with no server round-trip. The
+server recomputes the authoritative numbers behind you and they agree exactly,
+because both sides apply the same rule to the same level map.
 
 | Control | What it does |
 | --- | --- |
-| **Detection threshold** slider — sits directly under the slide, so the image stays in view while you drag | re-thresholds the per-pixel stainness score — the %, pixel counts, overlay and *Stain only* panel all update as you drag |
-| **TIF** / **Download** | exports any panel at full analysis resolution, at exactly the threshold on screen |
+| **Sensitivity** slider — sits directly under the slide, so the image stays in view while you drag | moves the bar a structure's peak has to clear, around the operating point this slide chose for itself. `Auto` returns to it |
+| **Focus** region | measure only inside the shapes you draw — one cortical layer, one TMA core, one half of a section. Tissue outside stops counting, denominator included |
+| **Ignore** region | cut a fold, pen mark, bubble or torn edge out of the measurement entirely, denominator included |
+| **More here** / **Less here** region | shift sensitivity *locally*, for an area that is genuinely weaker or stronger, without moving the whole slide's operating point |
+| **TIF** / **Download** | exports any panel at full analysis resolution, at exactly the sensitivity and regions on screen |
+
+A boosted region cannot invent staining: it still only admits chromogen-coloured
+structures. The strongest boost means "count everything this slide could
+plausibly call stain, here", not "paint this area positive".
 
 Each result shows three panels — **Original**, **Overlay** and **Stain only**.
 The detection highlight is always neon green (`#39ff14`); there is no colour picker.
@@ -47,14 +78,31 @@ ImageSL/
 ├── server/                  # FastAPI backend (deployed to Railway) — the whole app
 │   ├── app.py               # routes: page, /api/analyze, /api/appearance, /api/stains,
 │   │                        #         /api/download_tif, /api/export_csv, /api/export_zip
-│   ├── ihc/engine.py        # THE analysis: white point → background segmentation →
-│   │                        #   deconvolution → colour gates → score → renderers
+│   ├── ihc/engine.py        # white point → tissue segmentation → stain basis →
+│   │                        #   detect() → metrics → renderers
+│   ├── ihc/detect.py        # THE detection: local background → excess colour →
+│   │                        #   objects → per-object area → level map
+│   ├── ihc/regions.py       # manual focus / ignore / local-sensitivity shapes
 │   ├── ihc/stains.py        # stain registry + ENABLED_KEYS (what is shipped)
 │   ├── web/                 # plain single-page UI (index.html, styles.css, app.js)
 │   └── requirements.txt
+├── scripts/backtest.py      # regression suite: runs a folder of slides through the
+│                            #   engine and checks misses, flooding, grey debris,
+│                            #   tissue-mask collapse and stability under
+│                            #   illumination / resolution / compression change
 ├── Dockerfile, railway.json, .env.example
 └── docs/                    # ARCHITECTURE.md, SECURITY.md, DEPLOY.md
 ```
+
+## Regression testing
+
+```bash
+python scripts/backtest.py /path/to/slides --montage out/ --json results.json
+```
+
+Every check is a statement that must hold for any correct quantifier, and each
+failure names the slide and the number. Exit status is non-zero if any slide
+fails.
 
 ## How the background is removed
 

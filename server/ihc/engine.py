@@ -14,24 +14,28 @@ Design goals (2026 rewrite):
    it now reports whether a brown DAB chromogen is actually present rather than
    silently switching to a different chromogen's basis.
 
+*  Detection is AREA BASED and lives in `ihc/detect.py`. There is no global
+   intensity threshold anywhere in this build. The detector fits each slide's own
+   local background absorbance, asks what colour the *excess* over that
+   background is, groups the answer into connected structures, and separates
+   stained objects from background by clustering the population of object peaks.
+   Each accepted structure is then measured at its own isophote. See that
+   module's header for why every step is the way it is.
+
 *  Finds the real background. `segment_tissue()` estimates each slide's own
-   white point (bare glass), takes the glass-vs-tissue cut from that slide's own
-   OD histogram, rescues pale-but-coloured pixels, drops large smooth regions
-   that carry no cellular texture (vignetting, haze, defocus, scanner artefacts)
-   and cleans the mask morphologically. Every downstream statistic is anchored to
-   that mask, so a better background estimate directly sharpens positivity.
+   white point (bare glass) and cuts glass from tissue by a physical test —
+   glass absorbs essentially nothing — measured against that white point, so the
+   mask does not move when the illumination does. A pale, wall-to-wall section is
+   explicitly recognised instead of being cut against itself.
 
 *  Rejects junk. Photos of a bike / person / screenshot never reach the pixel
    math — `assess_slide()` gates them out with a human-readable reason, and the
    caller reports them as "skipped".
 
-*  Kills the classic false positives that plagued the old build:
-     - diffuse tan/brown *background tint* counted as signal (the single biggest
-       problem) — defeated by demanding real color saturation AND separation from
-       each slide's own background, not merely "the darker half of the tissue";
-     - near-neutral **black / grey debris blobs** (folds, dust, ink) — defeated by
-       a chroma gate: genuine chromogen carries a specific hue, debris does not;
-     - lumen / tear rims — defeated by eroding to the tissue core.
+*  Hands control back where the data is genuinely ambiguous. The sensitivity
+   ladder, the level map and `ihc/regions.py` let the user move the operating
+   point globally or in a hand-drawn region, and the slide says so in `notes`
+   when its staining is diffuse enough that the boundary is a judgement.
 
 *  Highlights detections in ONE fixed colour (neon green) on every slide, and
    reports natural display colours for each stain so the UI can show
@@ -69,6 +73,9 @@ try:  # scipy ships with scikit-image; the texture gate degrades gracefully.
 except Exception:  # pragma: no cover
     _HAVE_SCIPY = False
 
+from . import detect
+from . import regions as regions_mod
+
 
 # --------------------------------------------------------------------------- #
 # Configuration
@@ -89,7 +96,7 @@ _WHITE_APPLY_BELOW  = 245.0  # only renormalise OD when the scan really is dim/t
 _WHITE_GLASS_SEP    = 20.0   # ... and only if that white is separated from the tissue bulk
 _TISSUE_THR_MAX     = 0.55   # clamp the per-slide Otsu cut (faint tissue must survive)
 _TISSUE_BG_MIN_FRAC = 0.02   # < 2% glass ⇒ full-field slide, Otsu would split tissue
-_BG_GLASS_GAP       = 26.0   # bare glass sits within this many levels of the white point
+_BG_GLASS_OD_MAX    = 0.075  # bare glass absorbs essentially NOTHING (summed OD)
 _BG_GLASS_SAT       = 0.20   # ... and carries essentially no colour
 _CHROMA_RESCUE_SAT  = 0.22   # a pale but distinctly coloured pixel is dilute stain
 _TEXTURE_WIN        = 7      # local-std window (px) for the flat-region test
@@ -99,28 +106,9 @@ _TEXTURE_OD_GUARD   = 1.6    # only smooth pixels weaker than thr×this are drop
 _HOLE_FRAC          = 0.02   # interior gaps up to 2% of frame are lumina → tissue
 _SPECK_FRAC         = 2e-5   # isolated blobs below this share of frame are debris
 
-# ---- positive-detection tuning (the accuracy core) ----------------------- #
-# Genuine chromogen is BOTH darker (higher OD) AND more saturated than the
-# slide's own tissue background, and is focal rather than covering everything.
-# These constants encode that; they were calibrated against 46 real IHC slides.
-# The intensity bar is anchored to EACH slide's own tissue-background
-# concentration bulk (median + K robust-sigmas), which is scale-consistent:
-# a densely-stained slide keeps its signal (it sits far above background) while a
-# uniformly-tinted slide reads ~0 instead of flooding. Saturation, optical-
-# density and colour-specificity gates run alongside to reject desaturated tan
-# tint and near-neutral grey/black debris.
-_SAT_FLOOR          = 0.23   # absolute minimum HSV saturation for a candidate
-_SAT_MARGIN         = 0.05   # must beat the tissue saturation bulk by this much
-_OD_ABS_FLOOR       = 0.42   # ×0.5 → a tiny chromogen-concentration floor (noise)
-_CONC_SEP_K         = 2.8    # default threshold = bg conc + K robust-sigmas
-_SPEC_MIN           = 0.50   # target must own ≥ this share of the pixel's colour
-_HUE_TOL_DEG        = 46.0   # pixel hue must sit within this of the chromogen
-_MIN_OBJECT_PX      = 8      # default: drop specks smaller than this (noise)
-
-# The per-pixel "stainness" score (deconvolved chromogen concentration for colour-
-# qualified pixels) is normalised by this full-scale concentration so the browser
-# can re-threshold it live. ~1.8 OD maps a very strongly stained pixel to ~1.0.
-SCORE_FULL = 1.8
+# Positive detection itself lives in ihc/detect.py — it is area based and has no
+# global intensity threshold to tune. What remains here is the stain basis, the
+# tissue mask and the reporting.
 
 _HDAB_REFERENCE = np.array(
     [
@@ -228,10 +216,18 @@ class AnalysisResult:
     stain_b_hex: str = "#a1531f"
     stain_a_label: str = "Stain A"
     stain_b_label: str = "Stain B"
-    # --- interactive-threshold support ---
-    score_auto_threshold: float = 0.2   # default slider position, 0..1 (normalised)
-    score_threshold: float = 0.2        # threshold actually applied, 0..1
-    score_full: float = SCORE_FULL      # concentration that maps to score = 1.0
+    # --- area-based detection ------------------------------------------------ #
+    level: int = 0                    # sensitivity level actually applied
+    auto_level: int = 0               # the slide's own automatic operating point
+    level_count: int = 1              # size of the sensitivity ladder
+    detection_bar: float = 0.0        # excess OD an object's peak must reach (auto)
+    detection_floor: float = 0.0      # weakest excess that can belong to an object
+    texture_sigma: float = 0.0        # this slide's unstained-tissue variation
+    separability: float = 0.0         # how cleanly stained objects split from background
+    objects: int = 0                  # number of detected stained structures
+    median_object_px: int = 0
+    mean_object_px: float = 0.0
+    region_count: int = 0             # manual regions applied
     chromogen: str = ""                 # detected chromogen family label
     compartment: str = ""               # expected localisation (if a marker chosen)
     marker: str = ""                    # chosen antibody name (selection mode)
@@ -368,8 +364,8 @@ def estimate_white_point(rgb: np.ndarray) -> np.ndarray:
     return np.clip(white, _WHITE_MIN, 255.0)
 
 
-def _bg_class_is_glass(rgb: np.ndarray, sat: np.ndarray,
-                       below: np.ndarray, white: np.ndarray) -> bool:
+def _bg_class_is_glass(total_od: np.ndarray, sat: np.ndarray,
+                       below: np.ndarray) -> bool:
     """Does the class Otsu put BELOW its cut actually look like bare glass?
 
     Otsu only splits a histogram in two — it cannot tell which half is glass. On
@@ -377,19 +373,24 @@ def _bg_class_is_glass(rgb: np.ndarray, sat: np.ndarray,
     against tissue*, and the sub-threshold class is pale tissue, not background.
     That failure is silent and expensive: the pale tissue is discarded, so the
     denominator every percentage is reported against collapses, the mask left
-    behind is a filigree of the stained structures themselves (which the core
-    erosion then eats), and the "background" statistics that set the positivity
-    threshold are measured on stain.
+    behind is a filigree of the stained structures themselves, and the
+    background statistics that calibrate detection are measured on stain. It is
+    exactly what reduced two of the validation slides to a ~10% tissue mask and
+    a near-zero positive area.
 
-    Real glass sits within a few levels of the white point and is essentially
-    colourless. Pale tissue is clearly darker and usually tinted.
+    The test is physical rather than cosmetic: **bare glass absorbs essentially
+    nothing**. Whatever its brightness relative to the white point, a class
+    whose own median optical density is above a hair's breadth of zero is
+    transmitting through *material*, so it is tissue and the cut is rejected.
+    Pale beige tissue reads 0.2-0.4 OD and can no longer masquerade as glass by
+    merely sitting close to the white point.
     """
     sub = below[::3, ::3]
     if not sub.any():
         return True
-    bright = float(np.median(rgb[::3, ::3][sub].max(axis=1)))
+    od_med = float(np.median(total_od[::3, ::3][sub]))
     chroma = float(np.median(sat[::3, ::3][sub]))
-    return (float(np.min(white)) - bright) <= _BG_GLASS_GAP and chroma <= _BG_GLASS_SAT
+    return od_med <= _BG_GLASS_OD_MAX and chroma <= _BG_GLASS_SAT
 
 
 def white_is_glass(rgb: np.ndarray, white: np.ndarray) -> bool:
@@ -544,26 +545,31 @@ def segment_tissue(
 ) -> tuple[np.ndarray, np.ndarray, dict]:
     """
     Separate SLIDE BACKGROUND (bare glass, mounting medium, scanner white) from
-    real tissue — per slide, without trusting one hard-coded global cutoff.
+    real tissue — per slide, and *without any absolute brightness constant*.
 
-    Four independent pieces of evidence, combined:
+      1. **Everything is measured against this slide's own bare glass.** Optical
+         density is taken relative to the white point, always, so the cut is a
+         statement about how much light the material absorbs — not about how
+         bright the scan happens to be. This is what makes the mask survive a
+         lamp change, a different scanner, or an exposure correction: brighten
+         the whole image and every density here is unchanged. An absolute floor
+         on un-normalised density does the opposite, and it is what used to make
+         a 12% brighter copy of the same slide lose half its tissue.
 
-      1. **White point.** The brightest few percent of a scan is empty glass, so
-         optical density is measured against THAT, not against a theoretical 255.
+      2. **Glass is defined physically:** it absorbs essentially nothing and
+         carries no colour. Anything that absorbs is material, however pale.
 
-      2. **Otsu on this slide's own OD histogram.** Glass-vs-tissue is genuinely
-         bimodal, so the cut comes from the data, clamped to a sane band. A slide
-         with essentially no glass in frame would make Otsu split tissue against
-         tissue, so that case is detected and falls back to the absolute floor.
+      3. **Wall-to-wall sections are recognised, not split.** When the class
+         below the cut is not colourless-and-transparent, there is no glass in
+         frame — the frame is full of tissue and all of it counts. Without that
+         check a pale beige section is cut against itself, the denominator
+         collapses and every percentage silently changes.
 
-      3. **Chroma rescue.** A pale but distinctly *coloured* pixel is dilute
-         stain, not glass, however bright it is — saturation re-admits it.
+      4. **Chroma rescue.** A pale but distinctly *coloured* pixel is dilute
+         stain, not glass, however bright it is.
 
-      4. **Texture.** Real tissue carries fine cellular structure; vignetting,
-         haze, defocus, smooth shadows and flat scanner artefacts do not. A local
-         standard-deviation map drops large smooth regions that slipped past the
-         intensity test — the exact thing that used to drag the background
-         statistics, and therefore the positivity threshold, off.
+      5. **Texture.** Real tissue carries fine cellular structure; vignetting,
+         haze, defocus and flat scanner artefacts do not.
 
     The mask is then cleaned morphologically: interior holes are filled so lumina
     count as tissue, isolated specks are dropped so dust and edge debris do not.
@@ -576,34 +582,24 @@ def segment_tissue(
     if white is None:
         white = estimate_white_point(rgb)
 
-    # 1) OD against this slide's own white — only when the scan is genuinely dim
-    #    or tinted, so a well-exposed slide behaves exactly as it always has.
-    use_white = bool(float(np.min(white)) < _WHITE_APPLY_BELOW) and white_is_glass(rgb, white)
-    if od is None:
-        od = rgb_to_od(rgb, white if use_white else None)
-    total_od = np.clip(od, 0.0, None).sum(axis=2)
+    # 1) OD against this slide's own white point — unconditionally.
+    total_od = np.clip(rgb_to_od(rgb, white), 0.0, None).sum(axis=2)
 
-    # 2) per-slide Otsu cut
-    flat = total_od.ravel()
-    step = max(1, flat.size // 200_000)
-    method = "otsu"
-    try:
-        thr = float(_otsu(flat[::step]))
-    except Exception:
-        thr = float(od_floor)
-        method = "floor (histogram unusable)"
-    thr = float(np.clip(thr, od_floor, _TISSUE_THR_MAX))
+    # 2) the glass cut, and the check that what it cut really is glass
+    thr = float(od_floor)
     below = total_od < thr
+    method = "glass (transmittance)"
     if float(below.mean()) < _TISSUE_BG_MIN_FRAC:
-        # Almost nothing is background → the frame is wall-to-wall tissue and
-        # Otsu has split tissue against itself. Keep everything above the floor.
-        thr = float(od_floor)
+        # Almost nothing is transparent → wall-to-wall section, no glass in frame.
+        thr = 0.0
+        below = np.zeros_like(below)
         method = "full-field (no glass in frame)"
-    elif thr > od_floor and not _bg_class_is_glass(rgb, sat, below, white):
-        # Otsu found a split, but what it called background is too dark and too
-        # coloured to be glass — it has cut tissue against tissue. Same fallback.
-        thr = float(od_floor)
-        method = "full-field (Otsu split tissue, not glass)"
+    elif not _bg_class_is_glass(total_od, sat, below):
+        # What sits below the cut still absorbs, or carries colour: it is pale
+        # tissue, not background. Keep the whole frame.
+        thr = 0.0
+        below = np.zeros_like(below)
+        method = "full-field (palest class is tissue, not glass)"
 
     # 3) intensity + chroma rescue
     mask = (total_od >= thr) | ((sat >= _CHROMA_RESCUE_SAT) & (total_od >= od_floor * 0.55))
@@ -611,7 +607,7 @@ def segment_tissue(
     # 4) texture: remove large SMOOTH regions, but only weakly-absorbing ones, so
     #    densely stained tissue can never be thrown away by this test.
     std = _local_std(val)
-    if std is not None and mask.any():
+    if std is not None and mask.any() and thr > 0.0:
         med = float(np.median(std[mask]))
         flat_cut = min(_TEXTURE_ABS, med * _TEXTURE_REL) if med > 0 else _TEXTURE_ABS
         smooth = std < flat_cut
@@ -630,7 +626,7 @@ def segment_tissue(
         "tissue_threshold": round(float(thr), 4),
         "tissue_method": method,
         "white_point": [round(float(x), 1) for x in np.atleast_1d(white)],
-        "white_applied": use_white,
+        "white_applied": True,
         "tissue_pixels": tissue_px,
         "background_pixels": int(frame - tissue_px),
         "tissue_percent": round(tissue_px / frame * 100.0, 3) if frame else 0.0,
@@ -849,20 +845,20 @@ def analyze(
     *,
     target_index: Optional[int] = None,
     background_threshold: float = BACKGROUND_OD_THRESHOLD,
-    threshold_scale: float = 1.0,
-    stain_strictness: str = "strong",
     stain_method: str = "auto",
     stain_override_od: Optional[list[list[float]]] = None,
     stain_choice: Optional[dict] = None,
-    score_threshold: Optional[float] = None,
+    level: Optional[int] = None,
+    regions: Optional[list] = None,
 ) -> tuple[AnalysisResult, dict[str, np.ndarray]]:
     """
     Full IHC analysis. Returns (result, maps).
 
     `stain_choice` is an optional antibody registry entry (selection mode) used
-    for labelling + compartment-aware morphology. `score_threshold` (0..1) is an
-    optional manual override of the intensity threshold applied to the per-pixel
-    stainness score; None uses the auto, background-anchored threshold.
+    for labelling and for the exact deconvolution vectors. `level` is the
+    sensitivity index on the detector's ladder (None = the automatic operating
+    point the slide's own object population chose). `regions` are the manual
+    focus / ignore / local-sensitivity shapes — see ihc/regions.py.
     """
     h, w = rgb.shape[:2]
     notes: list[str] = []
@@ -870,22 +866,17 @@ def analyze(
     rgb01 = rgb.astype(np.float32) / 255.0
     hue, sat, val = _rgb_to_hsv(rgb01)
 
-    # Optical density against THIS slide's bare-glass white point (see
-    # rgb_to_od / estimate_white_point). Well-exposed scans are unaffected.
+    # Optical density against THIS slide's bare-glass white point — always, so
+    # every density below is a property of the material rather than of the lamp.
     white = estimate_white_point(rgb)
-    use_white = bool(float(np.min(white)) < _WHITE_APPLY_BELOW) and white_is_glass(rgb, white)
-    od = rgb_to_od(rgb, white if use_white else None)
+    od = rgb_to_od(rgb, white)
 
-    # Smart background segmentation — the tissue mask every statistic below is
-    # anchored to. `background_threshold` acts as the absolute floor.
+    # Background segmentation — the tissue mask every statistic below is
+    # anchored to. `background_threshold` is the glass cut, in absorbance.
     tissue_mask, total_od, bg_info = segment_tissue(
         rgb, hue=hue, sat=sat, val=val, od_floor=background_threshold,
         white=white, od=od)
     tissue_pixels = int(tissue_mask.sum())
-    if use_white:
-        notes.append(
-            f"Background normalised to this slide's own white point "
-            f"({', '.join(str(int(x)) for x in bg_info['white_point'])}).")
 
     # ------------------------------------------------------------------ #
     # Validity gate (reuses the arrays already computed above)
@@ -943,112 +934,51 @@ def analyze(
 
     conc = _deconvolve(od, stain_matrix)
     target_conc = conc[..., tgt_idx]
-    counter_conc = conc[..., counter_idx]
-    resid_conc = np.abs(conc[..., 2])
 
     # ------------------------------------------------------------------ #
-    # Stain-vs-not classification → a continuous per-pixel "stainness" SCORE.
+    # Detection — AREA based, not a global intensity cut.
     #
-    # The score is the deconvolved *chromogen concentration* (a colour-axis
-    # projection), NOT darkness. That is the whole point: a dark grey / blue /
-    # neutral background — even one DARKER than the stain — has almost no
-    # chromogen concentration, so it scores ~0 and can never be thresholded into
-    # a positive. Only pixels that pass the colour-specificity "candidate" test
-    # (right hue, saturated enough, chromogen-dominated, in the tissue core) carry
-    # a non-zero score; everything else — background, counterstain, grey/black
-    # debris, lumen rims — is zeroed out here, by the classifier, not by a slider.
+    # `ihc/detect.py` owns this decision end to end: it fits the slide's own
+    # local background absorbance, measures what each pixel carries OVER that
+    # background, asks what colour the excess is, groups the answer into
+    # connected structures, and separates "background bump" from "stained
+    # object" by clustering the population of object peaks. The area of each
+    # accepted object is then its own isophote.
     #
-    # The intensity threshold is then applied ON TOP of that score: an automatic,
-    # background-anchored default that the user can nudge live.
+    # The by-product is a LEVEL MAP: for each pixel, the first sensitivity level
+    # at which it becomes positive. One 8-bit image therefore carries the whole
+    # family of results, so the sensitivity slider and the manual region tools
+    # are applied by simple comparison — in the browser for the live preview and
+    # here for the numbers — and the two can never disagree.
     # ------------------------------------------------------------------ #
-    score = np.zeros((h, w), dtype=np.float32)
-    candidate = np.zeros((h, w), dtype=bool)
-    positive = np.zeros((h, w), dtype=bool)
-    conc_threshold = 0.0
-    auto_norm = float(np.clip(_CONC_SEP_K * 0.12, 0.05, 0.95))  # fallback
-    min_px = int(stain_choice.get("min_px", _MIN_OBJECT_PX)) if stain_choice else _MIN_OBJECT_PX
+    min_px = int(stain_choice.get("min_px", 0)) if stain_choice else 0
+    band_mask = None
+    if not chromogen_in_band:
+        band = _hue_band_for(target_hue, method)
+        if band is not None:
+            band_mask = _in_hue_band(hue, band)
 
-    if valid and tissue_pixels >= 200:
-        core = _binary_erode(tissue_mask, 2)
+    det = detect.detect(
+        od, tissue_mask,
+        level=level,
+        min_area_px=(min_px or None),
+        hue_band_mask=band_mask,
+        target_od=(stain_matrix[tgt_idx] if (stain_choice or stain_override_od) else None),
+    )
+    notes.extend(det.notes)
 
-        # Background statistics from a bounded random subsample of tissue.
-        t_idx = np.flatnonzero(tissue_mask.ravel())
-        if t_idx.size > 120_000:
-            t_idx = t_idx[np.random.default_rng(0).integers(0, t_idx.size, 120_000)]
-        t_sat = sat.ravel()[t_idx]
-
-        if black_mode:
-            # BLACK / silver stains (GMS, reticulin, Verhoeff, Ni-DAB) carry no
-            # hue, so detect them by DARKNESS-in-tissue instead: near-neutral pixels
-            # markedly darker than the tissue background. Score = how far the total
-            # OD sits above background, normalised.
-            t_od = total_od.ravel()[t_idx]
-            od_bg = float(np.median(t_od))
-            od_sig = 1.4826 * float(np.median(np.abs(t_od - od_bg))) + 1e-6
-            low_chroma = sat <= 0.30
-            candidate = core & low_chroma & (total_od > od_bg + 1.0 * od_sig)
-            full = max(od_bg + 6.0 * od_sig, 1.5)
-            raw = np.clip((total_od - od_bg) / (full - od_bg + 1e-6), 0.0, 1.0)
-            score = np.where(candidate, raw, 0.0).astype(np.float32)
-            auto_norm = float(np.clip((2.2 * od_sig) / (full - od_bg + 1e-6), 0.05, 0.95))
-        else:
-            t_conc = target_conc.ravel()[t_idx]
-            sat_bg = float(np.percentile(t_sat, 55))
-            conc_bg = float(np.median(t_conc))
-            conc_sig = 1.4826 * float(np.median(np.abs(t_conc - conc_bg))) + 1e-6
-            sat_gate = max(_SAT_FLOOR, sat_bg + _SAT_MARGIN)
-            conc_gate = conc_bg + _CONC_SEP_K * conc_sig
-
-            total_stain = target_conc + counter_conc + resid_conc + 1e-6
-            specificity = target_conc / total_stain      # colour purity of target
-
-            # CANDIDATE = "this pixel IS the chromogen colour, not background/debris".
-            # Deliberately NOT gated on darkness (total OD): the whole point is that a
-            # dark grey/blue background — even one DARKER than the stain — carries
-            # little chromogen concentration, so it is excluded by colour, not by
-            # intensity. This is what lets ImageSL separate stain from a darker bg.
-            # Colour test: the pixel must sit close to THIS slide's own measured
-            # chromogen hue. On a slide whose chromogen is not DAB, the reference
-            # window is applied on top (below) so it cannot be counted as DAB.
-            hue_ok = _hue_dist(hue, target_hue) <= _HUE_TOL_DEG
-            # The reference band is a check on the SLIDE's chromogen, not on each
-            # pixel — `_estimate_basis` has already used it to decide
-            # `chromogen_in_band`. Re-applying it per pixel on a slide whose
-            # chromogen IS confirmed DAB only shaves the densest stain: hue gets
-            # numerically unstable as a pixel approaches black, so the darkest DAB
-            # reads a few degrees redder and falls just outside the window (here,
-            # 9.3% of unmistakable dark DAB, sitting at hue 2-10 deg against a
-            # lower edge of 10). Those pixels are already held to the +-tolerance
-            # around this slide's own measured chromogen. When the chromogen is
-            # NOT in band the gate stays, so a red / magenta chromogen still
-            # measures at or near zero instead of being counted as DAB.
-            if not chromogen_in_band:
-                band = _hue_band_for(target_hue, method)
-                if band is not None:
-                    hue_ok &= _in_hue_band(hue, band)
-            candidate = (core & hue_ok & (sat >= sat_gate)
-                         & (specificity >= _SPEC_MIN) & (target_conc > counter_conc)
-                         & (target_conc >= _OD_ABS_FLOOR * 0.5))  # tiny floor kills noise
-
-            # Score = normalised chromogen concentration within candidates. Pure
-            # concentration (not weighted by darkness) so the auto threshold
-            # reproduces the validated behaviour and the slider is linear.
-            raw = np.clip(target_conc / SCORE_FULL, 0.0, 1.0)
-            score = np.where(candidate, raw, 0.0).astype(np.float32)
-            auto_norm = float(np.clip((conc_gate / SCORE_FULL), 0.02, 0.98))
-        # Manual override (0..1) beats the auto threshold when supplied.
-        thr_norm = auto_norm if score_threshold is None else float(np.clip(score_threshold, 0.0, 1.0))
-        thr_norm *= float(threshold_scale)
-        conc_threshold = thr_norm * SCORE_FULL
-
-        positive = score >= max(thr_norm, 1e-4)
-        if positive.any():
-            positive = _remove_small(positive, min_px)
-        if not candidate.any():
-            notes.append("No specific target staining detected above background.")
+    built = regions_mod.build(regions, h, w, detect.N_LEVELS)
+    positive, tissue_mask = regions_mod.apply(
+        det.level_map, tissue_mask, det.level, built, detect.N_LEVELS)
+    if built["count"]:
+        tissue_pixels = int(tissue_mask.sum())
+        notes.append(f"{built['count']} manual region(s) applied.")
 
     if not valid:
+        positive = np.zeros((h, w), dtype=bool)
         notes.append(skip_reason or "Skipped: not a stained slide.")
+
+    object_count, object_areas = _object_summary(positive)
 
     positive_pixels = int(positive.sum())
     positive_fraction = (positive_pixels / tissue_pixels) if tissue_pixels else 0.0
@@ -1085,7 +1015,7 @@ def analyze(
         positive_fraction=round(positive_fraction, 6),
         positive_percent=round(positive_fraction * 100.0, 3),
         mean_positive_intensity=round(mean_pos, 4),
-        threshold=round(float(conc_threshold), 4),
+        threshold=round(float(det.levels[det.level]), 4),
         stains=stains,
         target_index=int(tgt_idx),
         method=method,
@@ -1105,9 +1035,17 @@ def analyze(
         stain_b_hex=_hex(b_rgb),
         stain_a_label=counter_label,
         stain_b_label=target_label,
-        score_auto_threshold=round(auto_norm, 4),
-        score_threshold=round(float(auto_norm if score_threshold is None else np.clip(score_threshold, 0, 1)), 4),
-        score_full=SCORE_FULL,
+        level=int(det.level),
+        auto_level=int(det.auto_level),
+        level_count=int(detect.N_LEVELS),
+        detection_bar=round(float(det.bar), 4),
+        detection_floor=round(float(det.floor), 4),
+        texture_sigma=round(float(det.sigma), 5),
+        separability=round(float(det.separability), 3),
+        objects=int(object_count),
+        median_object_px=int(np.median(object_areas)) if len(object_areas) else 0,
+        mean_object_px=round(float(np.mean(object_areas)), 1) if len(object_areas) else 0.0,
+        region_count=int(built["count"]),
         chromogen=chromogen,
         compartment=compartment,
         marker=marker,
@@ -1117,15 +1055,30 @@ def analyze(
         "conc": conc,
         "tissue_mask": tissue_mask,
         "positive": positive,
-        "score": score,
-        "candidate": candidate,
+        "level_map": det.level_map,
+        "excess": det.excess,
+        "brownness": det.brownness,
+        "sigma": det.sigma,
         "stain_matrix": stain_matrix,
         "counter_index": counter_idx,
         "target_index": tgt_idx,
-        "min_px": min_px,
         "od": od,
     }
     return result, maps
+
+
+def _object_summary(positive: np.ndarray) -> tuple[int, np.ndarray]:
+    """How many separate stained structures were found, and how big each is.
+
+    Reported alongside the percentage because two slides can share a positive
+    area and mean completely different things: one large plaque is not the same
+    finding as two hundred puncta."""
+    if not positive.any():
+        return 0, np.array([], dtype=np.int64)
+    lbl = _label(positive, connectivity=2)
+    counts = np.bincount(lbl.ravel())
+    areas = counts[1:] if counts.size > 1 else np.array([], dtype=np.int64)
+    return int(areas.size), areas
 
 
 def _binary_erode(mask: np.ndarray, radius: int) -> np.ndarray:
@@ -1384,21 +1337,17 @@ def mask_data_uri(mask: np.ndarray) -> str:
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
 
 
-def score_data_uri(score: np.ndarray) -> str:
-    """Encode the 0..1 stainness score as an 8-bit grayscale PNG (value = score*255).
-    The browser reads this once and re-thresholds it live — no server round-trip —
-    so dragging the threshold slider updates the overlay, %, and pixel counts
-    instantly."""
-    arr = np.clip(np.asarray(score) * 255.0, 0, 255).astype(np.uint8)
+def level_data_uri(level_map: np.ndarray) -> str:
+    """Encode the detector's LEVEL MAP as an 8-bit grayscale PNG.
+
+    Each pixel holds the first sensitivity level at which it becomes positive
+    (255 = never). One image therefore carries the complete family of results,
+    so the browser reproduces the server's object-based decision at any
+    sensitivity — and with any per-region offset from the manual tools — by a
+    single comparison, with no round-trip and no possibility of the picture and
+    the numbers disagreeing.
+    """
+    arr = np.asarray(level_map, dtype=np.uint8)
     buf = io.BytesIO()
     Image.fromarray(arr, "L").save(buf, format="PNG", optimize=True)
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
-
-
-def positive_from_score(score: np.ndarray, threshold_norm: float, min_px: int = _MIN_OBJECT_PX) -> np.ndarray:
-    """Boolean positive mask = score ≥ threshold (0..1), de-speckled. Mirrors what
-    the browser does live, for server-side downloads/exports at a chosen threshold."""
-    pos = np.asarray(score) >= max(float(threshold_norm), 1e-4)
-    if pos.any():
-        pos = _remove_small(pos, int(min_px))
-    return pos

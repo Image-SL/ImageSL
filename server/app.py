@@ -34,6 +34,7 @@ from PIL import Image
 import numpy as np
 
 from ihc import engine
+from ihc import regions as region_tools
 from ihc import stains as stain_registry
 
 # --------------------------------------------------------------------------- #
@@ -177,10 +178,10 @@ def _require_key(x_imagesl_key: Optional[str]) -> None:
 def _default_params() -> dict:
     return {
         "background_threshold": engine.BACKGROUND_OD_THRESHOLD,
-        "stain_strictness": "strong",
         "stain_method": "auto",
         "stain_key": None,          # selection mode: chosen antibody key (or None=auto)
-        "score_threshold": None,    # manual intensity threshold 0..1 (None=auto)
+        "level": None,              # sensitivity level index (None = the slide's own)
+        "regions": [],              # manual focus / ignore / local-sensitivity shapes
         # The detection overlay is a fixed neon green — there is nothing to configure.
         "stainA_hex": None,         # None → stain's natural colour
         "stainB_hex": None,
@@ -189,15 +190,50 @@ def _default_params() -> dict:
 
 def _analyze_kwargs(p: dict) -> dict:
     """Common engine.analyze kwargs derived from stored params (used everywhere we
-    (re)run analysis, so the chosen marker + threshold are always honoured)."""
-    st = p.get("score_threshold")
+    (re)run analysis, so the chosen marker, sensitivity and manual regions are
+    always honoured — screen, downloads, CSV and ZIP alike)."""
+    lv = p.get("level")
     return {
         "background_threshold": p.get("background_threshold", engine.BACKGROUND_OD_THRESHOLD),
-        "stain_strictness": p.get("stain_strictness", "strong"),
         "stain_method": p.get("stain_method", "auto"),
         "stain_choice": stain_registry.lookup(p.get("stain_key")),
-        "score_threshold": (float(st) if st is not None else None),
+        "level": (int(lv) if lv is not None else None),
+        "regions": p.get("regions") or None,
     }
+
+
+def _clean_regions(raw) -> list:
+    """Validate region shapes coming off the wire. Coordinates are normalised
+    0..1, so a region drawn once stays put at any resolution or export size."""
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for r in raw[:64]:
+        if not isinstance(r, dict):
+            continue
+        mode = str(r.get("mode", "")).lower()
+        if mode not in region_tools.MODES:
+            continue
+        pts = r.get("points")
+        if not isinstance(pts, list) or not pts:
+            continue
+        clean_pts = []
+        for p in pts[:4096]:
+            try:
+                clean_pts.append([min(1.0, max(0.0, float(p[0]))),
+                                  min(1.0, max(0.0, float(p[1])))])
+            except (TypeError, ValueError, IndexError):
+                continue
+        if not clean_pts:
+            continue
+        out.append({
+            "mode": mode,
+            "kind": str(r.get("kind", "rect")).lower()[:12],
+            "points": clean_pts,
+            "delta": int(max(-64, min(64, int(r.get("delta", 0) or 0)))),
+            "radius": float(min(0.5, max(0.001, float(r.get("radius", 0.02) or 0.02)))),
+        })
+    return out
 
 
 def _hex_to_rgb(h: Optional[str]) -> Optional[tuple[int, int, int]]:
@@ -225,30 +261,39 @@ def _stain_indices(maps: dict) -> tuple[int, int]:
 
 def _render_images(entry: dict) -> None:
     """The UI shows exactly three panels — Original, Overlay and Stain only — and
-    the last two are composited IN THE BROWSER from `original` + `score` (a
-    grayscale stainness map) so the threshold slider re-thresholds both live with
-    no server round-trip. So those two images are the only ones sent."""
+    the last two are composited IN THE BROWSER from `original` + `level` (the
+    detector's level map) so the sensitivity control and the manual region tools
+    update both live with no server round-trip. Those two images are the only
+    ones sent."""
     rgb, p = entry["rgb"], entry["params"]
     maps = entry["maps"]
-    # After caching we drop the heavy score map; recompute on demand.
-    if "score" not in maps:
+    # After caching we drop the heavy maps; recompute on demand.
+    if "level_map" not in maps:
         _, maps = engine.analyze(rgb, entry.get("source_size", (rgb.shape[1], rgb.shape[0])),
                                  **_analyze_kwargs(p))
         entry["maps"] = maps
     entry["images"] = {
         "original": entry["images"].get("original") if entry.get("images") else engine.to_data_uri(rgb, "JPEG"),
-        "score": engine.score_data_uri(maps["score"]),
+        "level": engine.level_data_uri(maps["level_map"]),
     }
 
 
 def _rerender(entry: dict, **updates) -> dict:
-    """Apply a threshold update. The overlay is composited live in the browser (in
-    the one fixed neon green), so the server only has to recompute the exact metrics at
-    the new threshold, keeping CSV and exports in step with the screen."""
+    """Apply a sensitivity / region update.
+
+    The browser has already redrawn itself from the level map, so the server's
+    job here is to recompute the exact metrics under the same rule — keeping the
+    numbers, the CSV and every export in step with what is on screen."""
     p = entry["params"]
-    if "score_threshold" in updates and updates["score_threshold"] is not None:
-        st = updates["score_threshold"]
-        p["score_threshold"] = None if st in ("", "auto") else float(st)
+    touched = False
+    if "level" in updates and updates["level"] is not None:
+        lv = updates["level"]
+        p["level"] = None if lv in ("", "auto") else int(lv)
+        touched = True
+    if "regions" in updates and updates["regions"] is not None:
+        p["regions"] = _clean_regions(updates["regions"])
+        touched = True
+    if touched:
         result, maps = engine.analyze(entry["rgb"], entry["source_size"], **_analyze_kwargs(p))
         entry["result"], entry["maps"] = result, maps
         _render_images(entry)
@@ -268,10 +313,11 @@ def _persist(analysis_id: str, entry: dict) -> None:
     """Save an entry back to cache (keeping it lean) with its CSV row sidecar, so
     later recalcs/appearance edits are reflected in downloads and exports.
 
-    Drops the two biggest arrays from the cached copy — the optical-density and
-    concentration maps — so hundreds of slides can be held at once. They are only
-    needed to render Stain A/B, which is recomputed on demand at export time."""
-    for k in ("od", "conc", "score", "candidate"):
+    Drops the biggest arrays from the cached copy — the optical-density,
+    concentration and evidence maps — so hundreds of slides can be held at once.
+    They are only needed to render Stain A/B and are recomputed on demand at
+    export time."""
+    for k in ("od", "conc", "excess", "brownness"):
         entry["maps"].pop(k, None)
     _CACHE.put(analysis_id, entry, meta=_csv_row(entry))
 
@@ -369,10 +415,10 @@ def _render_type(entry: dict, image_type: str) -> np.ndarray:
     rgb, maps, p = entry["rgb"], entry["maps"], entry["params"]
 
     # Stain A/B and the overlay need the concentration/positive maps, which we drop
-    # from the cache to stay lean — recompute on demand (honours marker + threshold).
-    # Which cached array each variant actually needs. `_persist` drops the heavy
-    # concentration maps, so only ask for a re-analysis when the specific array
-    # this variant depends on is genuinely missing.
+    # from the cache to stay lean — recompute on demand (honours marker, sensitivity
+    # and manual regions). Which cached array each variant actually needs:
+    # `_persist` drops the heavy maps, so only ask for a re-analysis when the
+    # specific array this variant depends on is genuinely missing.
     _NEEDS = {
         "stainA": "conc", "stainB": "conc",
         "overlay": "positive", "comparison": "positive", "stainOnly": "positive",
@@ -421,25 +467,29 @@ def _tiff_bytes(arr: np.ndarray) -> bytes:
     return buf.getvalue()
 
 
-def _apply_view(entry: dict, score_threshold: Optional[str]) -> None:
-    """Apply the caller's CURRENT on-screen threshold to this entry before
-    rendering, so a download always matches exactly what's shown — no dependence
-    on a debounced background persist. (The overlay colour is always neon green.)"""
+def _apply_view(entry: dict, level: Optional[str], regions=None) -> None:
+    """Apply the caller's CURRENT on-screen sensitivity and manual regions to
+    this entry before rendering, so a download always matches exactly what is
+    shown — no dependence on a debounced background persist. (The overlay colour
+    is always neon green.)"""
     p = entry["params"]
-    if score_threshold is not None and score_threshold != "":
+    if level is not None and level != "":
         try:
-            p["score_threshold"] = None if score_threshold == "auto" else float(score_threshold)
-            entry["maps"].pop("positive", None)  # force recompute at this threshold
+            p["level"] = None if level == "auto" else int(float(level))
+            entry["maps"].pop("positive", None)   # force recompute at this level
         except ValueError:
             pass
+    if regions is not None:
+        p["regions"] = _clean_regions(regions)
+        entry["maps"].pop("positive", None)
 
 
 @app.get("/api/download_tif")
-def api_download_tif(analysis_id: str, image_type: str, score_threshold: Optional[str] = None):
+def api_download_tif(analysis_id: str, image_type: str, level: Optional[str] = None):
     entry = _CACHE.get(analysis_id)
     if not entry:
         raise HTTPException(status_code=404, detail="Analysis expired")
-    _apply_view(entry, score_threshold)
+    _apply_view(entry, level)
 
     data = _tiff_bytes(_render_type(entry, image_type))
     stem = _safe_name(entry.get("filename", "image"))
@@ -457,7 +507,7 @@ async def api_appearance(request: Request, x_imagesl_key: Optional[str] = Header
     entry = _CACHE.get(body.get("analysis_id"))
     if not entry:
         raise HTTPException(status_code=404, detail="Analysis expired; re-run analysis.")
-    _rerender(entry, score_threshold=body.get("score_threshold"))
+    _rerender(entry, level=body.get("level"), regions=body.get("regions"))
     _persist(body.get("analysis_id"), entry)
     return JSONResponse(_public(entry))
 
@@ -475,7 +525,20 @@ _CSV_COLUMNS = [
     "tissue_pixels",
     "total_image_pixels",
     "positive_percent_of_image",
-    "intensity_threshold",
+    # --- what was detected, as structures ---------------------------------- #
+    "stained_objects",
+    "median_object_area_px",
+    "mean_object_area_px",
+    # --- how the operating point was reached ------------------------------- #
+    "detection_bar_excess_od",
+    "detection_floor_excess_od",
+    "tissue_texture_sigma_od",
+    "object_separability",
+    "staining_pattern",
+    "sensitivity_level",
+    "sensitivity_auto_level",
+    "sensitivity_levels",
+    "manual_regions",
     "mean_positive_intensity",
     "detection_confidence",
     "stain_family",
@@ -492,6 +555,7 @@ _CSV_COLUMNS = [
     "analysis_height_px",
     "source_width_px",
     "source_height_px",
+    "notes",
 ]
 
 
@@ -499,6 +563,7 @@ def _csv_row(entry: dict) -> dict:
     r = entry["result"]
     total_px = int(r.width) * int(r.height)
     pct_of_image = round((r.positive_pixels / total_px * 100.0), 3) if total_px else 0.0
+    sep = float(getattr(r, "separability", 0.0))
     return {
         "filename": entry.get("filename", "image"),
         "detected_stain": getattr(r, "stain_label", ""),
@@ -508,7 +573,21 @@ def _csv_row(entry: dict) -> dict:
         "tissue_pixels": r.tissue_pixels,
         "total_image_pixels": total_px,
         "positive_percent_of_image": pct_of_image,
-        "intensity_threshold": r.threshold,
+        "stained_objects": getattr(r, "objects", 0),
+        "median_object_area_px": getattr(r, "median_object_px", 0),
+        "mean_object_area_px": getattr(r, "mean_object_px", 0.0),
+        "detection_bar_excess_od": getattr(r, "detection_bar", 0.0),
+        "detection_floor_excess_od": getattr(r, "detection_floor", 0.0),
+        "tissue_texture_sigma_od": getattr(r, "texture_sigma", 0.0),
+        "object_separability": round(sep, 3),
+        # Focal = stained structures form a population clearly apart from the
+        # background. Diffuse = they do not, so where the boundary sits is a
+        # judgement and the percentage is only comparable within a batch.
+        "staining_pattern": "focal" if sep >= 0.60 else "diffuse",
+        "sensitivity_level": getattr(r, "level", 0),
+        "sensitivity_auto_level": getattr(r, "auto_level", 0),
+        "sensitivity_levels": getattr(r, "level_count", 0),
+        "manual_regions": getattr(r, "region_count", 0),
         "mean_positive_intensity": r.mean_positive_intensity,
         "detection_confidence": getattr(r, "confidence", 1.0),
         "stain_family": r.method,
@@ -524,6 +603,7 @@ def _csv_row(entry: dict) -> dict:
         "analysis_height_px": r.height,
         "source_width_px": r.source_width,
         "source_height_px": r.source_height,
+        "notes": " ".join(getattr(r, "notes", []) or []),
     }
 
 
@@ -583,7 +663,7 @@ class _ZipSink:
 def _zip_stream(analysis_ids, images, include_csv, overrides=None):
     """Generator that builds the ZIP incrementally, one image at a time. Only a
     single analysis entry is ever held in memory, so 40+ slides won't OOM.
-    `overrides` maps analysis_id → {score_threshold} so each slide's export
+    `overrides` maps analysis_id → {level, regions} so each slide's export
     matches its exact on-screen appearance."""
     overrides = overrides or {}
     sink = _ZipSink()
@@ -595,7 +675,7 @@ def _zip_stream(analysis_ids, images, include_csv, overrides=None):
         if not entry:
             continue
         ov = overrides.get(aid) or {}
-        _apply_view(entry, ov.get("score_threshold"))
+        _apply_view(entry, ov.get("level"), ov.get("regions"))
         stem = _safe_name(entry.get("filename", "image"))
         for image_type in images:
             name = f"{stem}_{image_type}.tif"

@@ -183,6 +183,7 @@
       <div class="cmp-viewport" style="--split:50%">
         <img class="cmp-base imgOriginal" alt="Original" draggable="false">
         <div class="cmp-front"><canvas class="cmpFront"></canvas></div>
+        <canvas class="cmpDraw" aria-hidden="true"></canvas>
         <span class="cmp-tag cmp-tag-l">Original</span>
         <span class="cmp-tag cmp-tag-r">Overlay</span>
         <div class="cmp-handle">
@@ -193,16 +194,41 @@
         </div>
       </div>
 
-      <!-- live detection-threshold slider — sits directly under the image so the
-           picture stays in view while it is dragged (re-thresholds in-browser) -->
+      <!-- Sensitivity. Not a brightness cut: it moves the bar a stained
+           structure's own peak has to clear, around the operating point this
+           slide's object population chose for itself. -->
       <div class="threshold-row">
         <span class="oc-label">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21v-7M4 10V3M12 21v-11M12 6V3M20 21v-5M20 12V3"/><circle cx="4" cy="12" r="2"/><circle cx="12" cy="8" r="2"/><circle cx="20" cy="14" r="2"/></svg>
-          Detection threshold
+          Sensitivity
         </span>
-        <input type="range" class="cThr" min="10" max="900" step="1" value="200" aria-label="Detection threshold">
+        <input type="range" class="cThr" min="0" max="24" step="1" value="12" aria-label="Detection sensitivity">
         <span class="thrVal">–</span>
-        <button class="thr-auto" title="Reset to the automatic threshold">Auto</button>
+        <button class="thr-auto" title="Back to the operating point this slide chose">Auto</button>
+      </div>
+
+      <!-- Manual region tools. Everything here is an instruction about WHERE to
+           measure, never an instruction to call something positive: a boosted
+           region still only admits chromogen-coloured structures. -->
+      <div class="tool-row">
+        <span class="oc-label">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h7v7H3zM14 14h7v7h-7zM14 3h7v7h-7z"/></svg>
+          Regions
+        </span>
+        <div class="tool-group">
+          <button class="tool is-on" data-tool="off" title="Stop drawing">Off</button>
+          <button class="tool" data-tool="focus" title="Measure only inside the regions you draw">Focus</button>
+          <button class="tool" data-tool="ignore" title="Cut a fold, pen mark or bubble out of the measurement entirely">Ignore</button>
+          <button class="tool" data-tool="boost" title="Catch fainter structures in this area only">More here</button>
+          <button class="tool" data-tool="damp" title="Be stricter in this area only">Less here</button>
+        </div>
+        <select class="tool-shape" aria-label="Region shape">
+          <option value="rect">Rectangle</option>
+          <option value="lasso">Freehand</option>
+        </select>
+        <span class="rcount">No regions</span>
+        <button class="tool-undo" title="Remove the last region">Undo</button>
+        <button class="tool-clear" title="Remove every region">Clear</button>
       </div>
     </div>
 
@@ -210,9 +236,10 @@
     <div class="metrics">
       <div class="metric hero-metric"><b class="mPercent">–</b><span>Positive area (of tissue)</span></div>
       <div class="metric"><b class="mPositive">–</b><span>Positive pixels</span></div>
+      <div class="metric"><b class="mObjects">–</b><span>Stained structures</span></div>
       <div class="metric"><b class="mTissue">–</b><span>Tissue pixels</span></div>
-      <div class="metric"><b class="mThreshold">–</b><span>Intensity threshold</span></div>
     </div>
+    <p class="card-note hidden"></p>
 
     <!-- variant thumbnails — exactly three: Original, Overlay, Stain only -->
     <div class="variants">
