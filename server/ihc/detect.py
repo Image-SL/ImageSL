@@ -205,8 +205,90 @@ OBJ_BROWN_MEAN   = 0.14   # the object must be brown ON AVERAGE — what separat
 # (5th percentile +0.138 and +0.058) — nothing like neutral debris, which sits
 # at 0.00 on both. The bars below sit between the two with margin on each side,
 # and stay clear of every other chromogen rather than merely of grey.
-OBJ_RAW_BROWN    = 0.12   # ... object mean, on the material's own absorbance
-OBJ_RAW_WARM     = 0.06   # ... together with raw warmth (R−B)/(R+B) of the pixels
+# These bars are deliberately STRICT, and much stricter than the excess-colour
+# ones, because an object only reaches this test after the excess reading has
+# already declined it. Passing on the raw reading alone is therefore an override,
+# and an override needs strong evidence rather than the benefit of the doubt.
+#
+# Set loosely (0.12 / 0.06) they admitted intraluminal granular debris — the
+# olive-grey casts of pigment and cells that sit inside vessel lumina — which is
+# dense, so it passes every density test, and sits near enough to neutral that a
+# permissive colour bar cannot see it. Every one of the largest objects the raw
+# path admitted at those bars was debris; not one was a duct.
+#
+# Measured over 24 such objects confirmed by eye against 79 unmistakable DAB
+# ductules on the same sections:
+#
+#                    luminal debris         DAB ductules
+#     raw brownness  0.129 - 0.206          0.343 - 0.416
+#     raw warmth     0.087 - 0.150          0.263 - 0.325
+#     saturation     0.160 - 0.259          0.412 - 0.485
+#
+# The three bars sit in the gap on each reading, and an object must clear ALL of
+# them. Saturation is included because it is the reading on which the two are
+# furthest apart, and because it asks the one question the others do not: does
+# this material carry colour at all, or is it merely dark?
+OBJ_RAW_BROWN    = 0.26   # ... object mean, on the material's own absorbance
+OBJ_RAW_WARM     = 0.20   # ... together with raw warmth (R−B)/(R+B) of the pixels
+OBJ_RAW_SAT      = 0.30   # ... and it must actually be coloured, not just dark
+
+# --------------------------------------------------------------------------- #
+# Intraluminal debris
+# --------------------------------------------------------------------------- #
+# Granular casts of pigment, bile and cells sitting inside a vessel lumen. They
+# are the hardest false positive on these sections and they defeat every test
+# built so far, for a specific reason: they are DENSE, so every absorbance and
+# prominence test passes them, and they sit against a pale lumen, so their excess
+# over the local background is large and reads faintly brown. A gate on any one
+# reading either lets them through or takes real staining with it.
+#
+# What they are not is *coloured like DAB*. Two readings say so together, and
+# only together:
+#
+#                     luminal debris    DAB ductules   all detected objects
+#     saturation      0.16 - 0.26       0.41 - 0.49    1st pct 0.220
+#     hue (deg)       28.8 - 70.7       15.7 - 28.9    median 21.1, 95th 34.8
+#
+# So an object is refused when it is BOTH washed-out AND olive rather than
+# brown. Either alone would be wrong: genuinely faint stain is pale but stays
+# brown, and a dense chromogen core drifts in hue but stays saturated. Requiring
+# both costs 4.7% of the detected area across the 46 sections and removes every
+# one of the debris bodies confirmed by eye.
+#
+# Hue is taken as a saturation-weighted circular mean, so the near-neutral pixels
+# inside a granule cloud — whose hue is arbitrary — do not vote on the answer.
+#
+# The two conditions are ANDed, and that structure matters. Adding them into one
+# graded score was tried and is much worse: a pale but unmistakably brown
+# structure (saturation 0.24, hue 22 deg) then has its low saturation counted
+# against it even though its hue says exactly what it is, and the suite showed
+# the cost immediately — up to 44% of the obvious stain on a section discarded.
+# Under an AND, hue alone acquits it, which is the right answer.
+#
+# The trade is that an object near either bar can flip under a re-encode. That
+# is bounded and acceptable here — the conditions are near-orthogonal, so an
+# object has to sit on BOTH boundaries at once to be genuinely marginal — and it
+# is measured by the compression check in the backtest rather than assumed.
+#
+# Both readings are taken on the white-point-normalised, chroma-smoothed image
+# (`norm_sat` / `norm_hue` below), NOT on raw HSV. Raw HSV is not a property of
+# the material: it moves with the lamp's colour temperature and with JPEG chroma
+# subsampling. Measured across 2 200 objects, a threshold on raw hue moved by up
+# to 9.3 deg under a warm lamp or a re-encode, against a population boundary
+# with barely a degree of margin — so objects flipped wholesale and two sections
+# moved 65-88%. The normalised reading halves that drift, and unlike the raw one
+# it means the same thing on two scanners.
+#
+# The bars are then set CONSERVATIVELY rather than at the point of best
+# separation. The two populations overlap — there is no cut that removes every
+# debris body and keeps every faint structure — so the choice is which error to
+# make. Refusing only material that is unambiguously washed-out AND olive
+# removes the large luminal casts that prompted this while leaving borderline
+# objects counted, which is the right way round: an over-count is visible and
+# can be excluded with an Ignore region, whereas silently deleting faint
+# staining is not visible at all.
+DEBRIS_SAT_MAX   = 0.22
+DEBRIS_HUE_MIN   = 30.0
 SEED_RAW_BROWN   = 0.14   # a dense pixel may seed on the raw reading alone ...
 SEED_RAW_BOG     = 0.04   # ... if its channel ORDER is the chromogen's, not red's
 # "Dense" is a statement about this slide, not an absolute brightness: material
@@ -363,10 +445,23 @@ MIN_AREA_FRAC    = 6e-6   # ≈5 px at 1024×768; below this it is sensor noise
 
 # Sensitivity ladder — pure relative scaling of the detection bar around the
 # automatic operating point, so the slider means the same thing on every slide.
-N_LEVELS         = 25
-AUTO_LEVEL       = 12     # centre of the ladder = the automatic bar
-LADDER_STRICT    = 4.0    # level 0  = 4× stricter than auto
-LADDER_LOOSE     = 0.25   # level 24 = 4× more permissive than auto
+#
+# 201 steps, not 25. The span is unchanged (4x stricter to 4x more permissive);
+# what changes is the resolution of the control. At 25 steps each notch multiplied
+# the detection bar by 1.12, which on a slide with a few hundred structures turns
+# a large group of them on at once — the slider behaved as a series of jumps
+# rather than a dial, and there was no position between "too little" and "too
+# much". At 201 steps a notch is a factor of 1.014, fine enough that dragging
+# eases structures in and out continuously.
+#
+# The ceiling is the level map itself: it is 8-bit with 255 reserved for "never
+# positive", so up to 255 levels can be carried. Nothing else in the engine or
+# the browser needs to change — both apply the map by comparison, and the ladder
+# is generated, not enumerated.
+N_LEVELS         = 201
+AUTO_LEVEL       = 100    # centre of the ladder = the automatic bar
+LADDER_STRICT    = 4.0    # level 0   = 4× stricter than auto
+LADDER_LOOSE     = 0.25   # level 200 = 4× more permissive than auto
 
 
 @dataclass
@@ -482,6 +577,42 @@ def background_od_field(od: np.ndarray, tissue: np.ndarray, win: int) -> tuple[n
 
 def _unit(v: np.ndarray) -> np.ndarray:
     return v / (np.linalg.norm(v) or 1.0)
+
+
+def chroma_readings(od: np.ndarray, rel_scale: float = 1.0
+                    ) -> tuple[np.ndarray, np.ndarray]:
+    """Saturation and hue of the MATERIAL: white-point-normalised, chroma-smoothed.
+
+    The single definition used both by the detector and by the regression suite,
+    so the two cannot end up asking different questions of the same pixels. See
+    DEBRIS_SAT_MAX for why neither the normalisation nor the smoothing is
+    optional.
+
+    `od` is optical density against the slide's own white point; `rel_scale` is
+    the working resolution relative to SMOOTH_REF_EDGE.
+    """
+    t = np.power(10.0, -np.clip(od, 0.0, None))
+    sigma = CHROMA_SMOOTH * rel_scale
+    if sigma > 0.15 and _gaussian is not None:
+        t = _gaussian(t, (sigma, sigma, 0), mode="nearest")
+    mx = t.max(axis=2)
+    mn = t.min(axis=2)
+    sat = ((mx - mn) / np.maximum(mx, 1e-6)).astype(np.float32)
+    r, g, b = t[..., 0], t[..., 1], t[..., 2]
+    d = np.maximum(mx - mn, 1e-6)
+    h = np.where(mx == r, ((g - b) / d) % 6.0,
+                 np.where(mx == g, (b - r) / d + 2.0, (r - g) / d + 4.0))
+    return sat, ((h * 60.0) % 360.0).astype(np.float32)
+
+
+def looks_like_debris(sat, hue):
+    """Washed-out AND olive at once — intraluminal granular casts, not chromogen.
+
+    Takes either arrays (pixelwise) or per-object means. Hue is compared as a
+    signed circular distance so a chromogen just below 0 deg is not read as
+    350 deg away."""
+    dhue = (np.asarray(hue) - DEBRIS_HUE_MIN + 180.0) % 360.0 - 180.0
+    return (np.asarray(sat) < DEBRIS_SAT_MAX) & (dhue > 0.0)
 
 
 def excess_colour(od_exc: np.ndarray, target_od: Optional[np.ndarray] = None
@@ -645,7 +776,9 @@ def _sharpness(signal: np.ndarray, flat_lbl: np.ndarray, inside: np.ndarray,
 def _object_stats(lbl: np.ndarray, n: int, signal: np.ndarray,
                   brown: np.ndarray, seed: np.ndarray,
                   raw_brown: Optional[np.ndarray] = None,
-                  raw_warm: Optional[np.ndarray] = None) -> dict:
+                  raw_warm: Optional[np.ndarray] = None,
+                  raw_sat: Optional[np.ndarray] = None,
+                  raw_hue: Optional[np.ndarray] = None) -> dict:
     """Per-object measurements, all from bincounts over the label image."""
     flat = lbl.ravel()
     area = np.bincount(flat, minlength=n + 1).astype(np.int64)
@@ -662,6 +795,19 @@ def _object_stats(lbl: np.ndarray, n: int, signal: np.ndarray,
            "seed_frac": seeds / np.maximum(area, 1), "brown_mean": _mean(brown)}
     out["raw_brown_mean"] = _mean(raw_brown) if raw_brown is not None else np.full(n + 1, -1.0)
     out["raw_warm_mean"] = _mean(raw_warm) if raw_warm is not None else np.full(n + 1, -1.0)
+    out["raw_sat_mean"] = _mean(raw_sat) if raw_sat is not None else np.full(n + 1, -1.0)
+
+    # Hue as a SATURATION-WEIGHTED circular mean. Weighted, because a washed-out
+    # pixel's hue is arbitrary and would otherwise vote as loudly as a coloured
+    # one; circular, because hue wraps and an ordinary mean of 359 and 1 is 180.
+    if raw_hue is not None and raw_sat is not None:
+        rad = np.deg2rad(raw_hue.astype(np.float64))
+        w = raw_sat.astype(np.float64)
+        sx = np.bincount(flat, weights=(np.cos(rad) * w).ravel(), minlength=n + 1)
+        sy = np.bincount(flat, weights=(np.sin(rad) * w).ravel(), minlength=n + 1)
+        out["hue_mean"] = np.rad2deg(np.arctan2(sy, sx)) % 360.0
+    else:
+        out["hue_mean"] = np.zeros(n + 1)
     return out
 
 
@@ -674,6 +820,7 @@ def detect(
     hue_band_mask: Optional[np.ndarray] = None,
     target_od: Optional[np.ndarray] = None,
     saturation: Optional[np.ndarray] = None,
+    hue: Optional[np.ndarray] = None,
 ) -> Detection:
     """Area-based chromogen detection.
 
@@ -748,6 +895,32 @@ def detect(
     # dark it is; dense chromogen stays clearly positive.
     _tr = np.power(10.0, -od_pos)
     raw_warm = ((_tr[..., 0] - _tr[..., 2]) / (_tr[..., 0] + _tr[..., 2] + 1e-6)).astype(np.float32)
+
+    # ---- chroma, measured properly -------------------------------------- #
+    # Saturation and hue of the material, taken from the transmittance relative
+    # to the slide's OWN white point and low-passed at the scale chroma lives at.
+    #
+    # Both corrections are needed and both were learned the hard way. Read off
+    # the raw RGB instead, these are not properties of the material at all: a
+    # warm lamp shifts every channel ratio on the slide, so a 6% colour-temperature
+    # change moved one section's measurement by 88%. And chroma is the first
+    # thing every image codec throws away — JPEG stores it at half resolution —
+    # so an object sitting near a colour threshold flipped wholesale on a
+    # re-encode, moving another section by 66%. Dividing by the white point fixes
+    # the first; smoothing at CHROMA_SMOOTH fixes the second, exactly as the
+    # excess-colour reading above already does.
+    _chroma_sigma = CHROMA_SMOOTH * rel_scale
+    _tc = _tr
+    if _chroma_sigma > 0.15 and _gaussian is not None:
+        _tc = _gaussian(_tr, (_chroma_sigma, _chroma_sigma, 0), mode="nearest")
+    _cmx = _tc.max(axis=2)
+    _cmn = _tc.min(axis=2)
+    norm_sat = ((_cmx - _cmn) / np.maximum(_cmx, 1e-6)).astype(np.float32)
+    _r, _g, _b = _tc[..., 0], _tc[..., 1], _tc[..., 2]
+    _d = np.maximum(_cmx - _cmn, 1e-6)
+    _h = np.where(_cmx == _r, ((_g - _b) / _d) % 6.0,
+                  np.where(_cmx == _g, (_b - _r) / _d + 2.0, (_r - _g) / _d + 4.0))
+    norm_hue = ((_h * 60.0) % 360.0).astype(np.float32)
 
     # Which chromogen this excess belongs to — see BLUE_OVER_GREEN_MIN.
     _mag = np.linalg.norm(od_exc, axis=2) + 1e-6
@@ -838,18 +1011,31 @@ def detect(
     single_population = False
 
     if n:
-        st = _object_stats(lbl, n, signal, brown, seed_px, raw_brown, raw_warm)
+        st = _object_stats(lbl, n, signal, brown, seed_px, raw_brown, raw_warm,
+                           norm_sat, norm_hue)
         # Either reading may vouch for the object: the excess one, which sees
         # dilute staining a raw reading would miss against warm tissue; or the
         # raw one, which still works when the structure is dense enough to have
-        # cancelled its own excess. Neutral debris fails both — it sits at 0.00
-        # on the raw readings however dark it is — and every object still has to
-        # carry genuine chromogen-coloured seed pixels below.
+        # cancelled its own excess — but only on strong, three-way agreement,
+        # because that path is an override of a decision already taken. See the
+        # measured separation beside OBJ_RAW_BROWN.
         chromogen_coloured = ((st["brown_mean"] >= OBJ_BROWN_MEAN)
                               | ((st["raw_brown_mean"] >= OBJ_RAW_BROWN)
-                                 & (st["raw_warm_mean"] >= OBJ_RAW_WARM)))
+                                 & (st["raw_warm_mean"] >= OBJ_RAW_WARM)
+                                 & (st["raw_sat_mean"] >= OBJ_RAW_SAT)))
+        # Intraluminal granular debris — washed-out AND olive at once. See
+        # DEBRIS_SAT_MAX. Applied to every object, not just those taking the raw
+        # path, because this material is dense enough to satisfy the excess
+        # reading too when it sits against a pale lumen.
+        # Hue is circular: measure it as a signed distance from the reference so
+        # a chromogen sitting just below 0 deg reads as a few degrees away, not
+        # 350.
+        dhue = (st["hue_mean"] - DEBRIS_HUE_MIN + 180.0) % 360.0 - 180.0
+        debris_like = (st["raw_sat_mean"] < DEBRIS_SAT_MAX) & (dhue > 0.0)
+
         eligible = ((st["area"] >= min_area_px) & (st["seeds"] >= OBJ_SEED_MIN_PX)
-                    & (st["seed_frac"] >= OBJ_SEED_FRAC) & chromogen_coloured)
+                    & (st["seed_frac"] >= OBJ_SEED_FRAC) & chromogen_coloured
+                    & ~debris_like)
         eligible[0] = False
 
         # The detection bar comes from the population of object peaks, not from
@@ -931,7 +1117,11 @@ def detect(
     sel = int(np.clip(AUTO_LEVEL if level is None else level, 0, N_LEVELS - 1))
     positive = level_map <= sel
 
-    areas = [int((level_map <= i).sum()) for i in range(N_LEVELS)]
+    # Cumulative histogram rather than one full-image pass per level — the same
+    # numbers, but O(frame) instead of O(frame x levels), which is what makes a
+    # 201-step ladder cost no more than the 25-step one did.
+    _hist = np.bincount(level_map.ravel(), minlength=256)
+    areas = [int(v) for v in np.cumsum(_hist[:N_LEVELS])]
     olbl = _label(positive, connectivity=2)
     obj_areas = np.bincount(olbl.ravel())[1:] if olbl.max() else np.array([], dtype=np.int64)
 

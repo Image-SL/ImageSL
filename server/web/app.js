@@ -10,6 +10,11 @@ const OVERLAY_ALPHA = 0.5;
    engine.OVERLAY_GREEN. */
 const OVERLAY_RGB = [57, 255, 20];
 
+/* Ends of the sensitivity ladder, in step with detect.LADDER_STRICT / _LOOSE.
+   Used only to label the slider with the multiplier it applies to the detection
+   bar; the detection itself is driven entirely by the level map. */
+const LADDER_STRICT = 4.0, LADDER_LOOSE = 0.25;
+
 function headers(json) { const h = {}; if (json) h["Content-Type"] = "application/json"; return h; }
 
 function safeStem(name) {
@@ -46,6 +51,7 @@ async function streamedDownload(url, body, filename, label, estBytes) {
       : { method: "POST", headers: headers(true), body: JSON.stringify(body) };
     const res = await fetch(url, opts);
     if (!res.ok) { let m = res.statusText; try { m = (await res.json()).detail || m; } catch (e) {} throw new Error(m); }
+    const missing = parseInt(res.headers.get("X-ImageSL-Missing") || "0", 10) || 0;
     if (!res.body || !res.body.getReader) { await downloadBlob(await res.blob(), filename); t.done("Saved " + filename); return; }
     const reader = res.body.getReader();
     const chunks = []; let received = 0;
@@ -55,8 +61,12 @@ async function streamedDownload(url, body, filename, label, estBytes) {
       chunks.push(value); received += value.length;
       t.set(estBytes ? (received / estBytes) * 0.92 : 0.4, `${label} · ${(received / 1048576).toFixed(1)} MB`);
     }
+    // An archive with nothing in it is a failure, not a download — say so rather
+    // than handing over an empty folder that looks like it worked.
+    if (!received) throw new Error("the server returned an empty file");
     await downloadBlob(new Blob(chunks), filename);
-    t.done("Saved " + filename);
+    if (missing) t.fail(`Saved ${filename} — but ${missing} slide${missing === 1 ? "" : "s"} had expired and ${missing === 1 ? "is" : "are"} not included`);
+    else t.done("Saved " + filename);
   } catch (e) { t.fail("Export failed: " + e.message); }
 }
 
@@ -510,7 +520,7 @@ function renderSummary() {
 function currentLevel(data) {
   const p = data.params || {}, r = data.result || {};
   const lv = (p.level != null) ? p.level : r.level;
-  return (lv == null ? (r.auto_level == null ? 12 : r.auto_level) : lv);
+  return (lv == null ? (r.auto_level == null ? 100 : r.auto_level) : lv);
 }
 
 function createCard(data) {
@@ -522,7 +532,7 @@ function createCard(data) {
   let current = data;
   const entry = analyses.find((a) => a.id === analysisId);
   const st = { origImg: null, ld: null };
-  const maxLevel = ((data.result && data.result.level_count) || 25) - 1;
+  const maxLevel = ((data.result && data.result.level_count) || 201) - 1;
   let level = currentLevel(data);
   let regions = ((data.params && data.params.regions) || []).slice();
 
@@ -550,23 +560,52 @@ function createCard(data) {
   /* The live readout uses the SAME two counts the server divides — positive
      pixels over the tissue actually being measured — so drawing or removing a
      region moves the percentage to the value the server will report, and the
-     CSV, for those exact regions. */
+     CSV, for those exact regions.
+
+     A region moves BOTH counts, which is why the percentage can go either way
+     when you ignore something: cut out an area with little staining in it and
+     the denominator falls faster than the numerator, so the percentage rises;
+     cut out a heavily stained area and it falls. Both are correct — the figure
+     is positive area over the tissue actually measured — but it is only
+     obviously correct if the denominator is on screen, so it is spelled out
+     whenever regions are in play. */
   function liveMetrics() {
     if (!st.ld) return;
     const pos = st.ld.count;
     const measured = st.ld.measured;
+    const whole = st.ld.tissueCount;
     const pct = measured ? (pos / measured * 100) : 0;
     q(".mPercent").textContent = pct.toFixed(2) + "%";
     q(".mPositive").textContent = pos.toLocaleString();
     q(".mTissue").textContent = measured.toLocaleString();
+
+    const scope = q(".mScope");
+    if (scope) {
+      if (regions.length && whole && measured !== whole) {
+        scope.textContent = `measured over ${(measured / whole * 100).toFixed(1)}% of the `
+          + `slide's tissue (${measured.toLocaleString()} of ${whole.toLocaleString()} px)`;
+        scope.classList.remove("hidden");
+      } else {
+        scope.classList.add("hidden");
+      }
+    }
     [".mPercent", ".mPositive", ".mTissue"].forEach((s) => { const b = q(s); b.classList.remove("flash"); void b.offsetWidth; b.classList.add("flash"); });
   }
 
+  /* The ladder is a multiplicative scaling of the bar a structure's peak has to
+     clear, so the honest label is that multiplier — not a step index, which now
+     runs to 200 and means nothing to a reader. ×0.72 says "counting structures
+     down to 72% of the automatic bar", and it is the same statement on every
+     slide. */
   function levelLabel() {
     const r = current.result || {};
-    const auto = (r.auto_level == null ? 12 : r.auto_level);
-    const d = level - auto;
-    q(".thrVal").textContent = d === 0 ? "Auto" : (d > 0 ? `Auto +${d}` : `Auto ${d}`);
+    const auto = (r.auto_level == null ? 100 : r.auto_level);
+    const n = (r.level_count == null ? 201 : r.level_count);
+    if (level === auto) { q(".thrVal").textContent = "Auto"; return; }
+    const mult = level < auto
+      ? Math.pow(LADDER_STRICT, (auto - level) / auto)
+      : Math.pow(LADDER_LOOSE, (level - auto) / Math.max(n - 1 - auto, 1));
+    q(".thrVal").textContent = "×" + mult.toFixed(2);
   }
 
   function setLevel(v, persist) {
@@ -653,7 +692,7 @@ function createCard(data) {
   q(".thr-auto").addEventListener("click", () => {
     const auto = (current.result && current.result.auto_level);
     if (current.params) current.params.level = null;
-    setLevel(auto == null ? 12 : auto, false);
+    setLevel(auto == null ? 100 : auto, false);
     persistData(); postView();
   });
 
@@ -802,14 +841,18 @@ function currentOverrides() {
   });
   return overrides;
 }
-$("btnExportCsv").addEventListener("click", () => {
+// Refresh the batch immediately before an export, so a long review session
+// cannot lose entries in the moment between the last heartbeat and the click.
+$("btnExportCsv").addEventListener("click", async () => {
   const ids = analyses.map((a) => a.id); if (!ids.length) return;
+  await keepAlive();
   streamedDownload("/api/export_csv", { analysis_ids: ids, overrides: currentOverrides() },
     "ImageSL_results.csv", "Exporting data (CSV)", 0);
 });
-$("btnDownloadZip").addEventListener("click", () => {
+$("btnDownloadZip").addEventListener("click", async () => {
   const ids = analyses.map((a) => a.id); if (!ids.length) return;
   const n = ids.length;
+  await keepAlive();
   streamedDownload("/api/export_zip",
     { analysis_ids: ids, images: ["comparison"], include_csv: true, overrides: currentOverrides() },
     "ImageSL_export.zip", `Packaging ${n} slide${n === 1 ? "" : "s"} (ZIP)`, n * 1.6 * 1048576);
@@ -819,6 +862,42 @@ $("btnNew").addEventListener("click", () => {
   $("resultsContainer").innerHTML = ""; $("skippedPanel").classList.add("hidden");
   clearState(); showView("uploadView"); window.scrollTo({ top: 0, behavior: "smooth" });
 });
+
+/* ============================== keep the batch alive ==============================
+   The server holds each analysis for a limited time and has no other way to know
+   a page is still using one. Reviewing forty slides — drawing regions, comparing,
+   deciding a sensitivity — takes as long as it takes, and a batch left open while
+   the user does something else used to expire underneath them: the export then
+   failed, or succeeded and produced an empty archive. A heartbeat costs one tiny
+   request and removes the whole class of problem. */
+const KEEPALIVE_MS = 4 * 60 * 1000;
+
+async function keepAlive() {
+  const ids = analyses.map((a) => a.id);
+  if (!ids.length) return;
+  try {
+    const res = await fetch("/api/keepalive", {
+      method: "POST", headers: headers(true), body: JSON.stringify({ analysis_ids: ids }),
+    });
+    if (!res.ok) return;
+    const d = await res.json();
+    const expired = new Set(d.expired || []);
+    if (!expired.size) return;
+    // Say so where it is visible, rather than at the moment an export fails.
+    document.querySelectorAll("#resultsContainer .card").forEach((card) => {
+      if (!expired.has(card.dataset.analysisId)) return;
+      card.classList.add("expired");
+      const note = card.querySelector(".card-note");
+      if (note) {
+        note.textContent = "This slide is no longer held by the server — it will not be "
+          + "included in an export. Re-upload it to measure it again.";
+        note.classList.remove("hidden");
+      }
+    });
+  } catch (e) { /* offline or asleep: the next beat will do */ }
+}
+setInterval(keepAlive, KEEPALIVE_MS);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) keepAlive(); });
 
 /* ============================== lightbox ============================== */
 function showLightbox(src) { if (!src) return; $("lightboxImg").src = src; $("lightbox").classList.remove("hidden"); }

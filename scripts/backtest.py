@@ -77,6 +77,16 @@ NOISE_TOL     = 0.30    # ≤30% relative change under JPEG q80
 OBVIOUS_OD    = 0.40    # excess OD that is unmistakably chromogen
 OBVIOUS_SIG   = 7.0     # ... and this many texture sigmas above background
 OBVIOUS_BROWN = 0.30    # ... and this clearly the chromogen's own colour
+# ... and it must carry colour AT ALL.
+#
+# Without this the check demands that intraluminal granular debris be counted.
+# That material is dense and sits against a pale lumen, so its EXCESS over the
+# local background is large and reads brown — every term above passes it — while
+# the material itself is olive-grey and plainly not chromogen. The excess-colour
+# reading is exactly the one that cannot see the difference, which is why the
+# engine needed a separate test for it (detect.DEBRIS_SAT_REF); a suite built on
+# that same reading would otherwise keep insisting the false positive was right.
+OBVIOUS_SAT   = 0.28
 
 COVER_RAW_OD  = 0.60    # raw absorbance along the chromogen axis that qualifies
 COVER_WARM    = 0.15    # ... together with this much raw warmth, (R−B)/(R+B)
@@ -154,8 +164,9 @@ def check(path: str, montage_dir=None, quick: bool = False) -> dict:
     sigma = float(maps["sigma"])
     tis_px = int(tissue.sum())
 
+    _h, _sat, _v = engine._rgb_to_hsv(rgb.astype(np.float32) / 255.0)
     obvious = (tissue & (sig >= max(OBVIOUS_OD, OBVIOUS_SIG * sigma))
-               & (brown >= OBVIOUS_BROWN))
+               & (brown >= OBVIOUS_BROWN) & (_sat >= OBVIOUS_SAT))
     obv_px = int(obvious.sum())
     miss = float((obvious & ~pos).sum()) / obv_px if obv_px else 0.0
 

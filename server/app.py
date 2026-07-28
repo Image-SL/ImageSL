@@ -161,6 +161,22 @@ class _DiskCache:
             self._touch(path)                      # keep it alive; do NOT rewrite it
             return value
 
+    def touch(self, key: str) -> bool:
+        """Mark an entry as still in use. Returns whether it is still there.
+
+        This is what lets a browser sitting on the results screen keep its batch
+        alive: a heartbeat costs one `utime` per slide, where reading the entry
+        to refresh it would cost megabytes."""
+        if not key:
+            return False
+        with self._lock:
+            p = self._file(key)
+            if not p.exists() or self._age(p) > self._ttl:
+                return False
+            self._touch(p)
+            self._touch(self._meta_file(key))
+            return True
+
     def get_meta(self, key: str) -> Optional[dict]:
         """Fast path for CSV export — reads the small JSON sidecar only."""
         if not key:
@@ -215,9 +231,15 @@ class _DiskCache:
 
 # TTL/size are generous enough that a large batch (dozens of slides) survives
 # analysis + review + export. Still auto-wipes for privacy; tune via env.
+#
+# Eight hours, not one. Reviewing forty slides, drawing regions on them and
+# deciding on a sensitivity is a working session, not a five-minute task, and an
+# hour of inactivity is entirely normal in the middle of one. The open page also
+# sends a heartbeat (see /api/keepalive) that refreshes whatever it is still
+# showing, so the TTL only ever expires batches nobody has open.
 _CACHE = _DiskCache(
     max_items=int(os.environ.get("IMAGESL_CACHE_MAX", "400")),
-    ttl_seconds=int(os.environ.get("IMAGESL_CACHE_TTL", "3600")),
+    ttl_seconds=int(os.environ.get("IMAGESL_CACHE_TTL", "28800")),
     max_bytes=int(os.environ.get("IMAGESL_CACHE_MB", "3072")) * 1024 * 1024,
 )
 
@@ -471,6 +493,24 @@ def app_js():
 @app.get("/api/health")
 def health() -> JSONResponse:
     return JSONResponse({"status": "ok", "version": APP_VERSION})
+
+
+@app.post("/api/keepalive")
+async def api_keepalive(request: Request, x_imagesl_key: Optional[str] = Header(default=None)):
+    """Refresh the analyses a page still has open, and report any already gone.
+
+    A batch under review is in use even when nothing is being clicked, and the
+    server has no other way to know that. Without this, a session left open over
+    a lunch break came back to exports that failed or — worse — succeeded and
+    produced an empty archive."""
+    _require_key(x_imagesl_key)
+    body = await request.json()
+    ids = body.get("analysis_ids")
+    if not isinstance(ids, list):
+        raise HTTPException(status_code=400, detail="No analysis_ids provided.")
+    alive = [a for a in ids[:2000] if _CACHE.touch(str(a))]
+    return JSONResponse({"alive": alive,
+                         "expired": [a for a in ids[:2000] if a not in set(alive)]})
 
 
 # --------------------------------------------------------------------------- #
@@ -752,14 +792,19 @@ def _csv_row(entry: dict) -> dict:
     pct_of_image = round((r.positive_pixels / total_px * 100.0), 3) if total_px else 0.0
     sep = float(getattr(r, "separability", 0.0))
     # What the sensitivity control was actually set to, in the terms the user
-    # sees on screen ("Auto", "Auto +3"), so a row can be reproduced from the
-    # export alone rather than from a bare ladder index.
+    # sees on screen, so a row can be reproduced from the export alone. The
+    # ladder scales the bar a structure's peak must clear, so the setting IS
+    # that multiplier — a quantity that means the same thing on every slide,
+    # unlike a step index (which now runs to 200).
     lvl = int(getattr(r, "level", 0))
     auto = int(getattr(r, "auto_level", 0))
-    delta = lvl - auto
-    setting = "Auto" if delta == 0 else (f"Auto +{delta}" if delta > 0 else f"Auto {delta}")
-    if entry.get("params", {}).get("level") is None:
+    n_lv = int(getattr(r, "level_count", detect_mod.N_LEVELS))
+    if entry.get("params", {}).get("level") is None or lvl == auto:
         setting = "Auto"
+    elif lvl < auto:
+        setting = f"x{detect_mod.LADDER_STRICT ** ((auto - lvl) / max(auto, 1)):.2f}"
+    else:
+        setting = f"x{detect_mod.LADDER_LOOSE ** ((lvl - auto) / max(n_lv - 1 - auto, 1)):.2f}"
     return {
         "filename": entry.get("filename", "image"),
         "detected_stain": getattr(r, "stain_label", ""),
@@ -867,7 +912,10 @@ def _collect_rows(analysis_ids, overrides: Optional[dict] = None) -> list[dict]:
         _persist(aid, entry)
         entry = None
     if not rows:
-        raise HTTPException(status_code=404, detail="All analyses expired; re-run analysis.")
+        raise HTTPException(
+            status_code=410,
+            detail=(f"All {len(analysis_ids)} analyses have expired, so there is nothing "
+                    f"to export. Re-upload the slides and try again."))
     return rows
 
 
@@ -906,7 +954,7 @@ class _ZipSink:
         return b
 
 
-def _zip_stream(analysis_ids, images, include_csv, overrides=None):
+def _zip_stream(analysis_ids, images, include_csv, overrides=None, missing=()):
     """Generator that builds the ZIP incrementally, one image at a time. Only a
     single analysis entry is ever held in memory, so 40+ slides won't OOM.
     `overrides` maps analysis_id → {level, regions} so each slide's export
@@ -916,9 +964,14 @@ def _zip_stream(analysis_ids, images, include_csv, overrides=None):
     zf = zipfile.ZipFile(sink, "w", zipfile.ZIP_STORED, allowZip64=True)  # TIFFs already compressed
     used: set[str] = set()
     rows: list[dict] = []
+    dropped: list[str] = list(missing)
     for aid in analysis_ids:
         entry = _CACHE.get(aid)
         if not entry:
+            # Record it. Skipping silently is how a batch whose entries had
+            # expired produced a perfectly valid, completely empty ZIP — the
+            # download "worked", and the folder had nothing in it.
+            dropped.append(aid)
             continue
         ov = overrides.get(aid) or {}
         changed = _apply_view(entry, ov.get("level"), ov.get("regions"))
@@ -943,6 +996,14 @@ def _zip_stream(analysis_ids, images, include_csv, overrides=None):
         entry = None  # release before loading the next
     if include_csv and rows:
         zf.writestr("ImageSL_results.csv", _build_csv_from_rows(rows).encode("utf-8-sig"))
+    if dropped:
+        zf.writestr(
+            "MISSING_SLIDES.txt",
+            ("These slides were no longer held by the server when this export was\n"
+             "built, so they are not in this archive:\n\n"
+             + "\n".join(f"  - {a}" for a in dropped)
+             + "\n\nAnalyses are kept for a limited time. Re-upload those slides and\n"
+               "export again.\n").encode("utf-8"))
     zf.close()
     chunk = sink.drain()
     if chunk:
@@ -963,10 +1024,22 @@ async def api_export_zip(request: Request, x_imagesl_key: Optional[str] = Header
     include_csv = body.get("include_csv", True)
     overrides = body.get("overrides") if isinstance(body.get("overrides"), dict) else {}
 
+    # Decide up front, while a real error can still be returned. Once the
+    # response starts streaming the status line is already sent and a failure
+    # can only appear as a truncated or empty archive.
+    alive = [a for a in analysis_ids if _CACHE.touch(a)]
+    missing = [a for a in analysis_ids if a not in set(alive)]
+    if not alive:
+        raise HTTPException(
+            status_code=410,
+            detail=(f"All {len(analysis_ids)} analyses have expired, so there is nothing "
+                    f"to export. Re-upload the slides and try again."))
+
     return StreamingResponse(
-        _zip_stream(analysis_ids, images, include_csv, overrides),
+        _zip_stream(alive, images, include_csv, overrides, missing),
         media_type="application/zip",
-        headers={"Content-Disposition": 'attachment; filename="ImageSL_export.zip"'},
+        headers={"Content-Disposition": 'attachment; filename="ImageSL_export.zip"',
+                 "X-ImageSL-Missing": str(len(missing))},
     )
 
 

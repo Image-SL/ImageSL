@@ -32,7 +32,7 @@
 {"@context":"https://schema.org","@type":"WebApplication","name":"ImageSL","url":"https://imagesl.online/","applicationCategory":"HealthApplication","operatingSystem":"Web","description":"ImageSL quantifies DAB immunohistochemistry slides with automatic background removal, color deconvolution and precise positive-area measurement.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}
 </script>
 
-<link rel="stylesheet" href="/styles.css?v=28">
+<link rel="stylesheet" href="/styles.css?v=29">
 </head>
 <body>
 
@@ -202,7 +202,7 @@
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21v-7M4 10V3M12 21v-11M12 6V3M20 21v-5M20 12V3"/><circle cx="4" cy="12" r="2"/><circle cx="12" cy="8" r="2"/><circle cx="20" cy="14" r="2"/></svg>
           Sensitivity
         </span>
-        <input type="range" class="cThr" min="0" max="24" step="1" value="12" aria-label="Detection sensitivity">
+        <input type="range" class="cThr" min="0" max="200" step="1" value="100" aria-label="Detection sensitivity">
         <span class="thrVal">–</span>
         <button class="thr-auto" title="Back to the operating point this slide chose">Auto</button>
       </div>
@@ -232,11 +232,15 @@
 
     <!-- metrics -->
     <div class="metrics">
-      <div class="metric hero-metric"><b class="mPercent">–</b><span>Positive area (of tissue)</span></div>
+      <div class="metric hero-metric"><b class="mPercent">–</b><span>Positive area (of measured tissue)</span></div>
       <div class="metric"><b class="mPositive">–</b><span>Positive pixels</span></div>
       <div class="metric"><b class="mObjects">–</b><span>Stained structures</span></div>
-      <div class="metric"><b class="mTissue">–</b><span>Tissue pixels</span></div>
+      <div class="metric"><b class="mTissue">–</b><span>Tissue measured</span></div>
     </div>
+    <!-- Shown only when a region is restricting the measurement, because that is
+         when the denominator stops being the whole slide and the percentage can
+         move in either direction. -->
+    <p class="mScope hidden"></p>
     <p class="card-note hidden"></p>
 
     <!-- variant thumbnails — exactly three: Original, Overlay, Stain only -->
@@ -263,6 +267,6 @@
 <div id="toasts"></div>
 <div id="lightbox" class="lightbox hidden"><img id="lightboxImg" src="" alt="Expanded"></div>
 
-<script src="/app.js?v=28"></script>
+<script src="/app.js?v=29"></script>
 </body>
 </html>
