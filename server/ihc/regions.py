@@ -58,14 +58,22 @@ MODES = ("focus", "ignore")
 
 
 def _pts(points, w: int, h: int) -> list[tuple[float, float]]:
-    """Normalised 0..1 coordinates → pixel coordinates on the analysis grid."""
+    """Normalised 0..1 coordinates → pixel coordinates on the analysis grid.
+
+    1.0 maps to the OUTER EDGE of the last pixel (w), not to the last pixel's
+    centre (w-1). With the centre convention a region dragged to the very edge of
+    the slide stopped half a pixel short, so the last row and column were never
+    included — and two regions splitting the frame in half neither tiled it nor
+    covered it: 480 pixels of a 640x480 frame belonged to neither half. Against
+    the outer edge, [0,0.5] and [0.5,1] partition the grid exactly.
+    """
     out = []
     for p in points or []:
         try:
             x, y = float(p[0]), float(p[1])
         except (TypeError, ValueError, IndexError):
             continue
-        out.append((x * (w - 1), y * (h - 1)))
+        out.append((x * w, y * h))
     return out
 
 

@@ -76,7 +76,7 @@ The pixel-level work, in order:
    isophote**, so area does not inherit intensity.
 8. **Quantification** — positive-area %, pixel count, and the number and size of
    the stained structures found. Running the whole decision across a ladder of
-   sensitivities produces the **level map**: for each pixel, the first level at
+   201 sensitivities produces the **level map**: for each pixel, the first level at
    which it turns positive. That image is shipped to the browser as the red
    channel of a small PNG whose green channel carries the tissue mask, so the
    browser has both halves of the percentage — the positive pixels and the tissue

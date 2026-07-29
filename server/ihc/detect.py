@@ -820,7 +820,6 @@ def detect(
     hue_band_mask: Optional[np.ndarray] = None,
     target_od: Optional[np.ndarray] = None,
     saturation: Optional[np.ndarray] = None,
-    hue: Optional[np.ndarray] = None,
 ) -> Detection:
     """Area-based chromogen detection.
 
@@ -896,31 +895,10 @@ def detect(
     _tr = np.power(10.0, -od_pos)
     raw_warm = ((_tr[..., 0] - _tr[..., 2]) / (_tr[..., 0] + _tr[..., 2] + 1e-6)).astype(np.float32)
 
-    # ---- chroma, measured properly -------------------------------------- #
-    # Saturation and hue of the material, taken from the transmittance relative
-    # to the slide's OWN white point and low-passed at the scale chroma lives at.
-    #
-    # Both corrections are needed and both were learned the hard way. Read off
-    # the raw RGB instead, these are not properties of the material at all: a
-    # warm lamp shifts every channel ratio on the slide, so a 6% colour-temperature
-    # change moved one section's measurement by 88%. And chroma is the first
-    # thing every image codec throws away — JPEG stores it at half resolution —
-    # so an object sitting near a colour threshold flipped wholesale on a
-    # re-encode, moving another section by 66%. Dividing by the white point fixes
-    # the first; smoothing at CHROMA_SMOOTH fixes the second, exactly as the
-    # excess-colour reading above already does.
-    _chroma_sigma = CHROMA_SMOOTH * rel_scale
-    _tc = _tr
-    if _chroma_sigma > 0.15 and _gaussian is not None:
-        _tc = _gaussian(_tr, (_chroma_sigma, _chroma_sigma, 0), mode="nearest")
-    _cmx = _tc.max(axis=2)
-    _cmn = _tc.min(axis=2)
-    norm_sat = ((_cmx - _cmn) / np.maximum(_cmx, 1e-6)).astype(np.float32)
-    _r, _g, _b = _tc[..., 0], _tc[..., 1], _tc[..., 2]
-    _d = np.maximum(_cmx - _cmn, 1e-6)
-    _h = np.where(_cmx == _r, ((_g - _b) / _d) % 6.0,
-                  np.where(_cmx == _g, (_b - _r) / _d + 2.0, (_r - _g) / _d + 4.0))
-    norm_hue = ((_h * 60.0) % 360.0).astype(np.float32)
+    # Chroma of the material — white-point-normalised and chroma-smoothed. See
+    # `chroma_readings`, which is shared with the regression suite so the two
+    # cannot drift into asking different questions.
+    norm_sat, norm_hue = chroma_readings(od_pos, rel_scale)
 
     # Which chromogen this excess belongs to — see BLUE_OVER_GREEN_MIN.
     _mag = np.linalg.norm(od_exc, axis=2) + 1e-6
@@ -978,6 +956,14 @@ def detect(
     region = solid & (brown >= BROWN_GROW) & (signal >= floor)
     if saturation is not None:
         region &= saturation > NEUTRAL_SAT_MAX      # never grow into achromatic material
+    # Intraluminal granular debris is excluded HERE, per pixel, before anything is
+    # grouped — not afterwards per object. Judged per object it takes genuine
+    # staining with it: a duct running along the wall of a vessel is connected to
+    # the cast inside it, the merged candidate reads debris-coloured on average,
+    # and rejecting it deletes the duct too. Measured, that cost 10-18% of the
+    # obvious stain on several sections. Removing the granules first lets the
+    # duct beside them form its own object and be counted normally.
+    region &= ~looks_like_debris(norm_sat, norm_hue)
     if hue_band_mask is not None:
         seed_px &= hue_band_mask
 
@@ -1023,19 +1009,10 @@ def detect(
                               | ((st["raw_brown_mean"] >= OBJ_RAW_BROWN)
                                  & (st["raw_warm_mean"] >= OBJ_RAW_WARM)
                                  & (st["raw_sat_mean"] >= OBJ_RAW_SAT)))
-        # Intraluminal granular debris — washed-out AND olive at once. See
-        # DEBRIS_SAT_MAX. Applied to every object, not just those taking the raw
-        # path, because this material is dense enough to satisfy the excess
-        # reading too when it sits against a pale lumen.
-        # Hue is circular: measure it as a signed distance from the reference so
-        # a chromogen sitting just below 0 deg reads as a few degrees away, not
-        # 350.
-        dhue = (st["hue_mean"] - DEBRIS_HUE_MIN + 180.0) % 360.0 - 180.0
-        debris_like = (st["raw_sat_mean"] < DEBRIS_SAT_MAX) & (dhue > 0.0)
-
+        # Intraluminal debris has already been removed per pixel, before
+        # grouping — see the `region` mask above.
         eligible = ((st["area"] >= min_area_px) & (st["seeds"] >= OBJ_SEED_MIN_PX)
-                    & (st["seed_frac"] >= OBJ_SEED_FRAC) & chromogen_coloured
-                    & ~debris_like)
+                    & (st["seed_frac"] >= OBJ_SEED_FRAC) & chromogen_coloured)
         eligible[0] = False
 
         # The detection bar comes from the population of object peaks, not from

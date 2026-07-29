@@ -61,12 +61,29 @@ never judged by how dark it is. Instead, for each slide:
    staining on the validation set, and with it the "is there DAB on this slide?"
    verdict, which had been answering *no* for ten of forty-six plainly DAB
    sections.
-3. The excess is grouped into **connected structures**, and stained objects are
+3. **Intraluminal debris is removed before anything is grouped.** The granular
+   casts of pigment and cells that sit inside vessel lumina are the hardest false
+   positive on liver sections: they are dense, so every absorbance test passes
+   them, and they sit against a pale lumen, so their excess over the local
+   background is large and reads faintly brown. What they are not is *coloured
+   like DAB* — measured, they run 0.16-0.26 saturation at 29-71° hue against
+   0.41-0.49 at 16-29° for real ductules. Material that is washed-out **and**
+   olive at once is dropped, per pixel, so a duct running along the wall of a
+   vessel still forms its own structure and is counted normally.
+4. The excess is grouped into **connected structures**, and stained objects are
    separated from background bumps by clustering the population of object peaks.
    The decision is made about structures, not pixels.
-4. Each accepted structure is measured at **its own isophote**, so area does not
+5. Each accepted structure is measured at **its own isophote**, so area does not
    inherit intensity: two structures of the same size measure the same area even
    if one is twice as dark.
+
+Every colour reading above is taken against the slide's own white point and
+low-passed at the scale chroma actually lives at. Neither is optional: raw HSV is
+not a property of the material, and a threshold on it moves with the lamp's
+colour temperature and with JPEG's chroma subsampling — measured, by enough to
+swing two sections' results 65-88%. Normalised, the same slide reads the same
+under a ±12% illumination change, at a different resolution, and after
+compression.
 
 Where a slide's staining is diffuse rather than focal, the engine says so in the
 result notes instead of presenting an arbitrary boundary as a measurement.
@@ -79,7 +96,7 @@ because both sides apply the same rule to the same level map.
 
 | Control | What it does |
 | --- | --- |
-| **Sensitivity** slider — sits directly under the slide, so the image stays in view while you drag | moves the bar a structure's peak has to clear, around the operating point this slide chose for itself. `Auto` returns to it |
+| **Sensitivity** slider — sits directly under the slide, so the image stays in view while you drag | scales the bar a structure's peak has to clear, from 4× stricter to 4× more permissive than the operating point this slide chose for itself. 201 steps, so dragging eases structures in and out rather than jumping; the readout is the multiplier applied (`×0.76`), which means the same thing on every slide. `Auto` returns to the centre |
 | **Focus** region | measure only inside the shapes you draw — one cortical layer, one TMA core, one half of a section. Tissue outside stops counting, denominator included |
 | **Ignore** region | cut a fold, pen mark, bubble or torn edge out of the measurement entirely, denominator included |
 | **TIF** / **Download** | exports any panel at full analysis resolution, at exactly the sensitivity and regions on screen |
@@ -89,7 +106,18 @@ area and the tissue it is measured against together, so the reported percentage
 is always "positive area ÷ tissue actually measured" over exactly the area you
 drew — and the figure on screen is the figure in the CSV, to the pixel. The
 browser and the server rasterise a drawn shape with the identical rule (a pixel
-counts when its centre is inside), so the two cannot drift apart.
+counts when its centre is inside, and 1.0 is the outer edge of the last pixel),
+so the two cannot drift apart and two regions splitting a slide in half
+partition it exactly.
+
+**Ignoring an area can move the percentage either way, and both directions are
+correct.** Because a region moves the numerator *and* the denominator, cutting
+out a lightly stained area makes the remaining tissue more stained on average
+and the figure rises; cutting out a heavily stained one makes it fall. The card
+spells out what the number is being measured over whenever a region is active
+(`measured over 50.0% of the slide's tissue`), and the export carries both
+`tissue_pixels` and `tissue_pixels_before_regions` so the scope of any published
+figure is unambiguous.
 
 There is no longer a *More here* / *Less here* region. A per-region operating
 point made the headline percentage a mixture of several different decision
@@ -104,6 +132,12 @@ The detection highlight is always neon green (`#39ff14`); there is no colour pic
 
 Batch work is first-class: drop a folder of slides, then export one ZIP of
 images plus a CSV of every measurement.
+
+An open batch is kept alive by a heartbeat from the page, so a long review
+session cannot expire underneath you; analyses are held for eight hours of
+genuine inactivity. If an export ever does find a slide gone it says so — by
+name, and with a `MISSING_SLIDES.txt` in the archive — rather than quietly
+handing over a ZIP with nothing in it.
 
 ## Repository layout
 

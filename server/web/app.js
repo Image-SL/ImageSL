@@ -154,7 +154,8 @@ function buildLevelData(levelImg) {
    one. Both sides now compute the mask arithmetically and agree exactly. */
 function rasterRegion(ld, region) {
   const { W, H } = ld;
-  const pts = (region.points || []).map((p) => [p[0] * (W - 1), p[1] * (H - 1)]);
+  // 1.0 is the OUTER EDGE of the last pixel, matching ihc/regions.py `_pts`.
+  const pts = (region.points || []).map((p) => [p[0] * W, p[1] * H]);
   if (!pts.length) return null;
   const mask = new Uint8Array(W * H);
 

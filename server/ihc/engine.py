@@ -1040,12 +1040,12 @@ def analyze(
         min_area_px=(min_px or None),
         hue_band_mask=band_mask,
         target_od=(stain_matrix[tgt_idx] if (stain_choice or stain_override_od) else None),
-        # Raw saturation and hue: whether the material carries colour AT ALL, and
-        # which colour. Absolute properties, deliberately — relative to a blue
-        # counterstain a grey blob looks warm, and relative to a pale lumen a
-        # grey cast looks like an excess of brown.
+        # Raw saturation: whether the material carries any colour AT ALL. An
+        # absolute property, deliberately — relative to a blue counterstain a
+        # grey blob looks warm. (The colour readings that decide what the
+        # material IS are derived inside the detector from the white-point
+        # normalised image; see detect.chroma_readings.)
         saturation=sat,
-        hue=hue,
     )
     notes.extend(det.notes)
 
