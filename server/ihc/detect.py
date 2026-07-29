@@ -446,12 +446,10 @@ MIN_AREA_FRAC    = 6e-6   # ≈5 px at 1024×768; below this it is sensor noise
 # Sensitivity ladder — pure relative scaling of the detection bar around the
 # automatic operating point, so the slider means the same thing on every slide.
 #
-# 201 steps, not 25. The span is unchanged (4x stricter to 4x more permissive);
-# what changes is the resolution of the control. At 25 steps each notch multiplied
-# the detection bar by 1.12, which on a slide with a few hundred structures turns
-# a large group of them on at once — the slider behaved as a series of jumps
-# rather than a dial, and there was no position between "too little" and "too
-# much". At 201 steps a notch is a factor of 1.014, fine enough that dragging
+# 201 steps, not 25. At 25 steps each notch multiplied the detection bar by 1.12,
+# which on a slide with a few hundred structures turns a large group of them on
+# at once — the slider behaved as a series of jumps rather than a dial, and there
+# was no position between "too little" and "too much". At 201 steps dragging
 # eases structures in and out continuously.
 #
 # The ceiling is the level map itself: it is 8-bit with 255 reserved for "never
@@ -460,8 +458,14 @@ MIN_AREA_FRAC    = 6e-6   # ≈5 px at 1024×768; below this it is sensor noise
 # is generated, not enumerated.
 N_LEVELS         = 201
 AUTO_LEVEL       = 100    # centre of the ladder = the automatic bar
-LADDER_STRICT    = 4.0    # level 0   = 4× stricter than auto
-LADDER_LOOSE     = 0.25   # level 200 = 4× more permissive than auto
+# Fallback span, used only when the slide has no object population to measure
+# against (see `_ladder`): 4x stricter at level 0, 4x more permissive at level 200.
+LADDER_STRICT    = 4.0
+LADDER_LOOSE     = 0.25
+# How far past the slide's own extreme object peaks the two ends of the ladder
+# sit. Small, but strictly greater than 1, which is what makes level 0 detect
+# NOTHING and the last level detect EVERY object the slide has — see `_ladder`.
+LADDER_END_MARGIN = 1.02
 
 
 @dataclass
@@ -479,6 +483,12 @@ class Detection:
     background_od: np.ndarray            # float32 HxWx3 fitted background OD
     sigma: float                         # robust noise of the excess (OD units)
     bar: float = 0.0                     # automatic detection bar (excess OD)
+    # The two ends of the sensitivity ladder, as multiples of `bar`. Reported so
+    # the slider's label and the CSV can name the multiplier a level applies
+    # WITHOUT re-deriving it from fixed constants — the span is per-slide now
+    # (see `_ladder`), so a constant would name the wrong number.
+    ladder_hi: float = LADDER_STRICT     # multiplier at level 0 (strictest)
+    ladder_lo: float = LADDER_LOOSE      # multiplier at the last level (loosest)
     floor: float = 0.0                   # weakest excess that can belong to an object
     separability: float = 0.0            # how cleanly the object peaks split in two
     bar_discard: float = 0.0             # share of the object area the split would drop
@@ -732,17 +742,55 @@ def _area_weighted(peaks: np.ndarray, areas: np.ndarray, cap: int = 400) -> np.n
     return np.repeat(peaks, reps)
 
 
-def _ladder(bar: float) -> np.ndarray:
+def _ladder(bar: float, peak_hi: float = 0.0, peak_lo: float = 0.0) -> np.ndarray:
     """Sensitivity ladder: the detection bar scaled around the automatic one.
 
-    Level AUTO_LEVEL is the bar the object population itself chose; lower
-    indices are stricter, higher ones more permissive. Because it is a pure
-    relative scaling, one slider position means the same *degree of
-    conservatism* on a faintly and a densely stained slide alike.
+    Level AUTO_LEVEL is always exactly the bar the object population itself
+    chose, so the automatic measurement is untouched by anything here. Lower
+    indices are stricter, higher ones more permissive, and the scaling stays
+    geometric — one notch is a fixed *ratio*, so "×0.72" means the same degree
+    of conservatism on a faint slide and a dense one alike.
+
+    What the two ENDS are anchored to is the slide's own object population,
+    not a fixed multiple of the bar, and that is the whole point of this
+    function. A fixed ±4x window is a statement about the bar; whether the
+    slider does anything is a statement about where the object PEAKS lie, and
+    the two need not overlap at all:
+
+      * If every peak sits above 4x the bar, every object is already on at
+        level 0 and stays on to level 200 — the control is inert over its whole
+        travel. Measured on the 46-slide validation set, one section (OK3306)
+        moved from 3.92% at level 0 to 4.98% at level 200, with 69 of the top
+        levels changing literally nothing; four sections detected staining at
+        level 0, where the honest answer is an empty overlay.
+      * If every peak sits below the bar's 4x reach in the other direction, the
+        top of the slider is dead in the same way. Across the 46 sections a
+        median of 45 of the 200 steps changed nothing, and up to 137 did not.
+
+    Anchoring instead to `peak_hi` (the strongest object on the slide) and
+    `peak_lo` (the weakest) makes the two ends mean what a user reads them as:
+
+        level 0        →  bar above every peak      →  nothing is detected
+        level N-1      →  bar below every peak      →  every object is detected
+
+    and spends all 201 steps inside the range where moving the control actually
+    changes the answer. `LADDER_END_MARGIN` keeps each end strictly outside the
+    population so those two statements hold exactly rather than by a rounding.
+
+    With no object population to measure (a blank or unstained slide) there is
+    nothing to anchor to and the fixed span is used.
     """
-    lo = np.geomspace(LADDER_STRICT, 1.0, AUTO_LEVEL + 1)
-    hi = np.geomspace(1.0, LADDER_LOOSE, N_LEVELS - AUTO_LEVEL)
-    return (np.concatenate([lo[:-1], hi]) * float(bar)).astype(np.float32)
+    bar = float(bar)
+    hi = (peak_hi * LADDER_END_MARGIN) if peak_hi > 0 else bar * LADDER_STRICT
+    lo = (peak_lo / LADDER_END_MARGIN) if peak_lo > 0 else bar * LADDER_LOOSE
+    # The ladder must descend THROUGH the bar: level AUTO_LEVEL is the automatic
+    # operating point and nothing above may reorder that, however the slide's
+    # peaks happen to sit relative to it.
+    hi = max(hi, bar * 1.02)
+    lo = min(lo, bar * 0.98)
+    up = np.geomspace(hi, bar, AUTO_LEVEL + 1)
+    dn = np.geomspace(bar, lo, N_LEVELS - AUTO_LEVEL)
+    return np.concatenate([up[:-1], dn]).astype(np.float32)
 
 
 def _sharpness(signal: np.ndarray, flat_lbl: np.ndarray, inside: np.ndarray,
@@ -989,6 +1037,7 @@ def detect(
     bar_min = float(max(PEAK_BAR_ABS_MIN, PEAK_BAR_SIG_MIN * sigma))
     lbl = _label(region, connectivity=2)
     n = int(lbl.max())
+    ladder_peak_hi = ladder_peak_lo = 0.0
     levels = _ladder(bar_min)
     level_map = np.full((h, w), 255, dtype=np.uint8)
     bar = bar_min
@@ -1065,7 +1114,16 @@ def detect(
                 notes.append("Staining is diffuse rather than focal on this slide — "
                              "no separate population of stained structures was found, "
                              "so only clearly absorbing material is counted.")
-        levels = _ladder(bar)
+        # The ends of the sensitivity ladder are the extremes of THIS slide's
+        # object population, so the control spans exactly the range over which
+        # it changes the answer — see `_ladder`. Taken over the eligible objects
+        # only: the rest can never be positive at any level, so including them
+        # would stretch the ladder across a range where nothing happens.
+        _elig_peaks = st["peak"][eligible]
+        if _elig_peaks.size:
+            ladder_peak_hi = float(_elig_peaks.max())
+            ladder_peak_lo = float(_elig_peaks.min())
+        levels = _ladder(bar, ladder_peak_hi, ladder_peak_lo)
 
         # ---- 3. extent, structure test, and the level map ----------------- #
         # Each object's measured footprint is its own isophote, which does not
@@ -1118,6 +1176,8 @@ def detect(
         background_od=bg_od,
         sigma=float(sigma),
         bar=float(bar),
+        ladder_hi=float(levels[0] / max(bar, 1e-9)),
+        ladder_lo=float(levels[-1] / max(bar, 1e-9)),
         floor=float(floor),
         separability=float(separability),
         bar_discard=float(bar_discard),

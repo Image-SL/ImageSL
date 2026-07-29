@@ -10,9 +10,10 @@ const OVERLAY_ALPHA = 0.5;
    engine.OVERLAY_GREEN. */
 const OVERLAY_RGB = [57, 255, 20];
 
-/* Ends of the sensitivity ladder, in step with detect.LADDER_STRICT / _LOOSE.
-   Used only to label the slider with the multiplier it applies to the detection
-   bar; the detection itself is driven entirely by the level map. */
+/* Fallback ends of the sensitivity ladder, in step with detect.LADDER_STRICT /
+   _LOOSE. Only used to label the slider when a slide (an older cached one) does
+   not report its own span in `ladder_hi` / `ladder_lo`; the detection itself is
+   driven entirely by the level map. */
 const LADDER_STRICT = 4.0, LADDER_LOOSE = 0.25;
 
 function headers(json) { const h = {}; if (json) h["Content-Type"] = "application/json"; return h; }
@@ -214,6 +215,45 @@ function applyRegions(ld, regions) {
     }
     ld.allow = allow;
   }
+}
+
+/* Count the separate stained structures in the current mask — 8-connected
+   components, the same rule `engine._object_summary` applies with
+   `skimage.measure.label(..., connectivity=2)`.
+
+   It is counted here rather than left to the server because "stained
+   structures" is one of the four headline numbers, and a tile that keeps
+   showing the pre-edit count while the three beside it move reads as the edit
+   having done nothing. Two-pass union-find over the mask: one pass to label and
+   record equivalences, one to count distinct roots. */
+function countObjects(ld) {
+  const { W, H, mask } = ld;
+  const labels = new Int32Array(W * H);
+  const parent = [0];
+  const find = (x) => { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; };
+  const union = (a, b) => { a = find(a); b = find(b); if (a !== b) parent[b > a ? b : a] = b > a ? a : b; };
+  let next = 1;
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x;
+      if (!mask[i]) continue;
+      // The four already-visited 8-neighbours: NW, N, NE, W.
+      let lab = 0;
+      const nb = [
+        y > 0 && x > 0 ? labels[i - W - 1] : 0,
+        y > 0 ? labels[i - W] : 0,
+        y > 0 && x < W - 1 ? labels[i - W + 1] : 0,
+        x > 0 ? labels[i - 1] : 0,
+      ];
+      for (const n of nb) if (n) lab = lab ? Math.min(lab, find(n)) : find(n);
+      if (!lab) { lab = next++; parent[lab] = lab; }
+      labels[i] = lab;
+      for (const n of nb) if (n) union(lab, n);
+    }
+  }
+  const roots = new Set();
+  for (let i = 0; i < labels.length; i++) if (labels[i]) roots.add(find(labels[i]));
+  return roots.size;
 }
 
 /* Reproduces ihc/regions.py `apply()` exactly, and counts BOTH sides of the
@@ -420,8 +460,19 @@ async function analyzeOnce(file) {
     data.filename = data.filename || file.name;
     return data;
   }
-  let msg = res.statusText;
-  try { msg = (await res.json()).detail || msg; } catch (e) {}
+  // HTTP/2 carries no status text, and a proxy that gave up mid-request sends no
+  // JSON body either — so both of the obvious sources are empty exactly when the
+  // failure is a server one. That is how a whole batch came back saying nothing
+  // but "Analysis failed", which names neither the cause nor anything to do
+  // about it. Fall back to something that does.
+  let msg = "";
+  try { msg = (await res.json()).detail || ""; } catch (e) {}
+  if (!msg) msg = res.statusText;
+  if (!msg) {
+    msg = (res.status >= 500 || res.status === 0)
+      ? `the server could not complete this slide (HTTP ${res.status}) — it may be out of memory or restarting`
+      : `HTTP ${res.status}`;
+  }
   const err = new Error(msg);
   err.permanent = res.status >= 400 && res.status < 500 && res.status !== 408 && res.status !== 429;
   throw err;
@@ -468,7 +519,15 @@ async function runBatch(fileList, append) {
         card.style.animationDelay = Math.min(added * 60, 400) + "ms";
         container.appendChild(card); added++;
       }
-    } catch (e) { errors.push({ filename: files[i].name, reason: (e && e.message) || "Analysis failed" }); }
+    } catch (e) {
+      const why = (e && e.message) || "";
+      errors.push({
+        filename: files[i].name,
+        // A network-level failure throws a TypeError with no useful message —
+        // say what that means rather than the word "failed" on its own.
+        reason: why || "the connection to the server was lost while analyzing this slide",
+      });
+    }
     setRing((i + 1) / files.length);
   }
   failures = append ? failures.concat(errors) : errors;
@@ -527,7 +586,7 @@ function currentLevel(data) {
 function createCard(data) {
   const node = $("resultTemplate").content.firstElementChild.cloneNode(true);
   const q = (sel) => node.querySelector(sel);
-  const analysisId = data.analysis_id;
+  let analysisId = data.analysis_id;      // reassigned by _rebind after a rebuild
   const filename = data.filename;
   const stem = safeStem(filename);
   let current = data;
@@ -541,15 +600,48 @@ function createCard(data) {
   q(".cThr").max = String(maxLevel);
   function persistData() { if (entry) entry.data = current; saveStateSoon(); }
 
-  /* ---- redraw: sensitivity + regions, entirely in the browser ---- */
+  /* ---- redraw: sensitivity + regions, entirely in the browser ----
+
+     COUNTING and PAINTING are deliberately separate, and which one may be
+     deferred is the whole point.
+
+     Counting the mask is one cheap pass; painting it means two `toDataURL`
+     encodes, which is the expensive part and is rightly throttled to a frame.
+     Previously both lived inside `redraw()` behind `requestAnimationFrame`,
+     while the readout was updated by a `liveMetrics()` call placed immediately
+     AFTER `redrawSoon()` — so it read `ld.count` and `ld.measured` from before
+     the change and printed the previous setting's percentage.
+
+     During a slider drag that only ever showed up as a one-event lag. Drawing a
+     region is a single discrete event, so there was no following event to
+     correct it: the number simply did not move. It was put right ~350 ms later
+     when the debounced server sync came back, which is why this looked like
+     "focus and ignore do nothing" — and why it looked permanent whenever that
+     round trip was slow, queued behind a large batch, or failed.
+
+     So the mask is now recomputed synchronously whenever anything asks for the
+     numbers, and `redraw()` reuses that result instead of repeating it. */
   let rafPending = false;
+  let maskLevel = -1, maskStamp = -1, regionStamp = 0;
+
+  function recount() {
+    if (!st.ld) return;
+    if (maskLevel === level && maskStamp === regionStamp) return;   // already current
+    computeMask(st.ld, level, maxLevel);
+    maskLevel = level; maskStamp = regionStamp;
+  }
+  function invalidateMask() { maskLevel = -1; maskStamp = -1; }
+
   function redraw() {
     if (!st.origImg || !st.ld) return;
-    computeMask(st.ld, level, maxLevel);
+    recount();
     drawLevelOverlay(q(".cmpFront"), st.origImg, st.ld);
     q(".imgOverlay").src = overlayThumb(st.origImg, st.ld, 560);
     q(".imgStainOnly").src = isolateThumb(st.origImg, st.ld, 560);
     drawRegionOutlines();
+    // Structure count rides with the repaint rather than with the readout: it is
+    // a full connected-component pass, so it belongs on the frame-rate path.
+    q(".mObjects").textContent = countObjects(st.ld).toLocaleString();
   }
   function redrawSoon() {
     if (document.hidden) { redraw(); return; }   // rAF is paused when hidden
@@ -572,6 +664,7 @@ function createCard(data) {
      whenever regions are in play. */
   function liveMetrics() {
     if (!st.ld) return;
+    recount();                 // the counts must describe the CURRENT setting
     const pos = st.ld.count;
     const measured = st.ld.measured;
     const whole = st.ld.tissueCount;
@@ -603,9 +696,16 @@ function createCard(data) {
     const auto = (r.auto_level == null ? 100 : r.auto_level);
     const n = (r.level_count == null ? 201 : r.level_count);
     if (level === auto) { q(".thrVal").textContent = "Auto"; return; }
+    // The ladder's ends are per-slide — they sit just outside this slide's own
+    // strongest and weakest structure, which is what makes the two extremes mean
+    // "nothing" and "everything" (see detect._ladder). So the multiplier is read
+    // from the slide's reported span, not from a constant; a constant named the
+    // wrong number the moment the span stopped being a fixed ±4×.
+    const hi = (r.ladder_hi == null ? LADDER_STRICT : r.ladder_hi);
+    const lo = (r.ladder_lo == null ? LADDER_LOOSE : r.ladder_lo);
     const mult = level < auto
-      ? Math.pow(LADDER_STRICT, (auto - level) / auto)
-      : Math.pow(LADDER_LOOSE, (level - auto) / Math.max(n - 1 - auto, 1));
+      ? Math.pow(hi, (auto - level) / Math.max(auto, 1))
+      : Math.pow(lo, (level - auto) / Math.max(n - 1 - auto, 1));
     q(".thrVal").textContent = "×" + mult.toFixed(2);
   }
 
@@ -613,7 +713,7 @@ function createCard(data) {
     level = Math.max(0, Math.min(maxLevel, v | 0));
     q(".cThr").value = String(level);
     levelLabel();
-    redrawSoon(); liveMetrics();
+    liveMetrics(); redrawSoon();
     if (current.params) current.params.level = level;
     if (persist) { persistData(); postView(); }
   }
@@ -626,6 +726,7 @@ function createCard(data) {
       st.origImg = o;
       st.ld = buildLevelData(s);
       applyRegions(st.ld, regions);
+      regionStamp++; invalidateMask();      // a brand-new map: nothing is cached
       redraw(); liveMetrics();
     };
     o.onload = done; s.onload = done; o.src = origSrc; s.src = levelSrc;
@@ -683,6 +784,10 @@ function createCard(data) {
         if (res.ok) {
           const d = await res.json();
           if (d.result) { current.result = d.result; paint(d, true); persistData(); }
+        } else if (res.status === 404 || res.status === 410) {
+          // The earliest moment we can learn the server has dropped this batch —
+          // sooner than the next heartbeat, and long before an export. Repair now.
+          keepAlive();
         }
       } catch (e) {}
     }, 350);
@@ -749,8 +854,9 @@ function createCard(data) {
   function commitRegions() {
     if (!st.ld) return;
     applyRegions(st.ld, regions);
+    regionStamp++;                       // the measured area changed
     regionCountLabel();
-    redrawSoon(); liveMetrics();
+    liveMetrics(); redrawSoon();
     if (current.params) current.params.regions = regions;
     persistData(); postView();
   }
@@ -806,20 +912,41 @@ function createCard(data) {
      Sent as a POST body rather than a query string so the drawn regions travel
      with the sensitivity; a lasso does not fit in a URL, and without it a
      single-slide TIFF came back ignoring every region on screen. */
-  function dlTif(type) {
+  // Beat first, so a single-slide download recovers an expired slide the same
+  // way a batch export does rather than failing with "Analysis expired".
+  async function dlTif(type) {
+    await keepAlive();
     streamedDownload("/api/download_tif",
       { analysis_id: analysisId, image_type: type, level, regions },
       `${stem}_${type}.tif`, `Exporting ${type}`, 2 * 1048576);
   }
   node.querySelectorAll(".dl-btn").forEach((b) => b.addEventListener("click", () => dlTif(b.dataset.type)));
   node.querySelectorAll(".vdl").forEach((b) => b.addEventListener("click", (e) => { e.stopPropagation(); dlTif(b.dataset.type); }));
-  q(".export-one").addEventListener("click", () => streamedDownload(
-    "/api/export_csv",
-    { analysis_ids: [analysisId], overrides: { [analysisId]: { level, regions } } },
-    `${stem}_data.csv`, "Exporting CSV", 0));
+  q(".export-one").addEventListener("click", async () => {
+    await keepAlive();                       // may rebuild this slide and reissue its id
+    streamedDownload("/api/export_csv",
+      { analysis_ids: [analysisId], overrides: { [analysisId]: { level, regions } } },
+      `${stem}_data.csv`, "Exporting CSV", 0);
+  });
 
   node.dataset.analysisId = analysisId;
   node._view = () => ({ level, regions });
+  node._filename = filename;
+  /* Point this card at a rebuilt analysis (see `healExpired`). The id lives in
+     this closure — every download, CSV and appearance call reads it — so a card
+     that is not rebound keeps talking about a slide the server has forgotten. */
+  node._rebind = (id, d) => {
+    analysisId = id;
+    node.dataset.analysisId = id;
+    node.classList.remove("expired");
+    if (entry) { entry.id = id; }
+    if (d) { current = d; if (current.params) { current.params.level = level; current.params.regions = regions; } }
+    const note = q(".card-note");
+    const text = ((d && d.result && d.result.notes) || []).join(" ");
+    note.textContent = text;
+    note.classList.toggle("hidden", !text);
+    persistData();
+  };
   return node;
 }
 
@@ -843,17 +970,22 @@ function currentOverrides() {
   return overrides;
 }
 // Refresh the batch immediately before an export, so a long review session
-// cannot lose entries in the moment between the last heartbeat and the click.
+// cannot lose entries in the moment between the last heartbeat and the click —
+// and read the ids AFTERWARDS, because that refresh may have rebuilt expired
+// slides and reissued their ids. Reading them first is how an export could ask
+// for the very slides that had just been repaired, and come back short.
 $("btnExportCsv").addEventListener("click", async () => {
-  const ids = analyses.map((a) => a.id); if (!ids.length) return;
+  if (!analyses.length) return;
   await keepAlive();
+  const ids = analyses.map((a) => a.id); if (!ids.length) return;
   streamedDownload("/api/export_csv", { analysis_ids: ids, overrides: currentOverrides() },
     "ImageSL_results.csv", "Exporting data (CSV)", 0);
 });
 $("btnDownloadZip").addEventListener("click", async () => {
+  if (!analyses.length) return;
+  await keepAlive();
   const ids = analyses.map((a) => a.id); if (!ids.length) return;
   const n = ids.length;
-  await keepAlive();
   streamedDownload("/api/export_zip",
     { analysis_ids: ids, images: ["comparison"], include_csv: true, overrides: currentOverrides() },
     "ImageSL_export.zip", `Packaging ${n} slide${n === 1 ? "" : "s"} (ZIP)`, n * 1.6 * 1048576);
@@ -883,20 +1015,87 @@ async function keepAlive() {
     if (!res.ok) return;
     const d = await res.json();
     const expired = new Set(d.expired || []);
-    if (!expired.size) return;
-    // Say so where it is visible, rather than at the moment an export fails.
-    document.querySelectorAll("#resultsContainer .card").forEach((card) => {
-      if (!expired.has(card.dataset.analysisId)) return;
-      card.classList.add("expired");
-      const note = card.querySelector(".card-note");
-      if (note) {
-        note.textContent = "This slide is no longer held by the server — it will not be "
-          + "included in an export. Re-upload it to measure it again.";
-        note.classList.remove("hidden");
-      }
-    });
+    if (expired.size) await healExpired(expired);
   } catch (e) { /* offline or asleep: the next beat will do */ }
 }
+
+/* Rebuild whatever the server has let go of, from the copy this page kept.
+
+   The heartbeat above makes expiry unlikely; it cannot make it impossible. A
+   deploy, a container restart, a machine that ran out of memory under a large
+   batch — all of them drop the server's side of the session while this page is
+   still showing it, and the user finds out at the moment they click Export,
+   after an afternoon of drawing regions. Telling them "re-upload forty slides"
+   at that point is not a recovery.
+
+   It does not need to be, because nothing was actually lost. Every card holds
+   the exact pixels the engine measured (`images.original`, stored losslessly
+   for this reason), plus its sensitivity and its regions. So the analysis is
+   simply made again, server-side, and the card is rebound to the new id with
+   its settings intact — verified on the validation set to reproduce the same
+   measurement to the digit. Done one at a time so recovering a large batch
+   cannot itself be the thing that overloads the server. */
+let healing = null;
+function healExpired(expired) {
+  // Join an in-flight recovery rather than declining. The export buttons await
+  // this before they run, and returning early would let an export go out with
+  // the ids that are being replaced — the batch would be repaired and the
+  // archive still short.
+  if (healing) return healing;
+  healing = _heal(expired).finally(() => { healing = null; });
+  return healing;
+}
+async function _heal(expired) {
+  const cards = Array.from(document.querySelectorAll("#resultsContainer .card"))
+    .filter((c) => expired.has(c.dataset.analysisId));
+  let t = null, done = 0, failed = 0;
+  try {
+    for (const card of cards) {
+      const oldId = card.dataset.analysisId;
+      const entry = analyses.find((a) => a.id === oldId);
+      const src = entry && entry.data && entry.data.images && entry.data.images.original;
+      if (!src) { failed++; markLost(card); continue; }
+      if (!t) t = makeToast(`Restoring ${cards.length} slide${cards.length === 1 ? "" : "s"}…`);
+      try {
+        const view = card._view ? card._view() : {};
+        const res = await fetch("/api/rehydrate", {
+          method: "POST", headers: headers(true),
+          body: JSON.stringify({
+            image: src,
+            filename: card._filename || (entry.data && entry.data.filename) || "image",
+            params: { level: view.level, regions: view.regions,
+                      stain_key: (entry.data.params || {}).stain_key || null },
+          }),
+        });
+        if (!res.ok) throw new Error(String(res.status));
+        const d = await res.json();
+        if (!d.analysis_id) throw new Error("no id");
+        // Keep the browser's own copy of the pixels: it is the master now.
+        d.images = Object.assign({}, d.images, { original: src });
+        entry.data = d;
+        card._rebind(d.analysis_id, d);
+        done++;
+      } catch (e) { failed++; markLost(card); }
+      if (t) t.set((done + failed) / cards.length, `Restoring slides · ${done + failed} of ${cards.length}`);
+    }
+    saveState();
+    if (t) {
+      if (failed) t.fail(`Restored ${done} of ${cards.length} slides — ${failed} could not be rebuilt`);
+      else t.done(`Restored ${done} slide${done === 1 ? "" : "s"}`);
+    }
+  } finally { healing = false; }
+}
+
+function markLost(card) {
+  card.classList.add("expired");
+  const note = card.querySelector(".card-note");
+  if (note) {
+    note.textContent = "This slide is no longer held by the server and could not be "
+      + "rebuilt — it will not be included in an export. Re-upload it to measure it again.";
+    note.classList.remove("hidden");
+  }
+}
+
 setInterval(keepAlive, KEEPALIVE_MS);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) keepAlive(); });
 
@@ -915,4 +1114,9 @@ $("lightbox").addEventListener("click", () => $("lightbox").classList.add("hidde
   analyses.forEach((a) => container.appendChild(createCard(a.data)));
   renderSummary();
   showView("resultsView");
+  // A reload is the single most likely moment for the server's side of the batch
+  // to be gone — it is what a user does after a deploy, or after the page sat
+  // open overnight. Check (and rebuild) immediately rather than waiting out the
+  // first heartbeat interval and letting them click Export in between.
+  keepAlive();
 })();

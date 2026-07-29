@@ -13,6 +13,7 @@ ENABLED_FAMILIES to bring further stains online.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import time
 import threading
@@ -356,9 +357,34 @@ def _render_images(entry: dict) -> None:
     prev = entry.get("images") or {}
     entry["images"] = {
         # The original never changes, so re-encode it only if it is missing.
-        "original": prev.get("original") or engine.to_data_uri(rgb, "JPEG"),
+        "original": prev.get("original") or engine.original_data_uri(rgb),
         "level": engine.level_data_uri(maps["level_map"], maps.get("tissue_base")),
     }
+
+
+# How many slides may be measured at the same time.
+#
+# Measurement is seconds of numpy that already spreads itself over every core
+# (scikit-image links OpenMP), so running several at once buys no throughput on
+# a small container — it just multiplies peak memory and lengthens every
+# request. Left unbounded, a review session over a large batch could put dozens
+# of measurements in flight at once: an export re-measuring each slide it
+# packages, `/api/appearance` firing behind every slider move, and uploads still
+# arriving. That is how the container reached the memory ceiling and was
+# restarted, which is what the user sees as the batch expiring underneath them.
+#
+# A threading semaphore rather than an asyncio one, because the ZIP export runs
+# as a synchronous generator in a worker thread and has to queue on the same
+# gate as everything else.
+_MEASURE_SLOTS = max(1, int(os.environ.get("IMAGESL_MAX_CONCURRENCY", "2")))
+_MEASURE_GATE = threading.BoundedSemaphore(_MEASURE_SLOTS)
+
+
+def _measure(rgb: np.ndarray, source_size, **kwargs):
+    """Every call into the engine goes through here, so the gate above cannot be
+    bypassed by adding another code path later."""
+    with _MEASURE_GATE:
+        return engine.analyze(rgb, source_size, **kwargs)
 
 
 def _reanalyze(entry: dict) -> None:
@@ -366,7 +392,7 @@ def _reanalyze(entry: dict) -> None:
     result and the maps. Every path that changes a setting goes through here, so
     the reported numbers and the pixels they describe can never come from
     different settings."""
-    result, maps = engine.analyze(
+    result, maps = _measure(
         entry["rgb"],
         entry.get("source_size", (entry["rgb"].shape[1], entry["rgb"].shape[0])),
         **_analyze_kwargs(entry["params"]),
@@ -454,16 +480,41 @@ def _persist(analysis_id: str, entry: dict) -> None:
 # Pages
 # --------------------------------------------------------------------------- #
 
+def _asset_version() -> str:
+    """Cache-busting token for the CSS and JS, derived from their CONTENT.
+
+    These two files are served with a one-year `max-age`, which is right — they
+    are versioned by the `?v=` in the HTML, so a new build is a new URL. It is
+    only right while that token actually changes with the build, and it was a
+    number typed into `index.html` by hand. Miss the bump once and every
+    returning browser keeps running the previous JS for a year against the new
+    server: the fixes are deployed and the user does not have them, which is
+    indistinguishable from their not working. (That is not hypothetical — it is
+    what happened while testing this change.)
+
+    Hashing the bytes removes the step entirely: the token cannot disagree with
+    what is being served, because it is computed from it.
+    """
+    h = hashlib.sha256()
+    for f in ("app.js", "styles.css"):
+        p = WEB_DIR / f
+        try:
+            h.update(p.read_bytes())
+        except OSError:
+            h.update(f.encode())
+    return h.hexdigest()[:12]
+
+
 def _serve_html(name: str) -> HTMLResponse:
     path = WEB_DIR / name
     if not path.is_file():
         return HTMLResponse(f"<h1>ImageSL</h1><p>Missing {name}.</p>", status_code=500)
+    html = path.read_text(encoding="utf-8").replace("__ASSET_V__", _asset_version())
     # NEVER let the browser (or the desktop client's WebView) hold on to the HTML.
     # It is the only unversioned file we serve, so a stale copy pins the whole app
     # to an old build: it keeps requesting the old `?v=` CSS/JS and a deploy looks
     # like it "didn't update" until the user hard-refreshes.
-    return HTMLResponse(path.read_text(encoding="utf-8"),
-                        headers={"Cache-Control": "no-cache, must-revalidate"})
+    return HTMLResponse(html, headers={"Cache-Control": "no-cache, must-revalidate"})
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -491,7 +542,19 @@ def app_js():
 
 
 @app.get("/api/health")
-def health() -> JSONResponse:
+async def health() -> JSONResponse:
+    """Deliberately `async`, and deliberately doing no work.
+
+    A plain `def` endpoint is run by Starlette in the shared worker threadpool —
+    the same pool every slide measurement occupies. On a small container a
+    measurement is seconds of numpy, so under a batch the pool is saturated and
+    a health check simply queues behind it. The load balancer's check has a
+    5 s timeout and restarts the container after five failures, and a restart
+    takes the whole in-memory batch with it: uploads in flight come back as
+    "Analysis failed", and every slide already analysed is suddenly "expired"
+    mid-session. Answering on the event loop instead makes that impossible —
+    this handler cannot be blocked by measurement work however busy the box is.
+    """
     return JSONResponse({"status": "ok", "version": APP_VERSION})
 
 
@@ -542,7 +605,7 @@ def _analyze_upload(data: bytes, name: str, stain_key: Optional[str]) -> dict:
         params["stain_key"] = chosen["key"]
 
     try:
-        result, maps = engine.analyze(rgb, source_size, **_analyze_kwargs(params))
+        result, maps = _measure(rgb, source_size, **_analyze_kwargs(params))
     except MemoryError:
         raise HTTPException(
             status_code=507,
@@ -553,7 +616,7 @@ def _analyze_upload(data: bytes, name: str, stain_key: Optional[str]) -> dict:
 
     entry = {
         "rgb": rgb, "source_size": source_size, "maps": maps, "result": result,
-        "params": params, "images": {"original": engine.to_data_uri(rgb, "JPEG")},
+        "params": params, "images": {"original": engine.original_data_uri(rgb)},
         "filename": name,
     }
     _render_images(entry)
@@ -716,6 +779,67 @@ def api_download_tif(analysis_id: str, image_type: str, level: Optional[str] = N
     return _download_tif(analysis_id, image_type, level)
 
 
+@app.post("/api/rehydrate")
+async def api_rehydrate(request: Request, x_imagesl_key: Optional[str] = Header(default=None)):
+    """Rebuild an analysis the server is no longer holding, from the copy the
+    browser kept, and return a fresh analysis id.
+
+    This is the answer to the failure the user actually hits: a long working
+    session — forty slides, regions drawn on a dozen of them, sensitivities
+    tuned — and then the export comes back empty or refuses, because the server
+    let go of the batch. Every other defence here (the heartbeat, the eight-hour
+    TTL, the byte budget, the health endpoint that cannot be starved) makes that
+    less likely; none of them makes it recoverable, and "re-upload forty slides
+    and redo your regions" is not a recovery.
+
+    It is recoverable because the browser is not just holding ids. It holds the
+    exact image the engine measured — `images.original`, the downsampled RGB,
+    kept in IndexedDB across reloads — together with the slide's sensitivity and
+    its regions. That is everything the measurement needs, so the analysis can
+    simply be made again, and the settings the user spent the session choosing
+    are carried through rather than lost.
+
+    That copy is stored losslessly (`engine.original_data_uri`) precisely so this
+    path exists: the rebuilt measurement is bit-for-bit the one the session was
+    working with — verified equal on all 46 validation slides — rather than an
+    approximation of it that would need a caveat attached to every number.
+    """
+    _require_key(x_imagesl_key)
+    body = await request.json()
+    src = str(body.get("image") or "")
+    if not src.startswith("data:"):
+        raise HTTPException(status_code=400, detail="No stored image to rebuild from.")
+    try:
+        import base64 as _b64
+        data = _b64.b64decode(src.split(",", 1)[1])
+    except Exception:
+        raise HTTPException(status_code=400, detail="The stored image could not be decoded.")
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Stored image too large.")
+
+    name = str(body.get("filename") or "image")
+    view = body.get("params") if isinstance(body.get("params"), dict) else {}
+
+    def work() -> dict:
+        payload = _analyze_upload(data, name, view.get("stain_key"))
+        aid = payload["analysis_id"]
+        entry = _CACHE.get(aid)
+        if entry is None:                 # written and immediately evicted: nothing to fix up
+            return payload
+        # Re-apply the view the user had on screen, so a rebuilt slide comes back
+        # exactly as they left it rather than reset to Auto with no regions.
+        if _apply_view(entry, view.get("level"), view.get("regions")):
+            _render_images(entry)
+            _persist(aid, entry)
+        pub = _public(entry)
+        # The caller sent us this image; sending it straight back would double the
+        # cost of recovering a batch for nothing. The level map it does need.
+        pub["images"] = {k: v for k, v in (pub.get("images") or {}).items() if k != "original"}
+        return {"analysis_id": aid, "rebuilt": True, **pub}
+
+    return JSONResponse(await run_in_threadpool(work))
+
+
 @app.post("/api/appearance")
 async def api_appearance(request: Request, x_imagesl_key: Optional[str] = Header(default=None)):
     _require_key(x_imagesl_key)
@@ -799,12 +923,18 @@ def _csv_row(entry: dict) -> dict:
     lvl = int(getattr(r, "level", 0))
     auto = int(getattr(r, "auto_level", 0))
     n_lv = int(getattr(r, "level_count", detect_mod.N_LEVELS))
+    # The ladder's span is per-slide (its ends sit just outside this slide's own
+    # strongest and weakest structure — see detect._ladder), so the multiplier is
+    # read from what the slide reported rather than from the module constants,
+    # which would name a span this slide never used.
+    l_hi = float(getattr(r, "ladder_hi", detect_mod.LADDER_STRICT))
+    l_lo = float(getattr(r, "ladder_lo", detect_mod.LADDER_LOOSE))
     if entry.get("params", {}).get("level") is None or lvl == auto:
         setting = "Auto"
     elif lvl < auto:
-        setting = f"x{detect_mod.LADDER_STRICT ** ((auto - lvl) / max(auto, 1)):.2f}"
+        setting = f"x{l_hi ** ((auto - lvl) / max(auto, 1)):.2f}"
     else:
-        setting = f"x{detect_mod.LADDER_LOOSE ** ((lvl - auto) / max(n_lv - 1 - auto, 1)):.2f}"
+        setting = f"x{l_lo ** ((lvl - auto) / max(n_lv - 1 - auto, 1)):.2f}"
     return {
         "filename": entry.get("filename", "image"),
         "detected_stain": getattr(r, "stain_label", ""),
@@ -907,9 +1037,16 @@ def _collect_rows(analysis_ids, overrides: Optional[dict] = None) -> list[dict]:
         entry = _CACHE.get(aid)
         if not entry:
             continue
-        _apply_view(entry, (ov or {}).get("level"), (ov or {}).get("regions"))
-        rows.append(_csv_row(entry))
-        _persist(aid, entry)
+        # One slide that cannot be re-measured must not take the spreadsheet with
+        # it. Before, any failure here surfaced as a 500 and the user got no CSV
+        # at all for a batch of forty-six — the same shape of problem as the
+        # truncated ZIP: a whole export lost to one slide.
+        try:
+            _apply_view(entry, (ov or {}).get("level"), (ov or {}).get("regions"))
+            rows.append(_csv_row(entry))
+            _persist(aid, entry)
+        except Exception:                # noqa: BLE001 — see above
+            pass
         entry = None
     if not rows:
         raise HTTPException(
@@ -965,46 +1102,76 @@ def _zip_stream(analysis_ids, images, include_csv, overrides=None, missing=()):
     used: set[str] = set()
     rows: list[dict] = []
     dropped: list[str] = list(missing)
-    for aid in analysis_ids:
-        entry = _CACHE.get(aid)
-        if not entry:
-            # Record it. Skipping silently is how a batch whose entries had
-            # expired produced a perfectly valid, completely empty ZIP — the
-            # download "worked", and the folder had nothing in it.
-            dropped.append(aid)
-            continue
-        ov = overrides.get(aid) or {}
-        changed = _apply_view(entry, ov.get("level"), ov.get("regions"))
-        stem = _safe_name(entry.get("filename", "image"))
-        for image_type in images:
-            name = f"{stem}_{image_type}.tif"
-            k = 2
-            while name in used:
-                name = f"{stem}_{image_type}_{k}.tif"
-                k += 1
-            used.add(name)
-            zf.writestr(name, _tiff_bytes(_render_type(entry, image_type)))
-            chunk = sink.drain()
-            if chunk:
-                yield chunk
-        if include_csv:
-            # Built from the entry AFTER `_apply_view` re-measured it, so the row
-            # and the images beside it in the ZIP describe the same settings.
-            rows.append(_csv_row(entry))
-        if changed:
-            _persist(aid, entry)      # keep later exports in step with this one
-        entry = None  # release before loading the next
-    if include_csv and rows:
-        zf.writestr("ImageSL_results.csv", _build_csv_from_rows(rows).encode("utf-8-sig"))
-    if dropped:
-        zf.writestr(
-            "MISSING_SLIDES.txt",
-            ("These slides were no longer held by the server when this export was\n"
-             "built, so they are not in this archive:\n\n"
-             + "\n".join(f"  - {a}" for a in dropped)
-             + "\n\nAnalyses are kept for a limited time. Re-upload those slides and\n"
-               "export again.\n").encode("utf-8"))
-    zf.close()
+    problems: list[str] = []
+
+    # Once the first byte is out, the status line is already sent: a failure from
+    # here on cannot be reported as an HTTP error, and an exception escaping this
+    # generator ends the response mid-archive. What the browser then saves is a
+    # file with no central directory — an archive Windows and every other tool
+    # calls corrupt. That is the "the ZIP downloads but will not open" report,
+    # and it is why every step below is contained: one slide that fails to render
+    # (a transient memory ceiling, an entry evicted while the export ran) costs
+    # that slide, is named in the manifest, and the other forty-five still arrive
+    # in a well-formed archive.
+    try:
+        for aid in analysis_ids:
+            try:
+                entry = _CACHE.get(aid)
+            except Exception:
+                entry = None
+            if not entry:
+                # Record it. Skipping silently is how a batch whose entries had
+                # expired produced a perfectly valid, completely empty ZIP — the
+                # download "worked", and the folder had nothing in it.
+                dropped.append(aid)
+                continue
+            ov = overrides.get(aid) or {}
+            stem = _safe_name(entry.get("filename", "image"))
+            try:
+                changed = _apply_view(entry, ov.get("level"), ov.get("regions"))
+                for image_type in images:
+                    name = f"{stem}_{image_type}.tif"
+                    k = 2
+                    while name in used:
+                        name = f"{stem}_{image_type}_{k}.tif"
+                        k += 1
+                    used.add(name)
+                    zf.writestr(name, _tiff_bytes(_render_type(entry, image_type)))
+                    chunk = sink.drain()
+                    if chunk:
+                        yield chunk
+                if include_csv:
+                    # Built from the entry AFTER `_apply_view` re-measured it, so
+                    # the row and the images beside it describe the same settings.
+                    rows.append(_csv_row(entry))
+                if changed:
+                    _persist(aid, entry)   # keep later exports in step with this one
+            except Exception as exc:       # noqa: BLE001 — deliberately broad, see above
+                problems.append(f"{stem} ({aid}): {exc}")
+            finally:
+                entry = None               # release before loading the next
+        if include_csv and rows:
+            zf.writestr("ImageSL_results.csv", _build_csv_from_rows(rows).encode("utf-8-sig"))
+        if dropped or problems:
+            lines = ["Some slides are not in this archive.", ""]
+            if dropped:
+                lines += ["The server was no longer holding these when the export was built:", ""]
+                lines += [f"  - {a}" for a in dropped]
+                lines += ["", "Analyses are kept for a limited time. Reload the page with the",
+                          "batch still open and export again — ImageSL will rebuild them from",
+                          "the copy your browser kept — or re-upload those slides.", ""]
+            if problems:
+                lines += ["These could not be rendered:", ""]
+                lines += [f"  - {p}" for p in problems]
+                lines += [""]
+            zf.writestr("MISSING_SLIDES.txt", "\n".join(lines).encode("utf-8"))
+    finally:
+        # The central directory is what makes the bytes a ZIP at all, so it is
+        # written whatever happened above — including a client that disconnected.
+        try:
+            zf.close()
+        except Exception:
+            pass
     chunk = sink.drain()
     if chunk:
         yield chunk
