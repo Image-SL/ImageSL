@@ -54,7 +54,7 @@ from dataclasses import dataclass, field, asdict
 from typing import Optional
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 try:  # tifffile + imagecodecs handle compressed / pyramidal histology TIFs
     import tifffile
@@ -1369,73 +1369,107 @@ def compose_comparison(
     left_rgb: np.ndarray,
     right_rgb: np.ndarray,
     left_label: str = "Original",
-    right_label: str = "Detection Overlay",
+    right_label: str = "DAB detection",
     *,
     metric_text: Optional[str] = None,
     stain_text: Optional[str] = None,
-    sep_w: int = 5,
+    sep_w: int = 0,
 ) -> np.ndarray:
+    """Two panels, labelled, on a clean card. Nothing else.
+
+    This is the figure people actually put in a slide deck or a paper, so it is
+    built like one: generous margins, the two images the same size on a neutral
+    ground, a soft shadow to lift them off it, and a caption on each so nobody
+    has to guess which is which. One quiet ImageSL mark underneath.
+
+    Everything else that used to be here is gone on purpose. The old layout put
+    a header band, a wordmark, the percentage, the stain name and the mark into
+    two 22-pixel strips above and below a 2000-pixel-wide image — six competing
+    elements at three different alignments, with the logo clipped by the frame.
+    The numbers belong in the CSV, which is in the same download and is where a
+    reader can actually use them.
+
+    `metric_text` and `stain_text` are still accepted so existing callers do not
+    break, and are deliberately ignored.
     """
-    Two panels side by side beneath a premium header band. Text and the ImageSL
-    wordmark live entirely inside the band / a slim footer — never over the
-    imagery. A footer strip carries the metric + an "Analyzed with ImageSL" mark.
-    """
-    lh, lw = left_rgb.shape[:2]
-    rh, rw = right_rgb.shape[:2]
-    ih = max(lh, rh)
+    left_rgb = np.ascontiguousarray(left_rgb)
+    right_rgb = np.ascontiguousarray(right_rgb)
+    ph = max(left_rgb.shape[0], right_rgb.shape[0])
+    pw = max(left_rgb.shape[1], right_rgb.shape[1])
 
-    ink = (26, 20, 44)
-    ink_soft = (110, 102, 132)
-    band_bg = (247, 246, 252)
-    violet = (124, 92, 214)
-    violet_d = (109, 40, 217)
+    # Everything scales off the panel width, so a 512 px thumbnail and a 2048 px
+    # export are the same design rather than the same pixel sizes.
+    u = pw / 100.0
+    margin = int(round(u * 3.2))
+    gutter = int(round(u * 2.4))
+    radius = max(4, int(round(u * 0.9)))
+    cap_gap = int(round(u * 1.9))
+    cap_size = max(11, int(round(u * 2.5)))
+    mark_size = max(10, int(round(u * 2.0)))
 
-    band_h = int(min(96, max(40, round(ih * 0.072))))
-    foot_h = int(min(84, max(34, round(ih * 0.060))))
-    total_w = lw + sep_w + rw
-    total_h = band_h + ih + foot_h
+    cap_h = int(round(cap_size * 1.35))
+    mark_h = int(round(mark_size * 1.35))
+    foot_gap = int(round(u * 2.2))
 
-    canvas = Image.new("RGB", (total_w, total_h), band_bg)
-    canvas.paste(Image.fromarray(np.ascontiguousarray(left_rgb)), (0, band_h))
-    canvas.paste(Image.fromarray(np.ascontiguousarray(right_rgb)), (lw + sep_w, band_h))
+    total_w = margin * 2 + pw * 2 + gutter
+    total_h = margin + ph + cap_gap + cap_h + foot_gap + mark_h + margin
+
+    bg = (244, 244, 248)
+    ink = (28, 22, 48)
+    ink_soft = (128, 122, 148)
+    violet = (109, 40, 217)
+
+    canvas = Image.new("RGB", (total_w, total_h), bg)
+
+    xs = (margin, margin + pw + gutter)
+    box = [0, 0, pw - 1, ph - 1]
+
+    # Soft drop shadow: one blurred rounded rectangle under both panels.
+    shadow = Image.new("L", (total_w, total_h), 0)
+    sd = ImageDraw.Draw(shadow)
+    off = max(1, int(round(u * 0.35)))
+    for x in xs:
+        sd.rounded_rectangle([x, margin + off, x + pw - 1, margin + ph - 1 + off],
+                             radius=radius, fill=70)
+    try:
+        shadow = shadow.filter(ImageFilter.GaussianBlur(max(1.0, u * 0.55)))
+    except Exception:
+        pass
+    canvas.paste(Image.new("RGB", (total_w, total_h), (196, 192, 210)), (0, 0), shadow)
+
+    # Rounded panels.
+    mask = Image.new("L", (pw, ph), 0)
+    ImageDraw.Draw(mask).rounded_rectangle(box, radius=radius, fill=255)
+    for x, arr in zip(xs, (left_rgb, right_rgb)):
+        panel = Image.new("RGB", (pw, ph), (255, 255, 255))
+        panel.paste(Image.fromarray(arr), (0, 0))
+        canvas.paste(panel, (x, margin), mask)
+
     draw = ImageDraw.Draw(canvas)
+    for x in xs:                                  # hairline to define the edge
+        draw.rounded_rectangle([x, margin, x + pw - 1, margin + ph - 1],
+                               radius=radius, outline=(223, 220, 233), width=1)
 
-    # separator + hairlines
-    draw.rectangle([lw, band_h, lw + sep_w - 1, band_h + ih], fill=violet)
-    draw.line([(0, band_h - 1), (total_w, band_h - 1)], fill=(224, 218, 238), width=1)
-    draw.line([(0, band_h + ih), (total_w, band_h + ih)], fill=(224, 218, 238), width=1)
+    # Captions under each panel, centred on it.
+    cf = _load_font(cap_size)
+    cy = margin + ph + cap_gap
+    for x, label in zip(xs, (left_label, right_label)):
+        tw, th, bb = _text_size(draw, label, cf)
+        draw.text((x + (pw - tw) / 2.0 - bb[0], cy - bb[1]), label, fill=ink, font=cf)
 
-    # header: logo mark + wordmark on the left, panel labels centred per panel
-    mark_r = int(band_h * 0.26)
-    cx0, cy = int(band_h * 0.5), band_h // 2
-    draw.ellipse([cx0 - mark_r, cy - mark_r, cx0 + mark_r, cy + mark_r], fill=violet_d)
-    draw.ellipse([cx0 - mark_r + mark_r, cy - mark_r + int(mark_r * 0.4),
-                  cx0 + mark_r + mark_r, cy + mark_r + int(mark_r * 0.4)], outline=violet, width=max(2, mark_r // 4))
-    wf = _load_font(int(band_h * 0.34))
-    draw.text((cx0 + mark_r + int(band_h * 0.28), cy - int(band_h * 0.2)), "ImageSL", fill=ink, font=wf)
-
-    lf = _load_font(int(band_h * 0.34))
-    for label, x0, x1 in ((left_label, 0, lw), (right_label, lw + sep_w, total_w)):
-        tw, th, bb = _text_size(draw, label, lf)
-        # keep panel labels clear of the wordmark on the left panel
-        cx = x0 + (x1 - x0 - tw) / 2.0 - bb[0]
-        cx = max(cx, cx0 + mark_r + int(band_h * 2.2)) if x0 == 0 else cx
-        draw.text((cx, cy - th / 2 - bb[1]), label, fill=ink, font=lf)
-
-    # footer: metric (left) + stain (centre) + mark (right)
-    fy = band_h + ih
-    ff = _load_font(int(foot_h * 0.40))
-    fs = _load_font(int(foot_h * 0.34), bold=False)
-    pad = int(foot_h * 0.42)
-    if metric_text:
-        _, th, bb = _text_size(draw, metric_text, ff)
-        draw.text((pad, fy + (foot_h - th) / 2 - bb[1]), metric_text, fill=violet_d, font=ff)
-    if stain_text:
-        tw, th, bb = _text_size(draw, stain_text, fs)
-        draw.text(((total_w - tw) / 2 - bb[0], fy + (foot_h - th) / 2 - bb[1]), stain_text, fill=ink_soft, font=fs)
+    # One quiet mark, centred under the whole card.
+    mf = _load_font(mark_size, bold=False)
     mark = "Analyzed with ImageSL"
-    tw, th, bb = _text_size(draw, mark, fs)
-    draw.text((total_w - tw - pad - bb[0], fy + (foot_h - th) / 2 - bb[1]), mark, fill=ink_soft, font=fs)
+    tw, th, bb = _text_size(draw, mark, mf)
+    my = cy + cap_h + foot_gap
+    # Centre the dot AND the wordmark as one group, not the text alone — a dot
+    # hung off the left of centred text reads as a centring mistake.
+    dot_r = max(2, int(round(mark_size * 0.26)))
+    gap = dot_r * 3
+    group_w = dot_r * 2 + gap + tw
+    gx = (total_w - group_w) / 2.0
+    draw.ellipse([gx, my + th / 2 - dot_r, gx + dot_r * 2, my + th / 2 + dot_r], fill=violet)
+    draw.text((gx + dot_r * 2 + gap - bb[0], my - bb[1]), mark, fill=ink_soft, font=mf)
 
     return np.asarray(canvas)
 
@@ -1476,12 +1510,18 @@ def original_data_uri(rgb: np.ndarray) -> str:
     buf = io.BytesIO()
     im = Image.fromarray(rgb).convert("RGB")
     try:
-        im.save(buf, format="WEBP", lossless=True, quality=80, method=4)
+        # method=0 is the fastest of WebP's lossless search strategies. Measured
+        # on a working-resolution slide it takes 0.068 s against 0.216 s at the
+        # default 4 — a third of the time — for 6% more bytes (1245 KB vs 1170).
+        # The output is lossless at every setting, so the choice is purely
+        # time-against-size and cannot touch a measurement. At three encodes a
+        # second this was the second largest cost in the whole upload path.
+        im.save(buf, format="WEBP", lossless=True, quality=80, method=0)
         mime = "image/webp"
     except Exception:
         # No libwebp in this build: PNG is equally exact, merely larger.
         buf = io.BytesIO()
-        im.save(buf, format="PNG", optimize=False)
+        im.save(buf, format="PNG", compress_level=1)
         mime = "image/png"
     return f"data:{mime};base64," + base64.b64encode(buf.getvalue()).decode("ascii")
 
@@ -1539,5 +1579,9 @@ def level_data_uri(level_map: np.ndarray, tissue_mask: Optional[np.ndarray] = No
     else:
         rgb[..., 1] = np.asarray(tissue_mask, dtype=bool).astype(np.uint8) * 255
     buf = io.BytesIO()
-    Image.fromarray(rgb, "RGB").save(buf, format="PNG", optimize=True)
+    # `optimize=True` makes PNG try every filter strategy to shave a few percent.
+    # This image is a level index plus a binary mask — it is already trivially
+    # compressible, so that search buys almost nothing and costs real time on
+    # every single analysis. Lossless at any level; the bytes decode identically.
+    Image.fromarray(rgb, "RGB").save(buf, format="PNG", compress_level=6)
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")

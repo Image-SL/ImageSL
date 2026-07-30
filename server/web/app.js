@@ -511,6 +511,19 @@ async function analyzeOne(file, onRetry) {
   }
   throw last || new Error("Analysis failed");
 }
+/* How many slides may be in flight at once.
+
+   Uploads used to be strictly one at a time: read a file, send it, wait for the
+   measurement, then start reading the next. The server measures in about a
+   second, so for most of every cycle it sat idle waiting for the browser to
+   read and upload the next file, and a 200-slide batch spent minutes doing
+   nothing. Overlapping a few requests fills that gap.
+   Three, not thirty. The server measures at most `IMAGESL_MAX_CONCURRENCY` (2)
+   slides at once by design — piling on more requests would not measure them any
+   faster, it would just hold connections open, multiply peak memory and make a
+   timeout more likely. Three keeps that gate fed with one queued behind it. */
+const UPLOAD_CONCURRENCY = 3;
+
 async function runBatch(fileList, append) {
   const files = Array.from(fileList);
   $("uploadError").classList.add("hidden");
@@ -519,34 +532,57 @@ async function runBatch(fileList, append) {
   $("loaderSub").textContent = "Preparing…";
   const container = $("resultsContainer");
   const errors = [];
-  let added = 0;
-  for (let i = 0; i < files.length; i++) {
-    $("loaderSub").textContent = `Analyzing ${i + 1} of ${files.length} — ${files[i].name}`;
-    try {
-      const data = await analyzeOne(files[i], (n) => {
-        $("loaderSub").textContent =
-          `Retrying ${files[i].name} (attempt ${n + 1} of ${RETRY_ATTEMPTS})…`;
-      });
-      const r = data.result || {};
-      if (r.valid === false) {
-        skipped.push({ filename: data.filename, reason: r.skip_reason || "Not recognized as a stained slide." });
-      } else {
-        analyses.push({ id: data.analysis_id, filename: data.filename, data });
-        const card = createCard(data);
-        card.style.animationDelay = Math.min(added * 60, 400) + "ms";
-        container.appendChild(card); added++;
+  const results = new Array(files.length);      // slot per input file, keeps ORDER
+  let done = 0, next = 0, added = 0;
+
+  // Cards are appended strictly in the order the files were chosen, not the
+  // order the server happened to finish them, so a batch reads the same way
+  // every time and matches the CSV.
+  let emitAt = 0;
+  function emitReady() {
+    while (emitAt < files.length && results[emitAt] !== undefined) {
+      const slot = results[emitAt];
+      if (slot && slot.data) {
+        const data = slot.data, r = data.result || {};
+        if (r.valid === false) {
+          skipped.push({ filename: data.filename, reason: r.skip_reason || "Not recognized as a stained slide." });
+        } else {
+          analyses.push({ id: data.analysis_id, filename: data.filename, data });
+          const card = createCard(data);
+          card.style.animationDelay = Math.min(added * 60, 400) + "ms";
+          container.appendChild(card); added++;
+        }
+      } else if (slot && slot.error) {
+        errors.push(slot.error);
       }
-    } catch (e) {
-      const why = (e && e.message) || "";
-      errors.push({
-        filename: files[i].name,
-        // A network-level failure throws a TypeError with no useful message —
-        // say what that means rather than the word "failed" on its own.
-        reason: why || "the connection to the server was lost while analyzing this slide",
-      });
+      results[emitAt] = null;                   // release the payload reference
+      emitAt++;
     }
-    setRing((i + 1) / files.length);
   }
+
+  async function worker() {
+    for (;;) {
+      const i = next++;
+      if (i >= files.length) return;
+      try {
+        results[i] = { data: await analyzeOne(files[i]) };
+      } catch (e) {
+        const why = (e && e.message) || "";
+        results[i] = { error: {
+          filename: files[i].name,
+          // A network-level failure throws a TypeError with no useful message —
+          // say what that means rather than the word "failed" on its own.
+          reason: why || "the connection to the server was lost while analyzing this slide",
+        } };
+      }
+      done++;
+      setRing(done / files.length);
+      $("loaderSub").textContent = `Analyzing ${Math.min(done + 1, files.length)} of ${files.length}`;
+      emitReady();
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(UPLOAD_CONCURRENCY, files.length) }, worker));
+  emitReady();
   failures = append ? failures.concat(errors) : errors;
   if (!analyses.length && !skipped.length) {
     showView("uploadView");
@@ -683,10 +719,16 @@ function createCard(data) {
     recount();                 // the counts must describe the CURRENT setting
     const pos = st.ld.count;
     const measured = st.ld.measured;
+    const framePx = st.ld.W * st.ld.H;
     const pct = measured ? (pos / measured * 100) : 0;
     q(".mPercent").textContent = pct.toFixed(2) + "%";
+    // Over the WHOLE frame rather than the tissue in it — the denominator here
+    // is fixed by the image, so it does not move with the segmentation and is
+    // the figure to use when comparing sections cut to the same field.
+    q(".mPercentImage").textContent = framePx ? (pos / framePx * 100).toFixed(2) + "%" : "–";
     q(".mPositive").textContent = pos.toLocaleString();
     q(".mTissue").textContent = measured.toLocaleString();
+    q(".mImagePx").textContent = framePx.toLocaleString();
 
     // Say exactly what the hand tools changed, so a corrected number is never
     // mistaken for an automatic one.
@@ -765,6 +807,10 @@ function createCard(data) {
       if (!keepView) { level = currentLevel(d); q(".cThr").value = String(level); }
       q(".mPercent").textContent = (r.positive_percent || 0).toFixed(2) + "%";
       q(".mPositive").textContent = (r.positive_pixels || 0).toLocaleString();
+      const framePx = (r.width || 0) * (r.height || 0);
+      q(".mImagePx").textContent = framePx.toLocaleString();
+      q(".mPercentImage").textContent = framePx
+        ? ((r.positive_pixels || 0) / framePx * 100).toFixed(2) + "%" : "–";
       levelLabel();
       const note = q(".card-note");
       const text = (r.notes || []).join(" ");

@@ -2,6 +2,18 @@ name: Deploy to AWS Lightsail
 
 # Every push to main builds the Docker image, pushes it to Amazon ECR,
 # and rolls out a new deployment on the Lightsail container service.
+#
+# Capacity is set by the service's POWER and SCALE, which this deployment does
+# not carry — they belong to the service, not to a deployment, and are changed
+# with `aws lightsail update-container-service`. They matter more than anything
+# in this file: a slide takes about a second of numpy on a full core, so on a
+# 0.25-vCPU `nano`/`micro` it takes ten to twenty, and a 200-slide batch cannot
+# finish inside any sane timeout. See docs/CAPACITY.md for the sizing and the
+# exact command.
+#
+# Keep SCALE at 1. Analyses are held in the container's own filesystem, so with
+# two nodes a slide analysed on one is invisible to the other and every second
+# export would come back half empty.
 on:
   push:
     branches: [main]
@@ -51,7 +63,13 @@ jobs:
             "containers": {
               "imagesl": {
                 "image": "${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}",
-                "environment": { "IMAGESL_VERSION": "2.0.0" },
+                "environment": {
+                  "IMAGESL_VERSION": "2.0.0",
+                  "IMAGESL_MAX_CONCURRENCY": "2",
+                  "IMAGESL_CACHE_MAX": "400",
+                  "IMAGESL_CACHE_MB": "6144",
+                  "IMAGESL_CACHE_TTL": "28800"
+                },
                 "ports": { "8000": "HTTP" }
               }
             },

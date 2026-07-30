@@ -444,6 +444,7 @@ UNMISTAKABLE_BROWN = 0.28   # object mean od (B-R): DAB objects median 0.325
 UNMISTAKABLE_SIG_K = 5.0    # ... and this dense, in the slide's own tissue units
 UNMISTAKABLE_PCT   = 10.0   # bar <= this percentile of such objects' peaks
 UNMISTAKABLE_MIN_N = 6      # ... only when there are enough of them to be a population
+BAR_NOTE_RATIO     = 0.67   # ... and only SAY so when it moved the bar this much
 SEED_RAW_BROWN   = 0.14   # a dense pixel may seed on the raw reading alone ...
 SEED_RAW_BOG     = 0.04   # ... if its channel ORDER is the chromogen's, not red's
 # "Dense" is a statement about this slide, not an absolute brightness: material
@@ -709,11 +710,31 @@ def _masked_mean(x: np.ndarray, m: np.ndarray, win: int) -> tuple[np.ndarray, np
     return num, den
 
 
-def _field(x: np.ndarray, keep: np.ndarray, win: int, fallback: float) -> np.ndarray:
+def _mask_weights(keep: np.ndarray, win: int) -> tuple[np.ndarray, np.ndarray]:
+    """The two DENOMINATORS a `_field` fit needs — how much of each pixel's fine
+    and coarse neighbourhood is usable background.
+
+    Hoisted out of `_field` because they depend only on the mask, not on the
+    channel being fitted, and the fit runs once per colour channel. Computing
+    them inside meant three identical pairs of box filters per pass over a
+    megapixel image — half of all the filtering the background fit did, for
+    nothing. Same arrays, same result, half the work."""
+    return (_uniform_filter(keep.astype(np.float32), win),
+            _uniform_filter(keep.astype(np.float32), win * BG_COARSE_MULT))
+
+
+def _field(x: np.ndarray, keep: np.ndarray, win: int, fallback: float,
+           den: Optional[np.ndarray] = None,
+           cden: Optional[np.ndarray] = None) -> np.ndarray:
     """Smooth `x` over `keep` only, at two scales, so the estimate survives even
-    where a whole neighbourhood is foreground."""
-    num, den = _masked_mean(x, keep, win)
-    cnum, cden = _masked_mean(x, keep, win * BG_COARSE_MULT)
+    where a whole neighbourhood is foreground.
+
+    `den` / `cden` are the mask denominators from `_mask_weights`; they are
+    passed in so the caller can share them across channels."""
+    if den is None or cden is None:
+        den, cden = _mask_weights(keep, win)
+    num = _uniform_filter(np.where(keep, x, 0.0).astype(np.float32), win)
+    cnum = _uniform_filter(np.where(keep, x, 0.0).astype(np.float32), win * BG_COARSE_MULT)
     fine_ok = den > 0.06
     coarse_ok = cden > 0.02
     out = np.full(x.shape, float(fallback), dtype=np.float32)
@@ -746,8 +767,9 @@ def background_od_field(od: np.ndarray, tissue: np.ndarray, win: int) -> tuple[n
 
     for it in range(BG_ITERS + 1):
         fallbacks = [float(np.median(od[..., c][keep])) if keep.any() else 0.0 for c in range(3)]
+        den, cden = _mask_weights(keep, win)      # same for all three channels
         for c in range(3):
-            bg_od[..., c] = _field(od[..., c], keep, win, fallbacks[c])
+            bg_od[..., c] = _field(od[..., c], keep, win, fallbacks[c], den, cden)
         if it == BG_ITERS:
             break
         exc = proj - (bg_od @ dab_dir)
@@ -1205,11 +1227,13 @@ def detect(
     _tr = np.power(10.0, -od_pos)
     raw_warm = ((_tr[..., 0] - _tr[..., 2]) / (_tr[..., 0] + _tr[..., 2] + 1e-6)).astype(np.float32)
 
-    # Chroma of the material — white-point-normalised and chroma-smoothed. See
-    # `chroma_readings`, which is shared with the regression suite so the two
-    # cannot drift into asking different questions. Reported per object as a
-    # diagnostic; nothing is gated on it any more (see CHROMO_FRAC_MIN).
-    norm_sat, norm_hue = chroma_readings(od_pos, rel_scale)
+    # `chroma_readings` is NOT called here any more. Nothing is gated on
+    # saturation or hue since CHROMO_FRAC_MIN replaced the debris test, so the
+    # only thing it fed were two per-object numbers no decision reads — at the
+    # cost of a chroma-smoothing Gaussian over the whole image on every analysis
+    # (0.13 s a slide, ~9% of the measurement). The function stays for the
+    # regression suite and for future analysis; it is simply off the hot path.
+    norm_sat = norm_hue = None
 
     # How much of the absorbance here is this chromogen rather than neutral
     # material — the one colour reading the object gate uses. See
@@ -1396,11 +1420,20 @@ def detect(
             # Never below `bar_min` either: this is a ceiling on over-strictness,
             # not a licence to detect a slide's texture.
             if bar_ceiling < bar:
+                _before = bar
                 bar = float(max(bar_ceiling, bar_min))
-                notes.append(
-                    "Some clearly stained structures fell below the boundary the "
-                    "object population implied, so the boundary was lowered to "
-                    "include them.")
+                # Only say so when the correction was large enough to matter.
+                # It engages to some degree on most slides — 89 of 154 in one
+                # export — and a note that appears on the majority of a batch is
+                # wallpaper rather than information: it trains the reader to skip
+                # the notes column, which is where the genuinely unusual slides
+                # announce themselves. A third off the boundary is the point at
+                # which the automatic operating point was meaningfully wrong.
+                if bar <= _before * BAR_NOTE_RATIO:
+                    notes.append(
+                        "Some clearly stained structures fell below the boundary the "
+                        "object population implied, so the boundary was lowered to "
+                        "include them.")
 
         # The ends of the sensitivity ladder are the extremes of THIS slide's
         # object population, so the control spans exactly the range over which

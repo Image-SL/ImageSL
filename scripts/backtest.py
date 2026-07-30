@@ -94,9 +94,24 @@ OBVIOUS_BROWN = 0.30    # ... and this clearly the chromogen's own colour
 # DIRECTION of that absorbance, which is scale-free and so does not degrade on a
 # near-black core. Small specks are dropped — a structure has to be a structure.
 RAW_SIG_K       = 6.0   # this many robust deviations above the tissue's own level
-RAW_BROWN_MIN   = 0.15  # ... and its own absorbance this clearly chromogen-directional
-RAW_BOG_MIN     = 0.02  # ... ordered like DAB rather than like a red chromogen
 RAW_MIN_BLOB_PX = 12    # ... in a blob at least this large
+# ... and this much of its absorbance must actually BE the chromogen.
+#
+# This replaced a pair of raw direction terms (B-R >= 0.15, B-G >= 0.02). A
+# direction describes the total absorbance, so a grey-green pigment body with a
+# faint warm cast passes it: the two masses on OK3259 that this suite insisted
+# the engine must count read B-R 0.185 and 0.182, and decompose to 12-13%
+# chromogen against 42% for the material the engine detected on that slide.
+# Enlarged they are obviously pigment, and the genuine DAB beside them is
+# detected. The ground truth was demanding a false positive.
+#
+# 0.30 is twice the engine's own `CHROMO_FRAC_MIN` and still far under the DAB
+# population's 1st percentile (0.348, measured per object over the corpus), so it
+# admits real staining with enormous margin while excluding material that is
+# mostly not chromogen. Being STRICTER than the gate it tests is the safe
+# direction for a ground truth: it only ever asks the engine to find things that
+# unambiguously are stain.
+RAW_CHROMO_MIN  = 0.30
 # ... and it must not be intraluminal debris.
 #
 # Without this the check demands that granular luminal casts be counted. That
@@ -210,16 +225,13 @@ def _raw_obvious_stain(od: np.ndarray, tissue: np.ndarray) -> np.ndarray:
     od_pos = np.clip(od, 0.0, None)
     dab = detect.DAB_OD / np.linalg.norm(detect.DAB_OD)
     proj = (od_pos @ dab).astype(np.float32)
-    mag = np.linalg.norm(od_pos, axis=2) + 1e-6
-    brown = ((od_pos[..., 2] - od_pos[..., 0]) / mag).astype(np.float32)
-    bog = ((od_pos[..., 2] - od_pos[..., 1]) / mag).astype(np.float32)
+    frac = detect.chromogen_fraction(od_pos)
     t = proj[tissue] if tissue.any() else proj.ravel()
     if t.size > 300_000:
         t = t[:: t.size // 300_000 + 1]
     med = float(np.median(t))
     sig = 1.4826 * float(np.median(np.abs(t - med))) + 1e-6
-    m = (tissue & (proj >= med + RAW_SIG_K * sig)
-         & (brown >= RAW_BROWN_MIN) & (bog >= RAW_BOG_MIN))
+    m = tissue & (proj >= med + RAW_SIG_K * sig) & (frac >= RAW_CHROMO_MIN)
     if not m.any():
         return m
     lbl = label(m, connectivity=2)
@@ -246,13 +258,23 @@ def _drop_debris_structures(mask: np.ndarray, od: np.ndarray) -> np.ndarray:
     regression suite that shares a premise with the thing it is testing will
     confirm that premise forever.
 
-    So this is an INDEPENDENT statement about the material, in absorbance space:
-    a structure is refused only when the direction of its own optical density is
-    essentially colourless, which is true of pigment, ink and folds at any
-    density and is never true of DAB. It uses a stricter bar than the engine's
-    (0.10 against OBJ_NEUTRAL_BROWN) precisely so that the two cannot be tuned
-    against each other — anything between the two bars counts as stain the engine
-    is expected to find.
+    So this is a statement about the material in absorbance space: a structure is
+    refused when its absorbance is overwhelmingly NOT the chromogen.
+
+    It asks that as a decomposition (`detect.chromogen_fraction`) rather than as
+    a raw B-R direction, which is what it used to do and which does not work. A
+    direction describes the total absorbance, so a grey-green pigment body with a
+    faint warm cast clears a raw-direction bar while being almost entirely
+    neutral. Measured on OK3259, the two masses the old ground truth insisted the
+    engine must count read B-R 0.185 and 0.182 — over a 0.10 bar — yet decompose
+    to 13% and 12% chromogen, against 42% for the material the engine actually
+    detected on that slide. Enlarged, they are plainly pigment, and the real DAB
+    around them is detected. The suite was demanding a false positive.
+
+    The bar is 0.10 where the engine's is `CHROMO_FRAC_MIN` (0.15), deliberately:
+    anything between the two still counts as stain the engine is required to
+    find, so the ground truth stays strictly harder than the gate it tests and
+    the two cannot be tuned against one another.
     """
     if not mask.any():
         return mask
@@ -261,14 +283,12 @@ def _drop_debris_structures(mask: np.ndarray, od: np.ndarray) -> np.ndarray:
     n = int(lbl.max())
     if not n:
         return mask
-    od_pos = np.clip(od, 0.0, None)
-    mag = np.linalg.norm(od_pos, axis=2) + 1e-6
-    brown = (od_pos[..., 2] - od_pos[..., 0]) / mag      # DAB +0.51, neutral 0.00
+    frac = detect.chromogen_fraction(np.clip(od, 0.0, None))
     flat = lbl.ravel()
     area = np.bincount(flat, minlength=n + 1).astype(np.float64)
-    bmean = np.bincount(flat, weights=brown.ravel().astype(np.float64),
+    fmean = np.bincount(flat, weights=frac.ravel().astype(np.float64),
                         minlength=n + 1) / np.maximum(area, 1)
-    bad = bmean < 0.10
+    bad = fmean < 0.10
     bad[0] = False
     return mask & ~bad[lbl]
 

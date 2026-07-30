@@ -435,10 +435,16 @@ def _public(entry: dict) -> dict:
     }
 
 
-def _view_key(params: dict) -> dict:
+def _view_key(params: dict, auto_level: Optional[int] = None) -> dict:
     """The part of `params` that changes the measurement — used to tell whether a
-    caller's on-screen view already matches what was last measured and cached."""
+    caller's on-screen view already matches what was last measured and cached.
+
+    The level is written as the concrete ladder index, never `None`, so "Auto"
+    and the index Auto resolves to compare equal. Left as `None` they did not,
+    and the CSV fast path missed on every untouched slide."""
     lv = params.get("level")
+    if lv is None:
+        lv = auto_level
     return {
         "level": (None if lv is None else int(lv)),
         "regions": params.get("regions") or [],
@@ -446,7 +452,8 @@ def _view_key(params: dict) -> dict:
     }
 
 
-def _requested_view(override: Optional[dict], entry_params: dict) -> dict:
+def _requested_view(override: Optional[dict], entry_params: dict,
+                    auto_level: Optional[int] = None) -> dict:
     """A caller's requested view, canonicalised the same way `_view_key` is, so
     the two can be compared exactly."""
     ov = override or {}
@@ -462,6 +469,8 @@ def _requested_view(override: Optional[dict], entry_params: dict) -> dict:
                 pass
     regions = (_clean_regions(ov["regions"]) if ov.get("regions") is not None
                else (entry_params.get("regions") or []))
+    if level is None:
+        level = auto_level          # "Auto" and its index are the same setting
     return {"level": (None if level is None else int(level)),
             "regions": regions,
             "stain_key": entry_params.get("stain_key")}
@@ -478,7 +487,9 @@ def _persist(analysis_id: str, entry: dict) -> None:
     for k in ("od", "conc", "excess", "brownness"):
         entry["maps"].pop(k, None)
     _CACHE.put(analysis_id, entry,
-               meta={"row": _csv_row(entry), "view": _view_key(entry["params"])})
+               meta={"row": _csv_row(entry),
+                     "view": _view_key(entry["params"], _auto_level(entry)),
+                     "auto_level": _auto_level(entry)})
 
 
 # --------------------------------------------------------------------------- #
@@ -591,6 +602,33 @@ def api_stains() -> JSONResponse:
     return JSONResponse({"stains": stain_registry.as_list()})
 
 
+def _undecodable_reason(data: bytes, name: str, exc: Exception) -> str:
+    """Say what is actually wrong with a file that would not decode.
+
+    Pillow's own message for anything it does not recognise is "cannot identify
+    image file <_io.BytesIO object at 0x000001C4...>", which names a memory
+    address and tells the user nothing. The common cases are worth naming
+    outright — above all the macOS AppleDouble sidecar, because a folder copied
+    from a Mac contains one `._name.tif` for every real slide, they are picked up
+    by any select-all, and a batch then reports half its files as failures with
+    no hint that they were never images.
+    """
+    base = os.path.basename(name or "")
+    if base.startswith("._") or data[:4] == b"\x00\x05\x16\x07":
+        return ("This is a macOS resource-fork stub, not an image — Finder writes "
+                "one of these beside every real file when copying to a non-Mac "
+                "disk. The slide itself is the file of the same name without the "
+                "leading \"._\". You can safely leave these out of the selection.")
+    if not data[:2] in (b"II", b"MM", b"\x89P", b"\xff\xd8", b"RI", b"GI", b"BM"):
+        return ("This file is not an image ImageSL can read — its contents do not "
+                "match any supported format (TIFF, PNG, JPEG, WebP or BMP).")
+    if "truncated" in str(exc).lower():
+        return ("This image file is incomplete — it looks like the copy or "
+                "download was cut short. Try copying it again.")
+    return ("This file could not be read as an image. It may be corrupt, or in a "
+            "TIFF variant ImageSL does not support.")
+
+
 def _analyze_upload(data: bytes, name: str, stain_key: Optional[str]) -> dict:
     """Decode + measure + cache one slide. Runs off the event loop (see caller).
 
@@ -601,8 +639,7 @@ def _analyze_upload(data: bytes, name: str, stain_key: Optional[str]) -> dict:
     try:
         rgb, source_size = engine.load_rgb(data)
     except Exception as exc:
-        raise HTTPException(status_code=400,
-                            detail=f"Could not read this file as an image ({exc}).")
+        raise HTTPException(status_code=400, detail=_undecodable_reason(data, name, exc))
 
     params = _default_params()
     chosen = stain_registry.lookup(stain_key) if stain_key else None
@@ -708,6 +745,22 @@ def _tiff_bytes(arr: np.ndarray) -> bytes:
     return buf.getvalue()
 
 
+def _auto_level(entry: dict) -> int:
+    """This slide's own automatic operating point on the sensitivity ladder."""
+    r = entry.get("result")
+    return int(getattr(r, "auto_level", detect_mod.AUTO_LEVEL))
+
+
+def _same_level(a, b, entry: dict) -> bool:
+    """Do these two level values select the same operating point?
+
+    `None` means "the slide's own automatic point", and the browser reports that
+    same point as its concrete index. They are the same setting written two ways.
+    """
+    auto = _auto_level(entry)
+    return (auto if a is None else a) == (auto if b is None else b)
+
+
 def _apply_view(entry: dict, level: Optional[str], regions=None) -> bool:
     """Adopt the caller's CURRENT on-screen sensitivity and manual regions, and
     RE-MEASURE if either of them changed.
@@ -732,6 +785,15 @@ def _apply_view(entry: dict, level: Optional[str], regions=None) -> bool:
                 new_level = int(float(level))
             except (TypeError, ValueError):
                 pass
+        # `None` and the slide's own automatic index mean the same operating
+        # point, so treat them as equal. They are not equal as values, and that
+        # cost real time: a card sitting at Auto reports its level as the
+        # concrete integer (100), while the cached params still hold `None`, so
+        # every export saw a difference and re-measured every untouched slide.
+        # Measured, that was 1.02 s a slide against 0.16 s — six times the work
+        # to arrive at exactly the same numbers.
+        if _same_level(new_level, p.get("level"), entry):
+            new_level = p.get("level")
         if new_level != p.get("level"):
             p["level"] = new_level
             changed = True
@@ -1043,7 +1105,7 @@ def _collect_rows(analysis_ids, overrides: Optional[dict] = None) -> list[dict]:
             entry_params = {"level": meta["view"].get("level"),
                             "regions": meta["view"].get("regions"),
                             "stain_key": meta["view"].get("stain_key")}
-            if _requested_view(ov, entry_params) == meta["view"]:
+            if _requested_view(ov, entry_params, meta.get("auto_level")) == meta["view"]:
                 rows.append(meta.get("row", {}))
                 continue
         entry = _CACHE.get(aid)
