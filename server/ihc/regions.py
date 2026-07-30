@@ -1,5 +1,5 @@
 """
-Manual regions — the hand tools that sit on top of the automatic detection.
+Manual regions — the hand tools that correct the automatic detection.
 
 A region is a shape the user drew on the slide plus what it means. Coordinates
 are normalised (0..1 of width / height) so a region survives any working
@@ -8,26 +8,48 @@ rasterise exactly the same area.
 
 Modes
 -----
-``focus``    Measure only inside these regions. Tissue outside them stops
-             counting — for both the positive area and the denominator — which
-             is how you quantify one cortical layer, one core of a TMA, or one
-             half of a section.
-``ignore``   Cut these regions out entirely: a fold, a pen mark, a bubble, a
-             torn edge. Removed from the tissue denominator as well, so it does
-             not silently dilute the percentage.
+``include``  "There is staining here that you missed." Inside the shape every
+             candidate structure is counted — including the ones the detector
+             formed and then refused on colour or size (``LEVEL_CANDIDATE``),
+             which is where a missed duct actually goes. It cannot invent
+             staining: a pixel the detector never considered chromogen at all
+             (``LEVEL_NEVER``) stays negative however the shape is drawn.
 
-A region says **where** to measure and nothing else. Both modes move the
-numerator and the denominator together, so the reported percentage is always
-"positive area / tissue actually measured" over exactly the area the user chose.
+``exclude``  "What you found here is wrong." Inside the shape nothing is
+             counted — a fold, a pen mark, a bubble, a torn edge, or simply a
+             false positive the user can see is not a structure.
 
-There used to be a third mode ("More here" / "Less here") that shifted the
-sensitivity inside a drawn shape. It is gone on purpose. A per-region operating
-point makes the headline percentage a mixture of several different decision
-rules, which is not a quantity that can be compared between slides or reported
-in a method — and because the shift applied only inside the shape, the same
-structure was counted or not depending on which side of a hand-drawn line it
-fell. Sensitivity is now one setting for the whole slide, recorded in the export
-next to the number it produced.
+These are CORRECTION tools, and that is a deliberate change from what they were.
+
+They used to be region-of-interest tools: ``focus`` restricted the measurement
+to the drawn area and ``ignore`` cut an area out, both moving the numerator and
+the denominator together. That is a defensible definition and it is not the one
+users read off the buttons. Two things went wrong with it in practice:
+
+  * **The percentage barely moved, so the tools looked broken.** Shrinking both
+    counts together leaves the ratio roughly where it was. Drawing an Exclude
+    box over an entire slide — which a user does precisely to check the control
+    does something — left a sliver of tissue around the edge of the drag, and
+    the answer came back 3.868% instead of 0%: 562 positive pixels over the
+    14 529 that survived. Arithmetically correct, and useless.
+
+  * **It made slides incomparable.** A percentage measured over a hand-drawn
+    subregion of one slide and the whole of another cannot be put in the same
+    column of a results table, and nothing on screen forced the user to notice.
+
+So the denominator is now ALWAYS the slide's whole tissue area, whatever is
+drawn, and the tools move only the numerator — the thing the user is actually
+correcting. Both statements a user makes with them are then true:
+
+    Exclude everything  ->  no positives  ->  0.000%
+    Include an area     ->  the structures in it are counted
+
+and every slide in a batch is measured over the same denominator, so the
+numbers stay comparable. What was drawn is recorded in the export
+(``included_pixels`` / ``excluded_pixels``) so a reader can see the measurement
+was corrected by hand and by how much.
+
+Where the two overlap, **exclude wins**: it is the more specific statement.
 """
 
 from __future__ import annotations
@@ -36,7 +58,20 @@ from typing import Iterable, Optional
 
 import numpy as np
 
-MODES = ("focus", "ignore")
+from .detect import LEVEL_CANDIDATE, LEVEL_NEVER
+
+MODES = ("include", "exclude")
+
+# Older saved batches (IndexedDB survives a deploy) carry the previous names.
+_ALIASES = {"focus": "include", "ignore": "exclude", "boost": "include"}
+
+
+def canonical_mode(mode) -> Optional[str]:
+    """Map any accepted spelling of a mode to its canonical name, or None."""
+    m = str(mode or "").strip().lower()
+    m = _ALIASES.get(m, m)
+    return m if m in MODES else None
+
 
 # --------------------------------------------------------------------------- #
 # The rasterisation rule
@@ -159,29 +194,32 @@ def rasterize(region: dict, h: int, w: int) -> Optional[np.ndarray]:
 
 def build(regions: Optional[Iterable[dict]], h: int, w: int, n_levels: int) -> dict:
     """Rasterise every region into the two masks detection actually needs."""
-    focus = None
-    ignore = np.zeros((h, w), dtype=bool)
-    used = n_focus = n_ignore = 0
+    include = None
+    exclude = None
+    used = n_include = n_exclude = 0
 
     for region in regions or []:
         if not isinstance(region, dict):
             continue
-        mode = str(region.get("mode", "")).lower()
-        if mode not in MODES:
+        mode = canonical_mode(region.get("mode"))
+        if mode is None:
             continue
         mask = rasterize(region, h, w)
         if mask is None or not mask.any():
             continue
         used += 1
-        if mode == "focus":
-            n_focus += 1
-            focus = mask if focus is None else (focus | mask)
+        if mode == "include":
+            n_include += 1
+            include = mask if include is None else (include | mask)
         else:
-            n_ignore += 1
-            ignore |= mask
+            n_exclude += 1
+            exclude = mask if exclude is None else (exclude | mask)
 
-    return {"focus": focus, "ignore": ignore, "count": used,
-            "focus_count": n_focus, "ignore_count": n_ignore}
+    return {"include": include, "exclude": exclude, "count": used,
+            "include_count": n_include, "exclude_count": n_exclude,
+            # Kept under the old keys as well so anything still reading them
+            # (a cached page, an old export path) does not silently see zero.
+            "focus_count": n_include, "ignore_count": n_exclude}
 
 
 def apply(level_map: np.ndarray, tissue: np.ndarray, level: int,
@@ -192,14 +230,23 @@ def apply(level_map: np.ndarray, tissue: np.ndarray, level: int,
     including the tissue channel that travels with it — so the percentage on
     screen and the percentage the server puts in the CSV are the same
     calculation over the same two counts.
-    """
-    tis = tissue
-    if built.get("focus") is not None:
-        tis = tis & built["focus"]
-    ignore = built.get("ignore")
-    if ignore is not None and ignore.any():
-        tis = tis & ~ignore
 
+    The tissue mask comes back UNCHANGED. See the module docstring: the hand
+    tools correct the numerator and never move the denominator, so a batch stays
+    comparable and "exclude everything" really does read 0.000%.
+    """
     lv = int(np.clip(int(level), 0, n_levels - 1))
-    positive = (level_map <= lv) & (level_map < 255) & tis
-    return positive, tis
+    positive = (level_map <= lv) & tissue
+
+    inc = built.get("include")
+    if inc is not None and inc.any():
+        # Everything the detector formed as a candidate here counts, including
+        # what it refused (LEVEL_CANDIDATE). LEVEL_NEVER is still never positive,
+        # so an Include region cannot manufacture staining out of blank tissue.
+        positive |= tissue & inc & (level_map <= LEVEL_CANDIDATE)
+
+    exc = built.get("exclude")
+    if exc is not None and exc.any():
+        positive &= ~exc
+
+    return positive, tissue

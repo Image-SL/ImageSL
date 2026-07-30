@@ -228,9 +228,31 @@ OBJ_BROWN_MEAN   = 0.14   # the object must be brown ON AVERAGE — what separat
 # them. Saturation is included because it is the reading on which the two are
 # furthest apart, and because it asks the one question the others do not: does
 # this material carry colour at all, or is it merely dark?
-OBJ_RAW_BROWN    = 0.26   # ... object mean, on the material's own absorbance
-OBJ_RAW_WARM     = 0.20   # ... together with raw warmth (R−B)/(R+B) of the pixels
-OBJ_RAW_SAT      = 0.30   # ... and it must actually be coloured, not just dark
+# ... and the conjunction described above is NOT what is used any more.
+#
+# The reasoning above is sound and the conclusion was wrong, for a reason worth
+# recording. Two of the three readings it ANDs together are computed from
+# TRANSMITTED light — raw warmth is (T_R − T_B)/(T_R + T_B) and saturation is
+# (T_max − T_min)/T_max — so both collapse toward zero on near-black material.
+# That is exactly the material this override exists to rescue. Requiring all
+# three therefore reinstated the failure it was written to fix: measured across
+# 154 slides, the colour gate was refusing a mean 8.3% of the unmistakable
+# chromogen on the worst slides and up to 32% on one (OK3029).
+#
+# Dropping the two transmittance terms and judging on the absorbance direction
+# alone cut the median miss from 2.91% to 0.44% and the worst from 17.7% to 7.5%
+# with no movement in the non-chromogen share of positives. That direction has
+# since been replaced in turn by a proper decomposition, because a direction
+# still describes the total absorbance and so is dragged around by the
+# counterstain — see CHROMO_FRAC_MIN, which is what the object gate actually
+# uses now.
+#
+# These three are no longer gated on. They are still computed and reported per
+# object, because they are what the earlier analyses were written against and a
+# future one will want to compare.
+OBJ_RAW_BROWN    = 0.22   # reported only — object mean od (B−R)
+OBJ_RAW_WARM     = 0.20   # reported only — raw warmth (R−B)/(R+B)
+OBJ_RAW_SAT      = 0.30   # reported only — raw saturation
 
 # --------------------------------------------------------------------------- #
 # Intraluminal debris
@@ -289,6 +311,139 @@ OBJ_RAW_SAT      = 0.30   # ... and it must actually be coloured, not just dark
 # staining is not visible at all.
 DEBRIS_SAT_MAX   = 0.22
 DEBRIS_HUE_MIN   = 30.0
+
+# --------------------------------------------------------------------------- #
+# ... and why that test is no longer what decides it
+# --------------------------------------------------------------------------- #
+# Everything above describes a saturation-and-hue test on the (normalised,
+# chroma-smoothed) TRANSMITTED image, applied per pixel before objects are
+# grouped. Measured against a 154-slide corpus it is the single largest source of
+# error in the detector, in both directions, and it has to go.
+#
+# What it actually does, measured. Two populations were built without reference
+# to any of the readings being compared — DAB objects identified by connectivity
+# to unambiguous excess-brown seeds, and dense objects containing no such seed
+# anywhere — and each rule scored on the decision the detector really makes,
+# per object:
+#
+#                                        refuses DAB    refuses seedless
+#     mean sat < 0.22 AND hue > 30            6.5%             32.1%
+#     mean od (B-R) < 0.18                    0.6%             35.2%
+#
+# The replacement is better on BOTH axes: a tenth of the damage to real staining
+# while refusing more debris. And the hue half of the old test discriminates
+# nothing at all — DAB objects sit at a median hue of 23.6 deg and seedless ones
+# at 27.9, distributions that almost completely overlap.
+#
+# The reason is the one this module already states about HSV hue and then went on
+# to violate: a ratio taken on transmitted light collapses as a pixel approaches
+# black, so both readings degrade exactly on the densest chromogen — the material
+# nobody would mistake for anything else. An absorbance DIRECTION does not: it is
+# scale-free, so a near-black duct core reads the same brown as its rim.
+#
+# The second half of the change matters as much as the first. The old test was
+# applied PER PIXEL, before connectivity, and a gate that erodes 8% of a
+# structure's pixels does not cost 8% — it fragments the structure into pieces
+# that then fail the area and seed-fraction gates, and the whole thing is lost.
+# Attributed pixel by pixel across the corpus, that mechanism accounted for 81%
+# of the unmistakable dark-brown chromogen missed on the worst slide (OK3369),
+# 79% on OK3258 and 76% on OK3413 — against a per-pixel kill rate of only 8%.
+#
+# So the neutral-material test is now a single per-OBJECT veto, below. The
+# original objection to judging per object — that a duct running along a vessel
+# wall is connected to the cast inside it, so refusing the merged body deletes
+# the duct — is still true, but it is now a 0.6% risk rather than a 6.5% one,
+# and the Exclude tool removes such a body by hand in one drag.
+#
+# `chroma_readings` and `looks_like_debris` are kept: they are still reported per
+# object as diagnostics, and the regression suite compares against them.
+# --------------------------------------------------------------------------- #
+# What replaces it: how much of this object's absorbance IS the chromogen
+# --------------------------------------------------------------------------- #
+# The direction of the total absorbance was the first replacement, and the
+# parametric suite immediately found the flaw in it: a direction describes
+# EVERYTHING absorbing at that pixel, so a strong counterstain drags a genuinely
+# DAB-stained pixel toward haematoxylin. Worked through on the suite's own
+# scenes, a spot carrying 0.55 OD of DAB reads
+#
+#     over 0.10 OD of haematoxylin   od (B-R) = +0.387   ... obviously brown
+#     over 0.30 OD                   od (B-R) = +0.212   ... marginal
+#     over 0.80 OD                   od (B-R) = -0.007   ... "not brown at all"
+#
+# so the veto refused real staining on every heavily counterstained section and
+# recall on the suite collapsed to near zero for tissue_od >= 0.55. These liver
+# sections are barely counterstained, so the corpus never showed it; the suite
+# exists for exactly this.
+#
+# The fix is to stop asking about a direction and decompose the absorbance onto
+# the three things that are actually present — counterstain, chromogen, and
+# neutral material (ink, pigment, fold, shadow) — and ask what SHARE of it is the
+# chromogen, against the neutral part only:
+#
+#     chromogen fraction = a_chromogen / (a_chromogen + a_neutral)
+#
+# The counterstain term drops out of the ratio, which is the point: it is not
+# what is being judged. Both worked examples above then read 1.000, pure grey
+# reads 0.000, and grey with a trace of chromogen in it reads 0.143.
+#
+# Measured per object over the corpus (2 843 DAB objects against 462 dense
+# objects carrying no chromogen seed anywhere), and compared with every rule
+# tried before it:
+#
+#                                        refuses DAB    refuses non-chromogen
+#     mean sat < 0.22 AND hue > 30            6.5%             32.1%
+#     mean od (B-R) < 0.18                    0.6%             35.2%
+#     chromogen fraction < 0.30               0.6%             41.1%
+#
+# It is the best of the three on both axes at once, it is the only one of the
+# three that survives a counterstain, and unlike a transmittance ratio it does
+# not degrade on a near-black core. Basis condition number 16.2 — comfortably
+# invertible.
+# The bar itself is 0.15, not the 0.30 the object measurement above would
+# suggest, and the reason is what the two numbers are measuring. That comparison
+# scored "dense objects containing no strong chromogen seed" as the negative
+# class, and that class is not pure debris — most of it is genuine faint
+# staining, which is exactly what a detector must not throw away. Swept against
+# the corpus instead, 0.30 leaves six slides missing more than 5% of the obvious
+# chromogen (worst 34%), while 0.15 leaves one (worst 11.6%), and the share of
+# positives that are neutral does not move (0.58% to 0.61% at the median).
+#
+# What guards the low end is not this number but the suites that measure debris
+# directly: `synthetic_cases` requires grey debris to stay under 5% of the
+# measured area, and `synthetic_matrix` reports the debris it plants explicitly.
+# Pure neutral material decomposes to a chromogen fraction of 0.000, so it is
+# nowhere near this bar — 0.15 refuses material that is one part chromogen to
+# nearly six parts neutral, which no chromogen-stained structure ever is.
+CHROMO_FRAC_MIN = 0.15    # below this share, the object is not this chromogen
+
+# --------------------------------------------------------------------------- #
+# The detection bar may not discard what is unmistakably chromogen
+# --------------------------------------------------------------------------- #
+# The bar is chosen by splitting the population of object peaks, which answers
+# "where do background bumps end and structures begin". On a slide whose staining
+# spans a genuine range — strong ducts and a weaker ductular reaction around them
+# — that split can land INSIDE the real population, and the weaker half is
+# discarded. Measured across the corpus after the debris fix, this was the whole
+# of the remaining false-negative problem: every slide still missing a large share
+# of obvious chromogen had a bar many times its own candidate floor (OK3038
+# bar 0.381 vs floor 0.025, missing 61%; OK3029 0.223/0.048, missing 35%;
+# OK2996 0.314/0.062, missing 23%) and a high separability, so the split was
+# trusted completely.
+#
+# Separability cannot see this. It measures how cleanly the population divides in
+# two, not whether both halves are stain — and it is HIGHEST (0.86-0.91 on those
+# slides) exactly when a real bimodal stain distribution is cut down the middle.
+#
+# So the split keeps its say, but not the final say: whatever it proposes, the bar
+# is not allowed to sit above material that is unmistakably chromogen by its own
+# absorbance — dense, and clearly brown-directional, a reading that owes nothing
+# to the local background or to the population statistics that set the bar. The
+# clamp is a quantile rather than the minimum so that one marginal object cannot
+# drag the operating point down onto a slide's texture.
+UNMISTAKABLE_BROWN = 0.28   # object mean od (B-R): DAB objects median 0.325
+UNMISTAKABLE_SIG_K = 5.0    # ... and this dense, in the slide's own tissue units
+UNMISTAKABLE_PCT   = 10.0   # bar <= this percentile of such objects' peaks
+UNMISTAKABLE_MIN_N = 6      # ... only when there are enough of them to be a population
 SEED_RAW_BROWN   = 0.14   # a dense pixel may seed on the raw reading alone ...
 SEED_RAW_BOG     = 0.04   # ... if its channel ORDER is the chromogen's, not red's
 # "Dense" is a statement about this slide, not an absolute brightness: material
@@ -437,7 +592,34 @@ OTSU_PLATEAU     = 0.90
 # sensitivity changes WHICH structures are counted without silently resizing
 # every structure already counted — which is what made the measurement lurch
 # when the same slide arrived compressed or at another resolution.
-EXTENT_PEAK_FRAC = 0.34
+# 0.22, not 0.34. Measuring each object at a fraction of its OWN peak is right
+# for all the reasons above, but the fraction was set too high, and on a dense
+# structure that is a systematic under-measurement: at 0.34 a duct whose peak is
+# 1.2 OD is only counted down to 0.41, so its genuinely stained periphery falls
+# outside its own footprint. Attributed exactly across the corpus, this single
+# constant was the largest remaining source of missed chromogen — 14.7% of it on
+# OK3450, 11.6% on OK3445, 10.4% on OK3487.
+#
+# Swept with everything else held fixed, 0.34 -> 0.22 cut the median miss from
+# 2.91% to 0.64% and took the slides missing more than 5% from 17 to 3, while the
+# non-chromogen share of positives fell slightly (0.72% -> 0.56%). Going further
+# to 0.15 buys almost nothing more (median 0.33%, same worst case, same count) and
+# costs a great deal of edge.
+#
+# 0.26 rather than 0.22 is where it settled, decided on the parametric suite
+# rather than the corpus: the two score the same on real slides (one section over
+# 5% missed either way, median 0.22% against 0.06%), but 0.22 measures each
+# structure far enough past its own edge to fail the suite's precision bar
+# against a hard-edged synthetic disc, and 0.26 does not. 0.26 also cuts the
+# share of positive area that is only marginally darker than its surroundings
+# from 24% to 19%.
+#
+# The suite's smallest case (a 2 px radius disc, ~12 px of truth) still fails on
+# precision at 61%, and did at 71% before any of this — an isophote cannot
+# measure an object at the sampling scale without overshooting it. That is a
+# limit of the method on objects a few pixels across, not something to tune the
+# constant to at the cost of real recall.
+EXTENT_PEAK_FRAC = 0.26
 EXTENT_FLOOR_MULT = 1.0   # ... never below this × the candidate floor
 
 # Object gates (level-independent).
@@ -458,6 +640,22 @@ MIN_AREA_FRAC    = 6e-6   # ≈5 px at 1024×768; below this it is sensor noise
 # is generated, not enumerated.
 N_LEVELS         = 201
 AUTO_LEVEL       = 100    # centre of the ladder = the automatic bar
+
+# Two sentinel values above the ladder, carried in the same uint8 level map.
+#
+# 255 means "no candidate object here at all" — the detector found nothing that
+# could be chromogen, at any sensitivity, and no control may turn it positive.
+#
+# 254 means "this IS a candidate object, and the detector refused it" — refused
+# on colour, size or seed count rather than on the sensitivity bar. Automatic
+# detection treats it exactly like 255 (every comparison it makes is against a
+# level in 0..200, so 254 can never satisfy one), but it is reachable by the
+# manual **Include** tool. That is the difference between a hand tool that can
+# only turn the sensitivity up locally and one that can actually recover a
+# structure the engine judged wrongly — which is what "Include" has to be able
+# to do to be worth having.
+LEVEL_CANDIDATE  = 254
+LEVEL_NEVER      = 255
 # Fallback span, used only when the slide has no object population to measure
 # against (see `_ladder`): 4x stricter at level 0, 4x more permissive at level 200.
 LADDER_STRICT    = 4.0
@@ -587,6 +785,33 @@ def background_od_field(od: np.ndarray, tissue: np.ndarray, win: int) -> tuple[n
 
 def _unit(v: np.ndarray) -> np.ndarray:
     return v / (np.linalg.norm(v) or 1.0)
+
+
+def chromogen_fraction(od: np.ndarray,
+                       target_od: Optional[np.ndarray] = None,
+                       counter_od: Optional[np.ndarray] = None) -> np.ndarray:
+    """What share of this pixel's absorbance is the chromogen rather than neutral
+    material — see CHROMO_FRAC_MIN.
+
+    The absorbance is decomposed onto three directions: the counterstain, the
+    chromogen, and neutral grey. Returning the chromogen's share of
+    (chromogen + neutral) makes the answer independent of how heavily the section
+    is counterstained, which is the whole reason for doing it this way, while
+    still separating chromogen from pigment, ink and folds.
+
+    Linear in optical density, so it does not weaken on dense material the way
+    any ratio of transmitted intensities does.
+    """
+    tgt = _unit(np.asarray(target_od, dtype=np.float64) if target_od is not None else DAB_OD)
+    ctr = _unit(np.asarray(counter_od, dtype=np.float64) if counter_od is not None else HEMA_OD)
+    neu = _unit(NEUTRAL_OD)
+    basis = np.stack([ctr, tgt, neu])
+    try:
+        inv = np.linalg.pinv(basis).astype(np.float32)
+    except np.linalg.LinAlgError:            # degenerate basis: no verdict
+        return np.ones(od.shape[:2], dtype=np.float32)
+    a = np.clip(np.clip(od, 0.0, None) @ inv, 0.0, None)
+    return (a[..., 1] / (a[..., 1] + a[..., 2] + 1e-6)).astype(np.float32)
 
 
 def chroma_readings(od: np.ndarray, rel_scale: float = 1.0
@@ -826,7 +1051,8 @@ def _object_stats(lbl: np.ndarray, n: int, signal: np.ndarray,
                   raw_brown: Optional[np.ndarray] = None,
                   raw_warm: Optional[np.ndarray] = None,
                   raw_sat: Optional[np.ndarray] = None,
-                  raw_hue: Optional[np.ndarray] = None) -> dict:
+                  raw_hue: Optional[np.ndarray] = None,
+                  chromo_frac: Optional[np.ndarray] = None) -> dict:
     """Per-object measurements, all from bincounts over the label image."""
     flat = lbl.ravel()
     area = np.bincount(flat, minlength=n + 1).astype(np.int64)
@@ -842,6 +1068,36 @@ def _object_stats(lbl: np.ndarray, n: int, signal: np.ndarray,
     out = {"area": area, "peak": peak, "seeds": seeds,
            "seed_frac": seeds / np.maximum(area, 1), "brown_mean": _mean(brown)}
     out["raw_brown_mean"] = _mean(raw_brown) if raw_brown is not None else np.full(n + 1, -1.0)
+
+    # The same colour reading, taken over the object's STRONGEST pixels only —
+    # those at or above half its own peak.
+    #
+    # A mean over the whole footprint is not a property of the material: it is a
+    # property of the material AND of how far the footprint was allowed to
+    # extend. Loosening EXTENT_PEAK_FRAC to stop under-measuring dense structures
+    # grew every object, diluted every whole-object mean with pale periphery, and
+    # pushed objects back under the colour gates — trading one false negative for
+    # another. Measured after that change, the two mean-based colour tests were
+    # the whole of the remaining miss: 9.9% and 4.3% of the obvious chromogen on
+    # the failing slides.
+    #
+    # Read on the core instead, the answer depends only on the material, so the
+    # two constants stop fighting each other. Half the peak rather than the very
+    # darkest pixels, because an 8-bit pixel that has saturated to black has no
+    # reliable direction left either — the useful signal is dense but not clipped.
+    core = signal.ravel() >= 0.5 * peak[flat]
+    cn = np.bincount(flat, weights=core.astype(np.float64), minlength=n + 1)
+
+    def _core_mean(x, default=-1.0):
+        if x is None:
+            return np.full(n + 1, default)
+        s = np.bincount(flat, weights=np.where(core, x.ravel().astype(np.float64), 0.0),
+                        minlength=n + 1)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            return s / np.maximum(cn, 1)
+
+    out["raw_brown_core"] = _core_mean(raw_brown)
+    out["chromo_frac_core"] = _core_mean(chromo_frac, 1.0)
     out["raw_warm_mean"] = _mean(raw_warm) if raw_warm is not None else np.full(n + 1, -1.0)
     out["raw_sat_mean"] = _mean(raw_sat) if raw_sat is not None else np.full(n + 1, -1.0)
 
@@ -867,7 +1123,9 @@ def detect(
     min_area_px: Optional[int] = None,
     hue_band_mask: Optional[np.ndarray] = None,
     target_od: Optional[np.ndarray] = None,
+    counter_od: Optional[np.ndarray] = None,
     saturation: Optional[np.ndarray] = None,
+    debug: Optional[dict] = None,
 ) -> Detection:
     """Area-based chromogen detection.
 
@@ -875,6 +1133,10 @@ def detect(
     `tissue`    bool mask of real tissue — sets what can be measured at all.
     `level`     sensitivity level index; None → the automatic operating point.
     `target_od` overrides the chromogen direction (stain-selection mode).
+    `debug`, if given a dict, is filled with the intermediate masks and per-object
+    gate verdicts. It exists so a regression run can attribute a miss to the exact
+    gate that caused it instead of re-deriving this function by hand — a
+    re-derivation drifts from the real code and then explains the wrong thing.
 
     The decision has three separable parts, and none of them is a global
     brightness cut:
@@ -945,8 +1207,14 @@ def detect(
 
     # Chroma of the material — white-point-normalised and chroma-smoothed. See
     # `chroma_readings`, which is shared with the regression suite so the two
-    # cannot drift into asking different questions.
+    # cannot drift into asking different questions. Reported per object as a
+    # diagnostic; nothing is gated on it any more (see CHROMO_FRAC_MIN).
     norm_sat, norm_hue = chroma_readings(od_pos, rel_scale)
+
+    # How much of the absorbance here is this chromogen rather than neutral
+    # material — the one colour reading the object gate uses. See
+    # CHROMO_FRAC_MIN for why it is a decomposition and not a direction.
+    chromo_frac = chromogen_fraction(od_pos, target_od, counter_od)
 
     # Which chromogen this excess belongs to — see BLUE_OVER_GREEN_MIN.
     _mag = np.linalg.norm(od_exc, axis=2) + 1e-6
@@ -1004,14 +1272,12 @@ def detect(
     region = solid & (brown >= BROWN_GROW) & (signal >= floor)
     if saturation is not None:
         region &= saturation > NEUTRAL_SAT_MAX      # never grow into achromatic material
-    # Intraluminal granular debris is excluded HERE, per pixel, before anything is
-    # grouped — not afterwards per object. Judged per object it takes genuine
-    # staining with it: a duct running along the wall of a vessel is connected to
-    # the cast inside it, the merged candidate reads debris-coloured on average,
-    # and rejecting it deletes the duct too. Measured, that cost 10-18% of the
-    # obvious stain on several sections. Removing the granules first lets the
-    # duct beside them form its own object and be counted normally.
-    region &= ~looks_like_debris(norm_sat, norm_hue)
+    # Intraluminal granular debris is NOT excluded here. It used to be — per
+    # pixel, on a transmittance saturation/hue test, before anything was grouped —
+    # and that was the detector's largest error in both directions. It is now a
+    # single per-object veto on the object's own absorbance direction
+    # (OBJ_NEUTRAL_BROWN), which is where the measurements say the two populations
+    # actually separate. See the long note beside that constant.
     if hue_band_mask is not None:
         seed_px &= hue_band_mask
 
@@ -1047,19 +1313,16 @@ def detect(
 
     if n:
         st = _object_stats(lbl, n, signal, brown, seed_px, raw_brown, raw_warm,
-                           norm_sat, norm_hue)
-        # Either reading may vouch for the object: the excess one, which sees
-        # dilute staining a raw reading would miss against warm tissue; or the
-        # raw one, which still works when the structure is dense enough to have
-        # cancelled its own excess — but only on strong, three-way agreement,
-        # because that path is an override of a decision already taken. See the
-        # measured separation beside OBJ_RAW_BROWN.
-        chromogen_coloured = ((st["brown_mean"] >= OBJ_BROWN_MEAN)
-                              | ((st["raw_brown_mean"] >= OBJ_RAW_BROWN)
-                                 & (st["raw_warm_mean"] >= OBJ_RAW_WARM)
-                                 & (st["raw_sat_mean"] >= OBJ_RAW_SAT)))
-        # Intraluminal debris has already been removed per pixel, before
-        # grouping — see the `region` mask above.
+                           norm_sat, norm_hue, chromo_frac)
+        # ONE colour criterion, not two OR'd together with a veto on top. What
+        # share of the object's core absorbance is this chromogen rather than
+        # neutral material — counterstain-corrected, density-stable, and measured
+        # to refuse 0.6% of real DAB objects against 41% of dense objects
+        # carrying no chromogen at all. It subsumes both the excess-colour test
+        # and the neutral veto that preceded it, which is why they are gone: an
+        # OR of two readings cannot veto anything, and a veto stacked on an OR is
+        # just a third rule to keep in step with the other two.
+        chromogen_coloured = st["chromo_frac_core"] >= CHROMO_FRAC_MIN
         eligible = ((st["area"] >= min_area_px) & (st["seeds"] >= OBJ_SEED_MIN_PX)
                     & (st["seed_frac"] >= OBJ_SEED_FRAC) & chromogen_coloured)
         eligible[0] = False
@@ -1074,6 +1337,19 @@ def detect(
         if int(voters.sum()) < 12:
             voters = eligible
         peaks = _area_weighted(st["peak"][voters], st["area"][voters])
+
+        # Objects nobody would call anything but chromogen, judged on their own
+        # absorbance alone — no local background, no population statistics. The
+        # ceiling they impose on the bar is applied after the split below; see
+        # UNMISTAKABLE_BROWN for why the split cannot be trusted to respect them.
+        _obj_dense = st["peak"] >= UNMISTAKABLE_SIG_K * sigma
+        unmistakable = (eligible & _obj_dense
+                        & (st["raw_brown_mean"] >= UNMISTAKABLE_BROWN))
+        bar_ceiling = float("inf")
+        if int(unmistakable.sum()) >= UNMISTAKABLE_MIN_N:
+            bar_ceiling = float(np.percentile(
+                _area_weighted(st["peak"][unmistakable], st["area"][unmistakable]),
+                UNMISTAKABLE_PCT))
         if peaks.size >= 12:
             t, separability, discrim = _otsu_log(peaks)
             lo_p, hi_p = np.percentile(peaks, [10, 90])
@@ -1114,6 +1390,18 @@ def detect(
                 notes.append("Staining is diffuse rather than focal on this slide — "
                              "no separate population of stained structures was found, "
                              "so only clearly absorbing material is counted.")
+
+            # Whatever the split proposed, the operating point may not sit above
+            # material that is unmistakably chromogen on its own absorbance.
+            # Never below `bar_min` either: this is a ceiling on over-strictness,
+            # not a licence to detect a slide's texture.
+            if bar_ceiling < bar:
+                bar = float(max(bar_ceiling, bar_min))
+                notes.append(
+                    "Some clearly stained structures fell below the boundary the "
+                    "object population implied, so the boundary was lowered to "
+                    "include them.")
+
         # The ends of the sensitivity ladder are the extremes of THIS slide's
         # object population, so the control spans exactly the range over which
         # it changes the answer — see `_ladder`. Taken over the eligible objects
@@ -1138,16 +1426,29 @@ def detect(
         # The ladder descends, so "this object qualifies" is monotone in the
         # level index: one searchsorted gives the first level it appears at.
         desc = levels.astype(np.float64)
-        obj_level = np.full(n + 1, 255, dtype=np.int32)
+        obj_level = np.full(n + 1, LEVEL_NEVER, dtype=np.int32)
         idx = np.searchsorted(-desc, -st["peak"][eligible], side="left")
         obj_level[np.flatnonzero(eligible)] = np.clip(idx, 0, N_LEVELS - 1)
-        obj_level[~eligible] = 255
-        obj_level[0] = 255
+        # A candidate the gates refused is marked as such rather than erased, so
+        # the Include tool can recover it by hand. Automatic detection is
+        # unaffected: LEVEL_CANDIDATE is above every ladder index.
+        obj_level[~eligible] = LEVEL_CANDIDATE
+        obj_level[0] = LEVEL_NEVER
 
         lv = obj_level[flat_lbl]
-        lv[~inside] = 255
-        lv[flat_lbl == 0] = 255
+        lv[~inside] = LEVEL_NEVER
+        lv[flat_lbl == 0] = LEVEL_NEVER
         level_map = lv.astype(np.uint8).reshape(h, w)
+
+        if debug is not None:
+            debug.update({
+                "labels": lbl, "region": region, "solid": solid, "signal": signal,
+                "floor": floor, "inside": inside.reshape(h, w),
+                "area_ok": st["area"] >= min_area_px,
+                "seeds_ok": (st["seeds"] >= OBJ_SEED_MIN_PX) & (st["seed_frac"] >= OBJ_SEED_FRAC),
+                "colour_ok": chromogen_coloured,
+                "eligible": eligible, "stats": st, "bar_ceiling": bar_ceiling,
+            })
 
     sel = int(np.clip(AUTO_LEVEL if level is None else level, 0, N_LEVELS - 1))
     positive = level_map <= sel

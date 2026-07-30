@@ -77,6 +77,26 @@ NOISE_TOL     = 0.30    # ≤30% relative change under JPEG q80
 OBVIOUS_OD    = 0.40    # excess OD that is unmistakably chromogen
 OBVIOUS_SIG   = 7.0     # ... and this many texture sigmas above background
 OBVIOUS_BROWN = 0.30    # ... and this clearly the chromogen's own colour
+
+# A SECOND, independent statement of what is unmistakably stain — read on the
+# material's own absorbance rather than on its excess over the local background.
+#
+# The terms above are all excess-based, and the excess reading has one specific
+# blind spot: under a dense structure the local background is itself tinted by
+# the same chromogen, so subtracting it cancels the signature being tested for.
+# The densest DAB therefore fails OBVIOUS_BROWN and drops out of the ground
+# truth — which is why this suite reported MISS at a median of 0.0% across 46
+# slides while the engine was discarding up to 79% of the obvious chromogen on
+# others. A suite that cannot see a failure will never report one.
+#
+# This term is deliberately built from quantities the detector does not gate on:
+# absorbance along the chromogen axis relative to the slide's own tissue, and the
+# DIRECTION of that absorbance, which is scale-free and so does not degrade on a
+# near-black core. Small specks are dropped — a structure has to be a structure.
+RAW_SIG_K       = 6.0   # this many robust deviations above the tissue's own level
+RAW_BROWN_MIN   = 0.15  # ... and its own absorbance this clearly chromogen-directional
+RAW_BOG_MIN     = 0.02  # ... ordered like DAB rather than like a red chromogen
+RAW_MIN_BLOB_PX = 12    # ... in a blob at least this large
 # ... and it must not be intraluminal debris.
 #
 # Without this the check demands that granular luminal casts be counted. That
@@ -146,12 +166,94 @@ def _grey_object_fraction(pos: np.ndarray, brown: np.ndarray, rgb: np.ndarray) -
     return float(area[bad].sum()) / float(area[1:].sum() or 1)
 
 
-def _drop_debris_structures(mask: np.ndarray, sat: np.ndarray, hue: np.ndarray) -> np.ndarray:
-    """Remove whole connected structures whose colour says intraluminal debris.
+def _flood_object_fraction(pos: np.ndarray, sig: np.ndarray, sigma: float) -> float:
+    """Share of the positive AREA belonging to structures with no real excess.
 
-    Uses the engine's own `looks_like_debris`, applied to each structure's
-    saturation-weighted mean colour — the same quantity, over the same shape, as
-    the detector's object gate."""
+    Asked per structure, for the same reason GREY is (see `_grey_object_fraction`):
+    a structure is either background or it is not, and the question has no useful
+    answer pixel by pixel.
+
+    It used to be pixelwise, against `max(0.05, 1.2 * sigma)`. That made it an
+    absolute brightness claim competing with the detector's own candidate floor
+    (`max(1.6 * sigma, 0.025)`), and on a low-noise slide the two disagreed by a
+    factor of two — the floor sat at 0.032 while this demanded 0.05. Every object
+    measured down to its own isophote then had a rim of pixels between the two,
+    and the check called that rim "background counted as signal". It is not: it is
+    the edge of a real structure whose peak is far above both numbers. Four slides
+    failed on that alone.
+
+    What the check is actually for — a blob that is nothing but background — is a
+    statement about the blob's PEAK, so that is what it now tests."""
+    if not pos.any():
+        return 0.0
+    from skimage.measure import label
+    lbl = label(pos, connectivity=2)
+    n = int(lbl.max())
+    if not n:
+        return 0.0
+    flat = lbl.ravel()
+    area = np.bincount(flat, minlength=n + 1).astype(np.float64)
+    peak = np.zeros(n + 1, dtype=np.float32)
+    np.maximum.at(peak, flat, sig.ravel())
+    bad = peak < max(0.05, 1.2 * sigma)
+    bad[0] = False
+    return float(area[bad].sum()) / float(area[1:].sum() or 1)
+
+
+def _raw_obvious_stain(od: np.ndarray, tissue: np.ndarray) -> np.ndarray:
+    """Chromogen nobody could mistake, read on the material's OWN absorbance.
+
+    See RAW_SIG_K. Independent of the local background and of every reading the
+    detector gates on, which is the whole point: this is the term that can see
+    the failure the excess-based one is blind to."""
+    from skimage.measure import label
+    od_pos = np.clip(od, 0.0, None)
+    dab = detect.DAB_OD / np.linalg.norm(detect.DAB_OD)
+    proj = (od_pos @ dab).astype(np.float32)
+    mag = np.linalg.norm(od_pos, axis=2) + 1e-6
+    brown = ((od_pos[..., 2] - od_pos[..., 0]) / mag).astype(np.float32)
+    bog = ((od_pos[..., 2] - od_pos[..., 1]) / mag).astype(np.float32)
+    t = proj[tissue] if tissue.any() else proj.ravel()
+    if t.size > 300_000:
+        t = t[:: t.size // 300_000 + 1]
+    med = float(np.median(t))
+    sig = 1.4826 * float(np.median(np.abs(t - med))) + 1e-6
+    m = (tissue & (proj >= med + RAW_SIG_K * sig)
+         & (brown >= RAW_BROWN_MIN) & (bog >= RAW_BOG_MIN))
+    if not m.any():
+        return m
+    lbl = label(m, connectivity=2)
+    if not lbl.max():
+        return m
+    areas = np.bincount(lbl.ravel())
+    keep = np.flatnonzero(areas >= RAW_MIN_BLOB_PX)
+    return np.isin(lbl, keep[keep > 0])
+
+
+def _drop_debris_structures(mask: np.ndarray, od: np.ndarray) -> np.ndarray:
+    """Remove whole connected structures whose own absorbance carries no colour.
+
+    This exists so the MISS ground truth does not count a luminal cast of
+    pigment as stain the detector should have found. It is deliberately NOT the
+    detector's own gate any more.
+
+    It used to be exactly that — `detect.looks_like_debris` on each structure's
+    saturation-weighted mean — and that made the check circular in the worst
+    possible way: whatever the engine's debris rule threw away, the ground truth
+    threw away too, so MISS could not see it. The rule was wrong (it discarded
+    6.5% of real DAB objects and up to 79% of the unmistakable chromogen on some
+    slides), and this suite reported MISS at a median of 0.0% throughout. A
+    regression suite that shares a premise with the thing it is testing will
+    confirm that premise forever.
+
+    So this is an INDEPENDENT statement about the material, in absorbance space:
+    a structure is refused only when the direction of its own optical density is
+    essentially colourless, which is true of pigment, ink and folds at any
+    density and is never true of DAB. It uses a stricter bar than the engine's
+    (0.10 against OBJ_NEUTRAL_BROWN) precisely so that the two cannot be tuned
+    against each other — anything between the two bars counts as stain the engine
+    is expected to find.
+    """
     if not mask.any():
         return mask
     from skimage.measure import label
@@ -159,16 +261,14 @@ def _drop_debris_structures(mask: np.ndarray, sat: np.ndarray, hue: np.ndarray) 
     n = int(lbl.max())
     if not n:
         return mask
+    od_pos = np.clip(od, 0.0, None)
+    mag = np.linalg.norm(od_pos, axis=2) + 1e-6
+    brown = (od_pos[..., 2] - od_pos[..., 0]) / mag      # DAB +0.51, neutral 0.00
     flat = lbl.ravel()
     area = np.bincount(flat, minlength=n + 1).astype(np.float64)
-    w = sat.ravel().astype(np.float64)
-    rad = np.deg2rad(hue.ravel().astype(np.float64))
-    sw = np.bincount(flat, weights=w, minlength=n + 1)
-    sx = np.bincount(flat, weights=np.cos(rad) * w, minlength=n + 1)
-    sy = np.bincount(flat, weights=np.sin(rad) * w, minlength=n + 1)
-    smean = sw / np.maximum(area, 1)
-    hmean = np.rad2deg(np.arctan2(sy, sx)) % 360.0
-    bad = detect.looks_like_debris(smean, hmean)
+    bmean = np.bincount(flat, weights=brown.ravel().astype(np.float64),
+                        minlength=n + 1) / np.maximum(area, 1)
+    bad = bmean < 0.10
     bad[0] = False
     return mask & ~bad[lbl]
 
@@ -193,21 +293,20 @@ def check(path: str, montage_dir=None, quick: bool = False) -> dict:
     sigma = float(maps["sigma"])
     tis_px = int(tissue.sum())
 
-    _rel = max(rgb.shape[:2]) / detect.SMOOTH_REF_EDGE
-    _sat, _hue = detect.chroma_readings(maps["od"], _rel)
     obvious = (tissue & (sig >= max(OBVIOUS_OD, OBVIOUS_SIG * sigma))
                & (brown >= OBVIOUS_BROWN))
+    obvious = obvious | _raw_obvious_stain(maps["od"], tissue)
     # ... asked STRUCTURE by structure, the way the engine decides and the way
     # the GREY check below already works. A granule inside a luminal cast can be
     # brown enough on its own; what gives the cast away is the colour of the body
     # as a whole. Judging pixel by pixel would demand that most of each cast be
     # counted while the engine correctly refuses the body.
-    obvious = _drop_debris_structures(obvious, _sat, _hue)
+    obvious = _drop_debris_structures(obvious, maps["od"])
     obv_px = int(obvious.sum())
     miss = float((obvious & ~pos).sum()) / obv_px if obv_px else 0.0
 
     pos_px = int(pos.sum())
-    flood = float((pos & (sig < max(0.05, 1.2 * sigma))).sum()) / pos_px if pos_px else 0.0
+    flood = _flood_object_fraction(pos, sig, sigma)
     # Grey is asked OBJECT by object: a dense chromogen core is colour-crushed and
     # would look "grey" pixel-wise even though the structure it belongs to is
     # unmistakably brown. What must not be counted is a whole structure that is

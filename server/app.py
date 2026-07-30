@@ -289,15 +289,20 @@ def _analyze_kwargs(p: dict) -> dict:
 
 def _clean_regions(raw) -> list:
     """Validate region shapes coming off the wire. Coordinates are normalised
-    0..1, so a region drawn once stays put at any resolution or export size."""
+    0..1, so a region drawn once stays put at any resolution or export size.
+
+    Modes are canonicalised, which also accepts the old `focus`/`ignore` spelling
+    — a browser that restored a batch saved before the rename is still holding
+    regions under those names, and silently dropping them would quietly discard
+    a user's corrections."""
     if not isinstance(raw, list):
         return []
     out = []
     for r in raw[:64]:
         if not isinstance(r, dict):
             continue
-        mode = str(r.get("mode", "")).lower()
-        if mode not in region_tools.MODES:
+        mode = region_tools.canonical_mode(r.get("mode"))
+        if mode is None:
             continue
         pts = r.get("points")
         if not isinstance(pts, list) or not pts:
@@ -885,10 +890,12 @@ _CSV_COLUMNS = [
     "sensitivity_auto_level",
     "sensitivity_levels",
     "sensitivity_setting",
-    # --- what area the percentage was actually measured over ----------------- #
+    # --- corrections the user made by hand ----------------------------------- #
     "manual_regions",
-    "focus_regions",
-    "ignore_regions",
+    "include_regions",
+    "exclude_regions",
+    "pixels_added_by_include",
+    "pixels_removed_by_exclude",
     "tissue_pixels_before_regions",
     "mean_positive_intensity",
     "detection_confidence",
@@ -967,11 +974,16 @@ def _csv_row(entry: dict) -> dict:
         "sensitivity_levels": getattr(r, "level_count", 0),
         "sensitivity_setting": setting,
         "manual_regions": getattr(r, "region_count", 0),
-        "focus_regions": getattr(r, "focus_regions", 0),
-        "ignore_regions": getattr(r, "ignore_regions", 0),
-        # `tissue_pixels` above is the area the percentage was measured over.
-        # This is the slide's whole tissue area, so the two together say exactly
-        # how much a focus/ignore region removed from the denominator.
+        "include_regions": getattr(r, "include_regions", 0),
+        "exclude_regions": getattr(r, "exclude_regions", 0),
+        # Exactly what the hand tools changed. The denominator is untouched by
+        # them, so these two numbers plus `positive_pixels` fully describe the
+        # correction — a reader can recover the automatic figure from the row.
+        "pixels_added_by_include": getattr(r, "region_added_pixels", 0),
+        "pixels_removed_by_exclude": getattr(r, "region_removed_pixels", 0),
+        # Equal to `tissue_pixels` now: manual regions no longer move the
+        # denominator. Kept so a column that existed in earlier exports still
+        # exists, and so the invariant is visible rather than assumed.
         "tissue_pixels_before_regions": getattr(r, "tissue_pixels_total", 0) or r.tissue_pixels,
         "mean_positive_intensity": r.mean_positive_intensity,
         "detection_confidence": getattr(r, "confidence", 1.0),

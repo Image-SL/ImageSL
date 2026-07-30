@@ -207,26 +207,27 @@
         <button class="thr-auto" title="Back to the operating point this slide chose">Auto</button>
       </div>
 
-      <!-- Manual region tools. Each one says WHERE to measure, and nothing else:
-           both move the positive area and the tissue it is measured against
-           together, so the percentage always reads over exactly the area drawn. -->
+      <!-- Manual corrections. Each one changes what is COUNTED inside the shape
+           and never the tissue area the percentage is divided by, so the number
+           stays comparable with every other slide and "Exclude everything"
+           really does read 0.00%. -->
       <div class="tool-row">
         <span class="oc-label">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h7v7H3zM14 14h7v7h-7zM14 3h7v7h-7z"/></svg>
-          Regions
+          Corrections
         </span>
         <div class="tool-group">
           <button class="tool is-on" data-tool="off" title="Stop drawing">Off</button>
-          <button class="tool" data-tool="focus" title="Measure only inside the regions you draw — tissue outside stops counting">Focus</button>
-          <button class="tool" data-tool="ignore" title="Cut a fold, pen mark or bubble out of the measurement entirely">Ignore</button>
+          <button class="tool" data-tool="include" title="Staining here was missed — count every structure the detector found inside this shape">Include</button>
+          <button class="tool" data-tool="exclude" title="Detection here is wrong — count nothing inside this shape (a fold, pen mark, bubble or false positive)">Exclude</button>
         </div>
         <select class="tool-shape" aria-label="Region shape">
           <option value="rect">Rectangle</option>
           <option value="lasso">Freehand</option>
         </select>
-        <span class="rcount">No regions</span>
-        <button class="tool-undo" title="Remove the last region">Undo</button>
-        <button class="tool-clear" title="Remove every region">Clear</button>
+        <span class="rcount">No corrections</span>
+        <button class="tool-undo" title="Remove the last correction">Undo</button>
+        <button class="tool-clear" title="Remove every correction">Clear</button>
       </div>
     </div>
 

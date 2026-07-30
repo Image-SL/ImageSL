@@ -238,9 +238,11 @@ class AnalysisResult:
     median_object_px: int = 0
     mean_object_px: float = 0.0
     region_count: int = 0             # manual regions applied
-    focus_regions: int = 0            # ... of which "measure only here"
-    ignore_regions: int = 0           # ... of which "cut this out"
-    tissue_pixels_total: int = 0      # tissue BEFORE regions (denominator if none)
+    include_regions: int = 0          # ... of which "there is staining here you missed"
+    exclude_regions: int = 0          # ... of which "what you found here is wrong"
+    region_added_pixels: int = 0      # positives the Include regions recovered
+    region_removed_pixels: int = 0    # positives the Exclude regions removed
+    tissue_pixels_total: int = 0      # the whole tissue area — always the denominator
     chromogen: str = ""                 # detected chromogen family label
     compartment: str = ""               # expected localisation (if a marker chosen)
     marker: str = ""                    # chosen antibody name (selection mode)
@@ -930,6 +932,7 @@ def analyze(
     stain_choice: Optional[dict] = None,
     level: Optional[int] = None,
     regions: Optional[list] = None,
+    detect_debug: Optional[dict] = None,
 ) -> tuple[AnalysisResult, dict[str, np.ndarray]]:
     """
     Full IHC analysis. Returns (result, maps).
@@ -938,7 +941,7 @@ def analyze(
     for labelling and for the exact deconvolution vectors. `level` is the
     sensitivity index on the detector's ladder (None = the automatic operating
     point the slide's own object population chose). `regions` are the manual
-    focus / ignore / local-sensitivity shapes — see ihc/regions.py.
+    include / exclude correction shapes — see ihc/regions.py.
     """
     h, w = rgb.shape[:2]
     notes: list[str] = []
@@ -1045,12 +1048,17 @@ def analyze(
         min_area_px=(min_px or None),
         hue_band_mask=band_mask,
         target_od=(stain_matrix[tgt_idx] if (stain_choice or stain_override_od) else None),
+        # The counterstain's own absorbance direction, so the object colour test
+        # can factor it out rather than being dragged toward it on a heavily
+        # counterstained section — see detect.CHROMO_FRAC_MIN.
+        counter_od=(stain_matrix[counter_idx] if (stain_choice or stain_override_od) else None),
         # Raw saturation: whether the material carries any colour AT ALL. An
         # absolute property, deliberately — relative to a blue counterstain a
         # grey blob looks warm. (The colour readings that decide what the
         # material IS are derived inside the detector from the white-point
         # normalised image; see detect.chroma_readings.)
         saturation=sat,
+        debug=detect_debug,
     )
     notes.extend(det.notes)
 
@@ -1066,28 +1074,30 @@ def analyze(
             "chromogen, this build measures DAB only.")
 
     built = regions_mod.build(regions, h, w, detect.N_LEVELS)
-    # Keep the tissue mask as segmentation found it, BEFORE any manual region is
-    # applied. That is what the browser needs in order to apply the regions
-    # itself and arrive at the same denominator the server used; handing it the
-    # already-restricted mask would apply every region twice.
+    # The tissue mask segmentation found is the denominator, always — manual
+    # regions correct the numerator only (see ihc/regions.py). It is also what
+    # the browser needs in order to apply the regions itself and arrive at the
+    # same two counts the server used.
     tissue_base = tissue_mask
     tissue_pixels_total = tissue_pixels
+    auto_positive = (det.level_map <= det.level) & tissue_mask
     positive, tissue_mask = regions_mod.apply(
         det.level_map, tissue_mask, det.level, built, detect.N_LEVELS)
+    # What the hand tools actually changed, in pixels, so the export can say so.
+    region_added = int((positive & ~auto_positive).sum())
+    region_removed = int((auto_positive & ~positive).sum())
     if built["count"]:
-        tissue_pixels = int(tissue_mask.sum())
         bits = []
-        if built.get("focus_count"):
-            bits.append(f"{built['focus_count']} focus")
-        if built.get("ignore_count"):
-            bits.append(f"{built['ignore_count']} ignore")
-        # State the denominator explicitly. A region changes what is being
-        # measured, so the percentage after drawing one is not comparable with
-        # the percentage before it unless the reader knows the area moved too.
+        if built.get("include_count"):
+            bits.append(f"{built['include_count']} include (+{region_added:,} px)")
+        if built.get("exclude_count"):
+            bits.append(f"{built['exclude_count']} exclude (−{region_removed:,} px)")
+        # State plainly that the number was corrected by hand and by how much.
+        # The denominator is untouched, so the percentage stays comparable with
+        # every other slide in the batch — which is the point of the change.
         notes.append(
-            f"Manual regions applied ({', '.join(bits)}): the percentage is "
-            f"measured over {tissue_pixels:,} of this slide's {tissue_pixels_total:,} "
-            f"tissue pixels.")
+            f"Corrected by hand ({', '.join(bits)}). The percentage is still "
+            f"measured over this slide's whole tissue area ({tissue_pixels:,} px).")
 
     if not valid:
         positive = np.zeros((h, w), dtype=bool)
@@ -1165,8 +1175,10 @@ def analyze(
         median_object_px=int(np.median(object_areas)) if len(object_areas) else 0,
         mean_object_px=round(float(np.mean(object_areas)), 1) if len(object_areas) else 0.0,
         region_count=int(built["count"]),
-        focus_regions=int(built.get("focus_count", 0)),
-        ignore_regions=int(built.get("ignore_count", 0)),
+        include_regions=int(built.get("include_count", 0)),
+        exclude_regions=int(built.get("exclude_count", 0)),
+        region_added_pixels=region_added,
+        region_removed_pixels=region_removed,
         tissue_pixels_total=int(tissue_pixels_total),
         chromogen=chromogen,
         compartment=compartment,
@@ -1499,19 +1511,19 @@ def mask_data_uri(mask: np.ndarray) -> str:
 def level_data_uri(level_map: np.ndarray, tissue_mask: Optional[np.ndarray] = None) -> str:
     """Encode the detector's LEVEL MAP — and the tissue mask — as one RGB PNG.
 
-    ``R`` holds the first sensitivity level at which the pixel becomes positive
-    (255 = never); ``G`` is 255 on tissue and 0 on background. One image
-    therefore carries the complete family of results *and* the denominator every
-    percentage is measured against, so the browser reproduces the server's
-    decision — at any sensitivity, under any manual region — by comparison
-    alone, with no round-trip.
+    ``R`` holds the first sensitivity level at which the pixel becomes positive —
+    plus the two sentinels above the ladder, ``detect.LEVEL_CANDIDATE`` (254, a
+    structure the detector formed and refused, which only an Include region may
+    recover) and ``detect.LEVEL_NEVER`` (255, nothing here at any setting).
+    ``G`` is 255 on tissue and 0 on background. One image therefore carries the
+    complete family of results *and* the denominator every percentage is
+    measured against, so the browser reproduces the server's decision — at any
+    sensitivity, under any manual correction — by comparison alone, with no
+    round-trip.
 
     Carrying the tissue mask is what makes a **percentage** reproducible in the
-    browser, not just a picture. A focus or ignore region changes the tissue the
-    measurement is made over, so it moves the denominator as well as the
-    numerator; without the mask the browser could only divide by the whole
-    slide's tissue count and every region edit showed a percentage that did not
-    match the one the server reported for the same regions.
+    browser, not just a picture: it is the denominator, and it is the same one
+    whatever the user draws.
 
     The mask travels in a colour channel rather than in alpha deliberately:
     canvas un-premultiplies on read, so a pixel with alpha 0 comes back with its

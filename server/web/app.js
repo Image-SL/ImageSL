@@ -78,22 +78,31 @@ async function streamedDownload(url, body, filename, label, estBytes) {
          positive (255 = never);
      G — 255 on tissue, 0 on slide background.
 
+   R also carries two sentinels above the 0..200 ladder, matching detect.py:
+
+     CANDIDATE (254) a structure the detector formed and then refused, on colour
+                     or size rather than on sensitivity. Never positive
+                     automatically; recoverable by an Include region.
+     NEVER     (255) nothing here the detector would consider at any setting.
+                     No control can turn this positive.
+
    Together they carry the whole family of results AND the denominator, so the
    browser reproduces the server's area-based, object-by-object decision — and
-   its percentage — at any sensitivity and under any region, by comparison
-   alone:
+   its percentage — at any sensitivity and under any correction, by comparison
+   alone (mirrors ihc/regions.py `apply`):
 
-       positive =  level[i] <= sensitivity  &&  tissue[i]  &&  allowed[i]
-       measured =  tissue[i] && allowed[i]
+       positive =  tissue[i] && !excluded[i]
+                   && ( level[i] <= sensitivity
+                        || (included[i] && level[i] <= CANDIDATE) )
+       measured =  tissue[i]                       <- always the whole tissue
        percent  =  positive / measured
 
-   Carrying the tissue channel is what makes the on-screen percentage move
-   correctly when a region is drawn. A focus or ignore region changes the area
-   being measured, so it moves the denominator as well as the numerator;
-   without the mask the browser divided by the whole slide's tissue count and
-   showed a percentage that did not match the one the server reported — and
-   therefore did not match the CSV — for the very same regions. */
+   The denominator is the tissue mask and nothing else. Include and Exclude
+   correct the numerator only, so "exclude everything" reads 0.000% and every
+   slide in a batch stays comparable — see the ihc/regions.py docstring for why
+   that replaced the region-of-interest behaviour. */
 const NEVER = 255;
+const CANDIDATE = 254;
 
 function buildLevelData(levelImg) {
   const W = levelImg.naturalWidth, H = levelImg.naturalHeight;
@@ -134,10 +143,12 @@ function buildLevelData(levelImg) {
 
   return {
     W, H, data, tissue, tissueCount,
-    allow: null,                        // null = everywhere; else 0/1 per pixel
+    include: null,                      // null = none drawn; else 0/1 per pixel
+    exclude: null,
     mask: new Uint8Array(n),
     count: 0,                           // positive pixels at the current setting
-    measured: tissueCount,              // tissue pixels the percentage divides by
+    measured: tissueCount,              // = tissueCount; regions never move it
+    added: 0, removed: 0,               // what the hand tools changed
     ov, ovCtx, ovData: ovCtx.createImageData(W, H),
     iso, isoCtx, isoData: isoCtx.createImageData(W, H),
     tmp, tmpCtx,
@@ -192,28 +203,28 @@ function rasterRegion(ld, region) {
   return mask;
 }
 
+/* Accepts the pre-rename spellings too: a batch restored from IndexedDB after a
+   deploy still holds `focus`/`ignore`, and dropping those would silently throw
+   away corrections the user had already made. Mirrors regions.canonical_mode. */
+function regionMode(m) {
+  const s = String(m || "").toLowerCase();
+  if (s === "include" || s === "focus" || s === "boost") return "include";
+  if (s === "exclude" || s === "ignore") return "exclude";
+  return null;
+}
+
 function applyRegions(ld, regions) {
   const n = ld.W * ld.H;
-  ld.allow = null;
+  ld.include = null; ld.exclude = null;
   if (!regions || !regions.length) return;
-  let focus = null, ignore = null;
   for (const r of regions) {
+    const mode = regionMode(r.mode);
+    if (!mode) continue;
     const px = rasterRegion(ld, r);
     if (!px) continue;
-    if (r.mode === "focus") {
-      if (!focus) focus = new Uint8Array(n);
-      for (let i = 0; i < n; i++) if (px[i]) focus[i] = 1;
-    } else if (r.mode === "ignore") {
-      if (!ignore) ignore = new Uint8Array(n);
-      for (let i = 0; i < n; i++) if (px[i]) ignore[i] = 1;
-    }
-  }
-  if (focus || ignore) {
-    const allow = new Uint8Array(n);
-    for (let i = 0; i < n; i++) {
-      allow[i] = (focus ? focus[i] : 1) && !(ignore && ignore[i]) ? 1 : 0;
-    }
-    ld.allow = allow;
+    if (!ld[mode]) ld[mode] = new Uint8Array(n);
+    const dst = ld[mode];
+    for (let i = 0; i < n; i++) if (px[i]) dst[i] = 1;
   }
 }
 
@@ -256,21 +267,27 @@ function countObjects(ld) {
   return roots.size;
 }
 
-/* Reproduces ihc/regions.py `apply()` exactly, and counts BOTH sides of the
-   percentage: the positive pixels and the tissue they are measured against. */
+/* Reproduces ihc/regions.py `apply()` exactly. `measured` is the tissue count,
+   unconditionally — the hand tools correct the numerator, never the denominator. */
 function computeMask(ld, level, maxLevel) {
-  const { data, tissue, allow, mask } = ld;
+  const { data, tissue, include, exclude, mask } = ld;
   const lim = level < 0 ? 0 : (level > maxLevel ? maxLevel : level);
-  let count = 0, measured = 0;
+  let count = 0, added = 0, removed = 0;
   for (let i = 0; i < data.length; i++) {
-    const inArea = tissue[i] && (!allow || allow[i]);
-    if (inArea) measured++;
-    const on = inArea && data[i] <= lim && data[i] !== NEVER;
+    if (!tissue[i]) { mask[i] = 0; continue; }
+    const lv = data[i];
+    const auto = lv <= lim;                                   // lim <= 200 < CANDIDATE
+    let on = auto;
+    if (!on && include && include[i]) on = lv <= CANDIDATE;   // recover a refused structure
+    if (on && exclude && exclude[i]) on = false;              // exclude has the last word
     mask[i] = on ? 1 : 0;
-    if (on) count++;
+    if (on) { count++; if (!auto) added++; }
+    else if (auto) removed++;
   }
   ld.count = count;
-  ld.measured = measured;
+  ld.measured = ld.tissueCount;
+  ld.added = added;
+  ld.removed = removed;
   return count;
 }
 
@@ -651,33 +668,36 @@ function createCard(data) {
   }
 
   /* The live readout uses the SAME two counts the server divides — positive
-     pixels over the tissue actually being measured — so drawing or removing a
-     region moves the percentage to the value the server will report, and the
-     CSV, for those exact regions.
+     pixels over the slide's tissue area — so drawing a correction moves the
+     percentage to exactly the value the server will report and the CSV will
+     carry for those regions.
 
-     A region moves BOTH counts, which is why the percentage can go either way
-     when you ignore something: cut out an area with little staining in it and
-     the denominator falls faster than the numerator, so the percentage rises;
-     cut out a heavily stained area and it falls. Both are correct — the figure
-     is positive area over the tissue actually measured — but it is only
-     obviously correct if the denominator is on screen, so it is spelled out
-     whenever regions are in play. */
+     The denominator does not move. Include and Exclude change what is counted
+     as positive and nothing else, so the arithmetic is always the one printed
+     on the tiles: positive pixels / tissue pixels. That is what makes
+     "Exclude the whole slide" read 0.00% instead of the 3.87% the previous
+     region-of-interest behaviour produced from the sliver of tissue left
+     outside the drag. */
   function liveMetrics() {
     if (!st.ld) return;
     recount();                 // the counts must describe the CURRENT setting
     const pos = st.ld.count;
     const measured = st.ld.measured;
-    const whole = st.ld.tissueCount;
     const pct = measured ? (pos / measured * 100) : 0;
     q(".mPercent").textContent = pct.toFixed(2) + "%";
     q(".mPositive").textContent = pos.toLocaleString();
     q(".mTissue").textContent = measured.toLocaleString();
 
+    // Say exactly what the hand tools changed, so a corrected number is never
+    // mistaken for an automatic one.
     const scope = q(".mScope");
     if (scope) {
-      if (regions.length && whole && measured !== whole) {
-        scope.textContent = `measured over ${(measured / whole * 100).toFixed(1)}% of the `
-          + `slide's tissue (${measured.toLocaleString()} of ${whole.toLocaleString()} px)`;
+      const bits = [];
+      if (st.ld.added) bits.push(`+${st.ld.added.toLocaleString()} px recovered by Include`);
+      if (st.ld.removed) bits.push(`−${st.ld.removed.toLocaleString()} px removed by Exclude`);
+      if (bits.length) {
+        scope.textContent = "Corrected by hand: " + bits.join(", ")
+          + ` · still measured over this slide's whole tissue area (${measured.toLocaleString()} px)`;
         scope.classList.remove("hidden");
       } else {
         scope.classList.add("hidden");
@@ -812,7 +832,7 @@ function createCard(data) {
   const draw = q(".cmpDraw");
 
   function regionColour(mode) {
-    return mode === "focus" ? "#38bdf8" : "#f43f5e";
+    return regionMode(mode) === "include" ? "#38bdf8" : "#f43f5e";
   }
 
   function sizeDrawCanvas() {
@@ -830,7 +850,7 @@ function createCard(data) {
       const pts = (r.points || []).map((p) => [p[0] * draw.width, p[1] * draw.height]);
       if (!pts.length) continue;
       cx.lineWidth = 2;
-      cx.setLineDash(r.mode === "ignore" ? [6, 4] : []);
+      cx.setLineDash(regionMode(r.mode) === "exclude" ? [6, 4] : []);
       cx.strokeStyle = regionColour(r.mode);
       cx.fillStyle = regionColour(r.mode) + "22";
       cx.beginPath();
@@ -848,7 +868,8 @@ function createCard(data) {
 
   function regionCountLabel() {
     const n = regions.length;
-    q(".rcount").textContent = n === 0 ? "No regions" : (n === 1 ? "1 region" : n + " regions");
+    q(".rcount").textContent = n === 0 ? "No corrections"
+      : (n === 1 ? "1 correction" : n + " corrections");
   }
 
   function commitRegions() {
