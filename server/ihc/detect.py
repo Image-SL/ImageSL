@@ -412,9 +412,25 @@ DEBRIS_HUE_MIN   = 30.0
 # directly: `synthetic_cases` requires grey debris to stay under 5% of the
 # measured area, and `synthetic_matrix` reports the debris it plants explicitly.
 # Pure neutral material decomposes to a chromogen fraction of 0.000, so it is
-# nowhere near this bar — 0.15 refuses material that is one part chromogen to
-# nearly six parts neutral, which no chromogen-stained structure ever is.
-CHROMO_FRAC_MIN = 0.15    # below this share, the object is not this chromogen
+# nowhere near this bar.
+#
+# Raised 0.15 -> 0.25 (2026-07-30). 0.15 was letting through the grey/black
+# deposits in liver — pigment and folds that are dense and faintly warm, not
+# chromogen. They are not rare noise: on OK3306 they were the LARGEST objects in
+# the frame, drawn as solid filled blobs among the fine ductular speckle, which
+# is what a reader notices first. Measured on the detector's own object stats,
+# they score chromo_frac_core 0.229-0.239 while real ductular structures on the
+# same slides sit at p1=0.399, median 0.671 — a gap with nothing in it.
+# Swept against the corpus (46 slides, --quick):
+#     0.15  0 fail  miss max 2.3%   grey max 8.47%
+#     0.20  0 fail  miss max 2.3%   grey max 5.59%   (keeps every OK3306 blob)
+#     0.25  0 fail  miss max 3.2%   grey max 5.47%
+#     0.30  1 FAIL  miss max 15.4%  grey max 3.85%   (OK3029 loses 15.4%)
+# 0.30 reproduces the failure the paragraph above predicted, so the ceiling is
+# real. 0.20 is safer on paper but sits just under the deposits' own 0.229 and
+# removes none of them, which is the whole point — so 0.25: the first value that
+# clears the deposits while no slide newly misses >5% of its obvious chromogen.
+CHROMO_FRAC_MIN = 0.25    # below this share, the object is not this chromogen
 
 # --------------------------------------------------------------------------- #
 # The detection bar may not discard what is unmistakably chromogen
