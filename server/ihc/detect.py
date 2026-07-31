@@ -735,8 +735,9 @@ def _mask_weights(keep: np.ndarray, win: int) -> tuple[np.ndarray, np.ndarray]:
     them inside meant three identical pairs of box filters per pass over a
     megapixel image — half of all the filtering the background fit did, for
     nothing. Same arrays, same result, half the work."""
-    return (_uniform_filter(keep.astype(np.float32), win),
-            _uniform_filter(keep.astype(np.float32), win * BG_COARSE_MULT))
+    k = keep.astype(np.float32)          # cast once; both scales read the same array
+    return (_uniform_filter(k, win),
+            _uniform_filter(k, win * BG_COARSE_MULT))
 
 
 def _field(x: np.ndarray, keep: np.ndarray, win: int, fallback: float,
@@ -749,8 +750,11 @@ def _field(x: np.ndarray, keep: np.ndarray, win: int, fallback: float,
     passed in so the caller can share them across channels."""
     if den is None or cden is None:
         den, cden = _mask_weights(keep, win)
-    num = _uniform_filter(np.where(keep, x, 0.0).astype(np.float32), win)
-    cnum = _uniform_filter(np.where(keep, x, 0.0).astype(np.float32), win * BG_COARSE_MULT)
+    # Build the masked channel ONCE — the two scales filter the same array, and
+    # this ran twice per call, three channels deep, on every refinement pass.
+    masked = np.where(keep, x, 0.0).astype(np.float32)
+    num = _uniform_filter(masked, win)
+    cnum = _uniform_filter(masked, win * BG_COARSE_MULT)
     fine_ok = den > 0.06
     coarse_ok = cden > 0.02
     out = np.full(x.shape, float(fallback), dtype=np.float32)
@@ -782,7 +786,13 @@ def background_od_field(od: np.ndarray, tissue: np.ndarray, win: int) -> tuple[n
     bg_od = np.empty_like(od, dtype=np.float32)
 
     for it in range(BG_ITERS + 1):
-        fallbacks = [float(np.median(od[..., c][keep])) if keep.any() else 0.0 for c in range(3)]
+        # One boolean extraction for all three channels; `od[..., c][keep]` built
+        # a fresh megapixel copy per channel, three times per refinement pass.
+        if keep.any():
+            _kept = od[keep]
+            fallbacks = [float(np.median(_kept[:, c])) for c in range(3)]
+        else:
+            fallbacks = [0.0, 0.0, 0.0]
         den, cden = _mask_weights(keep, win)      # same for all three channels
         for c in range(3):
             bg_od[..., c] = _field(od[..., c], keep, win, fallbacks[c], den, cden)
