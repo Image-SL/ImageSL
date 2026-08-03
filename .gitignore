@@ -16,6 +16,14 @@ client/*.spec.bak
 server/dist/
 *.pdb
 
+# Desktop packaging output (PyInstaller writes these; CI rebuilds them)
+/build/
+/dist/
+/ImageSL.iconset/
+desktop/ImageSL.icns
+ImageSL-Setup-Windows.exe
+ImageSL-macOS.dmg
+
 # Node / misc
 node_modules/
 .DS_Store

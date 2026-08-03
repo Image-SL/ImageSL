@@ -43,6 +43,28 @@ def _free_port() -> int:
         return int(s.getsockname()[1])
 
 
+def _emit(msg: str, err: bool = False) -> None:
+    """Write a line without assuming a console exists.
+
+    A windowed PyInstaller build (console=False) leaves sys.stdout/sys.stderr as
+    None, so a bare sys.stdout.write() raises AttributeError — which would fail
+    --selftest on exactly the builds CI ships. Fall back to the raw fd, and give
+    up quietly if that is closed too; the exit code carries the result.
+    """
+    stream = sys.stderr if err else sys.stdout
+    if stream is not None:
+        try:
+            stream.write(msg)
+            stream.flush()
+            return
+        except Exception:
+            pass
+    try:
+        os.write(2 if err else 1, msg.encode("utf-8", "replace"))
+    except Exception:
+        pass
+
+
 def _configure_env(port: int) -> None:
     """Local, single-user, offline defaults — set BEFORE the app is imported."""
     os.environ["IMAGESL_DESKTOP"] = "1"          # "/" boots straight into the analyzer
@@ -155,7 +177,7 @@ def _selftest() -> int:
     _configure_env(port)
     _start_server(port)
     if not _wait_healthy(port):
-        sys.stderr.write("SELFTEST FAIL: engine did not become healthy\n")
+        _emit("SELFTEST FAIL: engine did not become healthy\n", err=True)
         return 1
     import urllib.request
     try:
@@ -163,9 +185,9 @@ def _selftest() -> int:
             body = r.read().decode("utf-8", "ignore")
         assert '"dab"' in body, "stains endpoint missing dab"
     except Exception as exc:
-        sys.stderr.write(f"SELFTEST FAIL: {exc}\n")
+        _emit(f"SELFTEST FAIL: {exc}\n", err=True)
         return 1
-    sys.stdout.write(f"SELFTEST OK  version={_read_version()}  port={port}\n")
+    _emit(f"SELFTEST OK  version={_read_version()}  port={port}\n")
     return 0
 
 
@@ -205,7 +227,7 @@ def _fatal(msg: str) -> None:
             "<h2>ImageSL</h2><p>" + msg.replace("\n", "<br>") + "</p></body>"))
         webview.start()
     except Exception:
-        sys.stderr.write(msg + "\n")
+        _emit(msg + "\n", err=True)
 
 
 if __name__ == "__main__":

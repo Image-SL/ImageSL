@@ -4,6 +4,12 @@ name: Build desktop apps
 #   * push a tag like v2.0.1  -> builds, smoke-tests, and publishes a GitHub Release
 #   * manual run (workflow_dispatch) -> builds + smoke-tests, uploads artifacts only
 #
+# The published asset names must stay exactly in step with server/web/landing.html:
+#   ImageSL-Setup-Windows.exe   (Inno Setup installer)
+#   ImageSL-macOS.dmg           (drag-to-Applications disk image)
+# The landing page links to /releases/latest/download/<name>, which 404s on any
+# mismatch.
+#
 # Code signing is intentionally NOT wired in yet: it needs real certificates
 # (a Windows Authenticode cert; an Apple Developer ID + notarization). See
 # desktop/BUILD.md — add them as repo secrets and uncomment the signing steps.
@@ -14,7 +20,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write        # needed to create the Release
+  contents: read
 
 jobs:
   build:
@@ -24,7 +30,7 @@ jobs:
         include:
           - os: windows-latest
             asset: ImageSL-Setup-Windows
-            ext: zip
+            ext: exe
           - os: macos-latest
             asset: ImageSL-macOS
             ext: dmg
@@ -36,19 +42,48 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Write version.txt from tag
+      - name: Resolve version
         shell: bash
         run: |
-          VER="${GITHUB_REF_NAME#v}"
+          # Only a tag carries a real version. On workflow_dispatch GITHUB_REF_NAME
+          # is the branch name, which must not end up in version.txt.
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            VER="${GITHUB_REF_NAME#v}"
+          else
+            VER="0.0.0-dev"
+          fi
           [ -z "$VER" ] && VER="0.0.0-dev"
+          # Windows VERSIONINFO needs a strictly numeric x[.y[.z]] form.
+          NUM=$(printf '%s' "$VER" | grep -oE '^[0-9]+(\.[0-9]+){0,2}' || true)
+          [ -z "$NUM" ] && NUM="0.0.0"
           echo "$VER" > version.txt
           echo "VERSION=$VER" >> "$GITHUB_ENV"
+          echo "VERSION_NUM=$NUM" >> "$GITHUB_ENV"
+          echo "Building version $VER (numeric $NUM)"
 
       - name: Install build dependencies
         shell: bash
         run: |
           python -m pip install --upgrade pip
           pip install -r desktop/requirements.txt
+
+      # macOS wants .icns; the repo only carries .ico and .png. Generate it from
+      # the 1024px master. Never fatal — a missing icns just means a default icon.
+      - name: Generate macOS icon
+        if: runner.os == 'macOS'
+        shell: bash
+        continue-on-error: true
+        run: |
+          SRC=client/logo-source.png
+          [ -f "$SRC" ] || SRC=server/web/assets/logo.png
+          [ -f "$SRC" ] || exit 0
+          rm -rf ImageSL.iconset && mkdir ImageSL.iconset
+          for sz in 16 32 128 256 512; do
+            sips -z $sz $sz         "$SRC" --out "ImageSL.iconset/icon_${sz}x${sz}.png"    >/dev/null
+            sips -z $((sz*2)) $((sz*2)) "$SRC" --out "ImageSL.iconset/icon_${sz}x${sz}@2x.png" >/dev/null
+          done
+          iconutil -c icns ImageSL.iconset -o desktop/ImageSL.icns
+          ls -l desktop/ImageSL.icns
 
       - name: Build
         shell: bash
@@ -59,39 +94,87 @@ jobs:
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
             ./dist/ImageSL/ImageSL.exe --selftest
-          else
+          elif [ -x "dist/ImageSL/ImageSL" ]; then
             ./dist/ImageSL/ImageSL --selftest
+          else
+            ./dist/ImageSL.app/Contents/MacOS/ImageSL --selftest
           fi
 
       # ---- package -------------------------------------------------------- #
-      - name: Package (Windows → zip)
+      - name: Package (Windows -> Inno Setup installer)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: Compress-Archive -Path dist/ImageSL/* -DestinationPath "${{ matrix.asset }}.zip" -Force
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            Write-Host "Inno Setup not preinstalled; installing via chocolatey."
+            choco install innosetup -y --no-progress
+            $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          }
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe not found at $iscc" }
+          & $iscc "/DMyAppVersion=$env:VERSION" "/DMyAppVersionNum=$env:VERSION_NUM" "desktop\installer.iss"
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with $LASTEXITCODE" }
+          if (-not (Test-Path "${{ matrix.asset }}.exe")) { throw "installer not produced" }
+          Get-Item "${{ matrix.asset }}.exe" | Select-Object Name,Length
 
-      - name: Package (macOS → dmg)
+      - name: Ad-hoc sign the .app (macOS)
         if: runner.os == 'macOS'
         run: |
-          mkdir -p dmgroot
-          cp -R "dist/ImageSL" "dmgroot/ImageSL"
+          # Not a Developer ID signature — it does NOT clear Gatekeeper's
+          # "unidentified developer" prompt. It does prevent Apple Silicon from
+          # refusing an unsigned bundle outright ("app is damaged"), which is the
+          # difference between a first run that needs a right-click -> Open and
+          # one that is impossible. Replace with a real identity once certs exist.
+          codesign --force --deep --sign - dist/ImageSL.app
+          codesign --verify --verbose dist/ImageSL.app
+
+      - name: Package (macOS -> dmg)
+        if: runner.os == 'macOS'
+        run: |
+          test -d "dist/ImageSL.app" || { echo "ImageSL.app was not built"; exit 1; }
+          rm -rf dmgroot && mkdir dmgroot
+          cp -R "dist/ImageSL.app" "dmgroot/ImageSL.app"
+          # The drag-to-install target users expect inside the disk image.
+          ln -s /Applications "dmgroot/Applications"
           hdiutil create -volname "ImageSL" -srcfolder dmgroot -ov -format UDZO "${{ matrix.asset }}.dmg"
+          ls -lh "${{ matrix.asset }}.dmg"
 
       # ---- SIGNING (disabled until certs exist) --------------------------- #
-      # Windows Authenticode:
+      # Windows Authenticode — sign dist\ImageSL\ImageSL.exe BEFORE running ISCC,
+      # then sign the produced installer too:
       #   - uses: dlemstra/code-sign-action@v1
       #     with: { certificate: '${{ secrets.WINDOWS_PFX_BASE64 }}', password: '${{ secrets.WINDOWS_PFX_PASSWORD }}', files: dist/ImageSL/ImageSL.exe }
-      # macOS Developer ID + notarization:
-      #   codesign --deep --force --options runtime --sign "$APPLE_DEVID" dist/ImageSL/ImageSL
+      # macOS Developer ID + notarization — replace the ad-hoc step above:
+      #   codesign --deep --force --options runtime --sign "$APPLE_DEVID" dist/ImageSL.app
       #   xcrun notarytool submit "${{ matrix.asset }}.dmg" --apple-id ... --team-id ... --password ... --wait
+      #   xcrun stapler staple "${{ matrix.asset }}.dmg"
 
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset }}
           path: ${{ matrix.asset }}.${{ matrix.ext }}
+          if-no-files-found: error
 
-      - name: Publish to Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+  # A single release job, rather than each matrix leg publishing, so the two
+  # runners cannot race to create the same release.
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
         with:
-          files: ${{ matrix.asset }}.${{ matrix.ext }}
+          path: artifacts
+
+      - name: List what will be published
+        run: ls -lhR artifacts
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/**/*.exe
+            artifacts/**/*.dmg
           fail_on_unmatched_files: true
+          generate_release_notes: true

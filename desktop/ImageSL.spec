@@ -13,6 +13,8 @@ Output:  dist/ImageSL/ImageSL(.exe)   (onedir — faster start, simpler to sign)
 """
 
 import os
+import re
+import sys
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 block_cipher = None
@@ -21,6 +23,10 @@ block_cipher = None
 ROOT = os.path.abspath(os.path.join(os.path.dirname(SPECPATH), "."))
 SERVER = os.path.join(ROOT, "server")
 ICON = os.path.join(ROOT, "client", "ImageSL.ico")
+# macOS needs .icns, not .ico. CI generates this next to the spec (see the
+# workflow); if it is absent the app simply builds with the default icon.
+ICNS = os.path.join(ROOT, "desktop", "ImageSL.icns")
+MACOS = sys.platform == "darwin"
 
 # --- pull in the backend's dependency trees in full ------------------------- #
 datas, binaries, hiddenimports = [], [], []
@@ -59,8 +65,19 @@ datas += tree(SERVER, "server")
 if os.path.isfile(ICON):
     datas += [(ICON, ".")]
 _ver = os.path.join(ROOT, "version.txt")
+_ver_str = "0.0.0"
 if os.path.isfile(_ver):
     datas += [(_ver, ".")]
+    try:
+        with open(_ver, encoding="utf-8") as _f:
+            _raw = _f.read().strip()
+        # CFBundleShortVersionString must be numeric dotted components; a manual
+        # CI run writes "0.0.0-dev", which macOS rejects. Keep only the numbers.
+        _m = re.match(r"^\d+(\.\d+){0,2}", _raw)
+        if _m:
+            _ver_str = _m.group(0)
+    except OSError:
+        pass
 
 a = Analysis(
     [os.path.join(ROOT, "desktop", "launcher.py")],
@@ -84,9 +101,32 @@ exe = EXE(
     strip=False,
     upx=False,                      # UPX packing trips antivirus heuristics — do NOT enable
     console=False,                  # windowed app, no console
-    icon=ICON if os.path.isfile(ICON) else None,
+    # .ico is a Windows format; on macOS the icon rides on the BUNDLE below.
+    icon=(None if MACOS else (ICON if os.path.isfile(ICON) else None)),
 )
 coll = COLLECT(
     exe, a.binaries, a.zipfiles, a.datas,
     strip=False, upx=False, name="ImageSL",
 )
+
+# --- macOS: wrap the onedir build in a real .app --------------------------- #
+# Without this the dmg ships a bare Unix executable — double-clicking it opens
+# Terminal instead of the app, and Finder shows no icon or name.
+if MACOS:
+    app = BUNDLE(
+        coll,
+        name="ImageSL.app",
+        icon=ICNS if os.path.isfile(ICNS) else None,
+        bundle_identifier="com.solvergent.imagesl",
+        info_plist={
+            "CFBundleName": "ImageSL",
+            "CFBundleDisplayName": "ImageSL",
+            "CFBundleShortVersionString": _ver_str,
+            "CFBundleVersion": _ver_str,
+            "NSHighResolutionCapable": True,
+            # Nothing here talks to the camera, mic, or the user's files behind
+            # their back; the app is a local server plus a web view.
+            "LSApplicationCategoryType": "public.app-category.medical",
+            "NSHumanReadableCopyright": "ImageSL",
+        },
+    )

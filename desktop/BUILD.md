@@ -10,6 +10,7 @@ desktop/
 ├── launcher.py     # starts the embedded server, opens the window, checks for updates
 ├── updater.py      # asks GitHub for the latest release (never raises, offline-safe)
 ├── ImageSL.spec    # PyInstaller recipe — bundles launcher + the entire server/ tree
+├── installer.iss   # Inno Setup recipe — wraps the Windows build into an installer
 └── requirements.txt
 .github/workflows/build-desktop.yml   # CI: builds Win + macOS, smoke-tests, releases
 ```
@@ -18,12 +19,24 @@ desktop/
 
 | Platform | Asset | What it is |
 | --- | --- | --- |
-| Windows | `ImageSL-Windows.exe` | one portable executable — download and double-click |
-| macOS | `ImageSL-macOS.dmg` | drag-to-Applications disk image (Apple Silicon + Intel) |
+| Windows | `ImageSL-Setup-Windows.exe` | Inno Setup installer — per-user, no admin prompt, Start Menu entry + uninstaller |
+| macOS | `ImageSL-macOS.dmg` | disk image containing `ImageSL.app` and an Applications shortcut — drag to install |
 
 The landing page's Download buttons point at
 `github.com/<repo>/releases/latest/download/<asset>`, which always redirects to
 the newest release — so they never need editing.
+
+> **These three names must agree, or the buttons 404:** `ASSET` in
+> `server/web/landing.html`, the `asset:`/`ext:` matrix in the workflow, and
+> `OutputBaseFilename` in `installer.iss`. Change one, change all three.
+
+The Windows installer is deliberately **per-user** (`PrivilegesRequired=lowest`,
+installing under `%LOCALAPPDATA%\Programs\ImageSL`). An unsigned installer that
+demands administrator rights is precisely the prompt users are taught to refuse;
+a per-user install needs no elevation at all.
+
+On macOS the spec emits a real `.app` via `BUNDLE`. Without it the dmg would hold
+a bare Unix executable — double-clicking that opens Terminal rather than the app.
 
 ## Build locally
 
@@ -38,9 +51,16 @@ Smoke-test the result without opening a window (starts the engine, checks it
 answers, exits):
 
 ```bash
-dist/ImageSL/ImageSL --selftest        # onedir
-# or, onefile:
-dist/ImageSL.exe --selftest
+dist/ImageSL/ImageSL --selftest              # macOS / Linux
+dist/ImageSL/ImageSL.exe --selftest          # Windows
+dist/ImageSL.app/Contents/MacOS/ImageSL --selftest   # the bundled macOS app
+```
+
+To produce the Windows installer locally you also need
+[Inno Setup 6](https://jrsoftware.org/isdl.php); from the repo root:
+
+```bash
+"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=2.0.0 /DMyAppVersionNum=2.0.0 desktop\installer.iss
 ```
 
 > **A macOS `.app`/`.dmg` cannot be built on Windows** — PyInstaller does not
@@ -81,6 +101,19 @@ verification — there is no free shortcut that actually silences the warnings):
 The signing/notarization steps are written but commented out in the workflow —
 uncomment them once the secrets exist. Until then the app still builds and runs;
 users just see the standard "unknown publisher" prompt.
+
+**What CI does do today on macOS: an ad-hoc signature** (`codesign --sign -`).
+That is not a Developer ID and does not clear Gatekeeper — a first run still
+needs right-click → Open. What it does prevent is Apple Silicon refusing an
+entirely unsigned bundle with "ImageSL is damaged and can't be opened", which is
+the difference between an awkward first launch and an impossible one.
+
+First-run instructions worth putting in the release notes:
+
+- **Windows:** SmartScreen shows "Windows protected your PC" → *More info* →
+  *Run anyway*.
+- **macOS:** right-click `ImageSL.app` → *Open* → *Open*. Double-clicking a
+  quarantined unsigned app just refuses.
 
 ## Auto-update
 
