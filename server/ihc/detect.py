@@ -480,7 +480,18 @@ OBJ_SEED_MIN_PX  = 2      # ... on at least two pixels
 # amount of blur is applied whatever resolution the slide is analysed at —
 # a fixed pixel radius would smooth a downscaled copy twice as hard and shift
 # its answer.
-SMOOTH_SIGMA     = 1.0
+#
+# 0.80, not 1.0. Eased alongside EXTENT_PEAK_FRAC for the finer overlay: at 1.0
+# the pre-object blur fused neighbouring puncta into a single solid patch, so the
+# green read as coarse blobs rather than tracing the granular/filamentous stain.
+# 0.80 still absorbs single-pixel codec/sensor spikes (structures are several
+# pixels across) while letting closely spaced puncta separate into their own
+# objects — which is what keeps recall roughly flat despite the tighter isophote.
+# 0.80 rather than 0.70: the recovered-puncta count plateaus by 0.80 (5479 px of
+# positive on OK2828 vs 5524 at 0.70 — within 1%), so the extra blur costs no
+# real recall while keeping more of the slide's own texture out of the object
+# population, which is what protects the tonal-gradient / faint-tissue precision.
+SMOOTH_SIGMA     = 0.80
 SMOOTH_REF_EDGE  = 1024.0
 # The COLOUR of the excess is smoothed harder than its magnitude. A chromogen's
 # hue is a property of the structure and varies slowly across it, while its
@@ -636,7 +647,55 @@ OTSU_PLATEAU     = 0.90
 # measure an object at the sampling scale without overshooting it. That is a
 # limit of the method on objects a few pixels across, not something to tune the
 # constant to at the cost of real recall.
-EXTENT_PEAK_FRAC = 0.26
+# The fraction is SIZE-AWARE, because the two failures it has to avoid live at
+# opposite ends of the size axis and pull the constant in opposite directions:
+#
+#   * On a SMALL structure the point-spread halo is a large share of its
+#     footprint, so a low fraction paints the green out past the visibly stained
+#     core into clean tissue and fuses neighbouring puncta into one blob. The
+#     overlay IS the measurement here (screen == CSV), so that halo is also
+#     counted. Small structures want a TIGHT (high) fraction.
+#   * On a LARGE, dense structure the fraction is a straight recall knob: its
+#     interior excess is depressed by its own local background (a plaque wider
+#     than the background window partly subtracts itself), so a high fraction's
+#     isophote sits inside the true edge and sheds the outer annulus — and area
+#     goes as r^2, so shedding 15% of the radius loses ~30% of the area. Large
+#     structures want a LOOSE (low) fraction.
+#
+# A single constant cannot serve both: at 0.50 the fine overlay is right but a
+# 60 px synthetic plaque loses half its area (recall 52%, suite min 70%); at 0.26
+# the plaque is measured whole but every punctum blooms. So the fraction ramps
+# from FINE on small objects to the recall-preserving bulk value on large ones,
+# by object area. Small/medium discs (r<=18) already pass the suite at the FINE
+# fraction; only the largest need the loose one, so the ramp sits above them.
+#
+# 0.26 (bulk) is the long-validated value — see the sweep notes above; it is what
+# keeps real ducts and plaques measured to their edge. 0.50 (fine) is where a
+# punctum stops blooming without dropping medium puncta.
+EXTENT_PEAK_FRAC      = 0.26   # bulk / large structures — recall-preserving
+EXTENT_PEAK_FRAC_FINE = 0.34   # small structures — tighter than bulk so the
+                               #   overlay traces fine stain instead of blooming
+                               #   into its halo, but NOT tighter than the
+                               #   real-slide MISS gate allows.
+                               #
+                               #   Capped by backtest.py, not by the synthetic
+                               #   suite. On real sections the MISS check (dense,
+                               #   unmistakable chromogen that was not called
+                               #   positive; MISS_MAX 5%) rises steeply as this is
+                               #   tightened, because a high isophote sheds the
+                               #   brown PERIPHERY of dense structures — measured
+                               #   on OK2828/OK2998: miss 2.9/2.4% at 0.34, 4.9/
+                               #   4.6% at 0.38, 8.7/7.8% at 0.42, 13.4/11.7% at
+                               #   0.46. 0.34 keeps a safe margin under 5% across
+                               #   the unseen corpus while still de-blooming the
+                               #   fine overlay; most of the visual gain is from
+                               #   the SMOOTH_SIGMA drop, which costs no MISS.
+# Object-area band (as a fraction of the frame) over which the fraction ramps
+# FINE -> bulk. Below _LO an object is "small" (full FINE fraction); above _HI it
+# is "large" (full bulk fraction); linear in between. _LO ~ r=18 disc, _HI ~ r=34,
+# expressed against the frame so it is resolution-independent like MIN_AREA_FRAC.
+EXTENT_FINE_AREA_FRAC = 1.3e-3
+EXTENT_BULK_AREA_FRAC = 4.6e-3
 EXTENT_FLOOR_MULT = 1.0   # ... never below this × the candidate floor
 
 # Object gates (level-independent).
@@ -1478,7 +1537,16 @@ def detect(
         # footprint, because that is where a boundary either exists or does not;
         # at the looser candidate footprint a soft gradient and a sharp punctum
         # are not reliably separable.
-        extent = np.maximum(st["peak"] * EXTENT_PEAK_FRAC, floor * EXTENT_FLOOR_MULT)
+        # Size-aware isophote fraction: FINE (tight) on small objects so the green
+        # traces the stain without blooming into its halo, ramping to the bulk
+        # value on large ones so a dense plaque keeps its outer annulus. See the
+        # EXTENT_PEAK_FRAC notes for why the two ends pull the constant apart.
+        _img_px = float(h * w)
+        _lo = EXTENT_FINE_AREA_FRAC * _img_px
+        _hi = max(EXTENT_BULK_AREA_FRAC * _img_px, _lo + 1.0)
+        _t = np.clip((st["area"].astype(np.float64) - _lo) / (_hi - _lo), 0.0, 1.0)
+        _frac = EXTENT_PEAK_FRAC_FINE + (EXTENT_PEAK_FRAC - EXTENT_PEAK_FRAC_FINE) * _t
+        extent = np.maximum(st["peak"] * _frac, floor * EXTENT_FLOOR_MULT)
         flat_lbl = lbl.ravel()
         inside = signal.ravel() >= extent[flat_lbl]
 
