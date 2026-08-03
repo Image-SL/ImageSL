@@ -51,6 +51,11 @@ ASSETS_DIR = WEB_DIR / "assets"
 MAX_UPLOAD_BYTES = int(os.environ.get("IMAGESL_MAX_UPLOAD_MB", "256")) * 1024 * 1024
 APP_VERSION = os.environ.get("IMAGESL_VERSION", "2.0.0")
 
+# Set by the offline desktop launcher. When true, "/" boots straight into the
+# analyzer instead of the public landing page — the download button only makes
+# sense on the web site, not inside an app the user has already installed.
+IMAGESL_DESKTOP = os.environ.get("IMAGESL_DESKTOP") == "1"
+
 # Optional access control. If IMAGESL_ACCESS_TOKENS is set (comma-separated),
 # every /api/* call must carry a matching X-ImageSL-Key header. Unset => open.
 _TOKENS = {t.strip() for t in os.environ.get("IMAGESL_ACCESS_TOKENS", "").split(",") if t.strip()}
@@ -535,6 +540,21 @@ def _serve_html(name: str) -> HTMLResponse:
 
 @app.get("/", response_class=HTMLResponse)
 def home() -> HTMLResponse:
+    # Desktop build: straight into the analyzer.
+    if IMAGESL_DESKTOP:
+        return _serve_html("index.html")
+    # Public site: a simple landing page (what ImageSL is + a Download button).
+    # Fall back to the analyzer if landing.html is absent, so the root is never
+    # left without a working page.
+    if (WEB_DIR / "landing.html").is_file():
+        return _serve_html("landing.html")
+    return _serve_html("index.html")
+
+
+@app.get("/app", response_class=HTMLResponse)
+def analyzer() -> HTMLResponse:
+    """The analyzer itself. On the public site it lives under /app so the landing
+    page can own the root; the desktop launcher opens this directly."""
     return _serve_html("index.html")
 
 

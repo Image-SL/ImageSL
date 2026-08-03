@@ -1,0 +1,6 @@
+# Build-time dependencies for the ImageSL desktop app.
+# Installs the backend's runtime deps plus the desktop shell + packager.
+-r ../server/requirements.txt
+
+pywebview>=5.0        # native window (Edge WebView2 on Windows, WebKit on macOS)
+pyinstaller>=6.6      # freezes launcher.py + the bundled server into an app

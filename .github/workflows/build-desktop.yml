@@ -1,0 +1,97 @@
+name: Build desktop apps
+
+# Builds the offline ImageSL desktop app for Windows and macOS.
+#   * push a tag like v2.0.1  -> builds, smoke-tests, and publishes a GitHub Release
+#   * manual run (workflow_dispatch) -> builds + smoke-tests, uploads artifacts only
+#
+# Code signing is intentionally NOT wired in yet: it needs real certificates
+# (a Windows Authenticode cert; an Apple Developer ID + notarization). See
+# desktop/BUILD.md — add them as repo secrets and uncomment the signing steps.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write        # needed to create the Release
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            asset: ImageSL-Setup-Windows
+            ext: zip
+          - os: macos-latest
+            asset: ImageSL-macOS
+            ext: dmg
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Write version.txt from tag
+        shell: bash
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          [ -z "$VER" ] && VER="0.0.0-dev"
+          echo "$VER" > version.txt
+          echo "VERSION=$VER" >> "$GITHUB_ENV"
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r desktop/requirements.txt
+
+      - name: Build
+        shell: bash
+        run: pyinstaller --noconfirm --distpath dist --workpath build desktop/ImageSL.spec
+
+      - name: Smoke-test the frozen app (headless)
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            ./dist/ImageSL/ImageSL.exe --selftest
+          else
+            ./dist/ImageSL/ImageSL --selftest
+          fi
+
+      # ---- package -------------------------------------------------------- #
+      - name: Package (Windows → zip)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path dist/ImageSL/* -DestinationPath "${{ matrix.asset }}.zip" -Force
+
+      - name: Package (macOS → dmg)
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p dmgroot
+          cp -R "dist/ImageSL" "dmgroot/ImageSL"
+          hdiutil create -volname "ImageSL" -srcfolder dmgroot -ov -format UDZO "${{ matrix.asset }}.dmg"
+
+      # ---- SIGNING (disabled until certs exist) --------------------------- #
+      # Windows Authenticode:
+      #   - uses: dlemstra/code-sign-action@v1
+      #     with: { certificate: '${{ secrets.WINDOWS_PFX_BASE64 }}', password: '${{ secrets.WINDOWS_PFX_PASSWORD }}', files: dist/ImageSL/ImageSL.exe }
+      # macOS Developer ID + notarization:
+      #   codesign --deep --force --options runtime --sign "$APPLE_DEVID" dist/ImageSL/ImageSL
+      #   xcrun notarytool submit "${{ matrix.asset }}.dmg" --apple-id ... --team-id ... --password ... --wait
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}.${{ matrix.ext }}
+
+      - name: Publish to Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.asset }}.${{ matrix.ext }}
+          fail_on_unmatched_files: true
