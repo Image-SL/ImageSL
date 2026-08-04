@@ -96,12 +96,23 @@
   .btn.primary svg{opacity:.9}
   .btn.primary:hover{background:#000;border-color:#000}
 
+  .btn.off{opacity:.42;cursor:not-allowed}
+  .btn.off:hover{border-color:var(--line-2)}
+  .btn.primary.off:hover{background:var(--ink);border-color:var(--ink)}
+
   .meta{
     margin-top:22px;
     font-size:12.5px;
     font-weight:300;
     color:var(--ink-3);
     letter-spacing:.02em;
+  }
+  .hint{
+    margin:14px 0 0;
+    font-size:12.5px;
+    font-weight:300;
+    color:var(--ink-3);
+    min-height:1em;
   }
   .meta a{color:var(--ink-3);text-decoration:none;border-bottom:1px solid var(--line)}
   .meta a:hover{color:var(--ink-2);border-bottom-color:var(--line-2)}
@@ -150,6 +161,8 @@
     </a>
   </div>
 
+  <p class="hint" id="hint"></p>
+
   <p class="meta">Version <span id="ver">—</span> · <a href="/app">Open in browser</a></p>
 </main>
 
@@ -166,16 +179,22 @@
   var ASSET = { win: "ImageSL-Setup-Windows.exe", mac: "ImageSL-macOS.dmg" };
   var LABEL = { win: "Download for Windows",      mac: "Download for macOS"  };
 
-  // /releases/latest/download/<name> redirects straight to the newest release's
-  // asset of that exact name, so the file downloads without a detour.
-  function href(os){
+  // Release assets are served with Content-Disposition: attachment, so a click
+  // downloads the file and leaves this page where it is. The one case that does
+  // navigate away is a MISSING asset — GitHub answers that with an HTML 404 page.
+  // So the buttons are checked against the API and switched off if there is
+  // nothing to hand over, rather than dropping a visitor on a 404.
+  function canonical(os){
     return "https://github.com/" + REPO + "/releases/latest/download/" + ASSET[os];
   }
+
+  var slot = {};                       // button id -> which OS it currently offers
   function setBtn(id, os){
     var el = document.getElementById(id);
-    el.href = href(os);
+    el.href = canonical(os);           // works with JS disabled, once a release exists
     el.setAttribute('data-os', os);
     document.getElementById(id + '-label').textContent = LABEL[os];
+    slot[id] = os;
   }
 
   // Put the visitor's own platform first.
@@ -184,10 +203,40 @@
   setBtn('dl-primary',   isMac ? 'mac' : 'win');
   setBtn('dl-secondary', isMac ? 'win' : 'mac');
 
-  // Best-effort version label. Fails silently offline or before the first release.
+  function disable(id, msg){
+    var el = document.getElementById(id);
+    el.classList.add('off');
+    el.setAttribute('aria-disabled', 'true');
+    el.addEventListener('click', function(e){
+      e.preventDefault();
+      document.getElementById('hint').textContent = msg;
+    });
+  }
+
   fetch("https://api.github.com/repos/" + REPO + "/releases/latest")
     .then(function(r){ return r.ok ? r.json() : null; })
-    .then(function(j){ if (j && j.tag_name) document.getElementById('ver').textContent = j.tag_name; })
+    .then(function(j){
+      if (!j){                         // no release published yet
+        disable('dl-primary',   "No build has been published yet.");
+        disable('dl-secondary', "No build has been published yet.");
+        return;
+      }
+      if (j.tag_name) document.getElementById('ver').textContent = j.tag_name;
+
+      var url = {};
+      (j.assets || []).forEach(function(a){ url[a.name] = a.browser_download_url; });
+
+      ['dl-primary', 'dl-secondary'].forEach(function(id){
+        var direct = url[ASSET[slot[id]]];
+        if (direct){
+          document.getElementById(id).href = direct;   // straight at the file
+        } else {
+          disable(id, "That build is not in the latest release yet.");
+        }
+      });
+    })
+    // Offline or rate-limited: leave the canonical links alone. They are correct;
+    // we simply could not confirm them, and guessing "unavailable" would be worse.
     .catch(function(){});
 </script>
 </body>
