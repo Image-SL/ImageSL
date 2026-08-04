@@ -2,22 +2,42 @@
 
 ## Overview
 
+> **This section was rewritten.** It previously showed a thin-shell `ImageSL.exe`
+> uploading slides and a license key to a hosted backend, alongside an
+> `ai/claude_client.py` and an `ANTHROPIC_API_KEY`. Neither is the current
+> design: the desktop app bundles the engine and runs offline, and the AI
+> integration is not present in this repository at all (see the note in the
+> README). Sections below this one describe the engine and still apply.
+
+One engine, `server/`, runs in two places:
+
 ```
-                    ┌──────────────────────────────────────────────┐
-   ImageSL.exe      │                 Railway backend               │
-  (thin shell) ───► │  FastAPI (server/app.py)                      │
-   upload slide     │   ├─ ihc/engine.py   deconvolution + Otsu     │
-   + license key    │   │                   + variant rendering      │
-                    │   ├─ ai/claude_client.py  vision + chat        │
-   ◄─────────────── │   ├─ web/  premium site + analyzer console     │
-   results,         │   └─ ANTHROPIC_API_KEY  🔒 (never leaves here) │
-   renders, chat    └──────────────────────────────────────────────┘
+  DESKTOP (offline)                     HOSTED (browser)
+  ┌──────────────────────────────┐      ┌──────────────────────────────┐
+  │ ImageSL.exe / ImageSL.app    │      │  FastAPI (server/app.py)     │
+  │  ├─ launcher.py              │      │   ├─ ihc/engine.py           │
+  │  │   starts the server on    │      │   ├─ ihc/detect.py           │
+  │  │   127.0.0.1:<random>      │      │   └─ web/                    │
+  │  └─ the whole server/ tree   │      └──────────────────────────────┘
+  │      bundled inside          │                    ▲
+  │         ▲                    │           slide uploaded, measured,
+  │         └─ native window     │           deleted after 8h idle
+  │            onto 127.0.0.1    │
+  └──────────────────────────────┘
+      nothing leaves the machine
+      (except a version check to GitHub)
 ```
 
-Everything of value — the algorithm, the AI, the keys — is server-side. The
-desktop client is a native WebView2 window that loads `/app` and passes a
-license key. This is what makes "source fully protected" literally true: there
-is no analysis code in the download to reverse-engineer.
+The desktop build is the same code path as the hosted one — the analyzer HTML,
+the routes and the engine are identical. The only differences are that
+`IMAGESL_DESKTOP=1` makes `/` serve the analyzer rather than the landing page,
+and that the server is bound to loopback on an ephemeral port with no access
+tokens, because the only possible caller is the window in front of the user.
+
+The trade this makes is deliberate and worth stating plainly: bundling the
+engine means the algorithms ship with the download and can be extracted. That
+was accepted in exchange for slides never leaving the machine, which is what
+the people using this actually need. The source is public regardless.
 
 ## Backend components
 

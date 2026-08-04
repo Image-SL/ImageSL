@@ -1,23 +1,37 @@
 # ImageSL — Security & Distribution (the honest version)
 
-## 1. Source-code protection — solved by architecture
+## 1. Desktop architecture — the engine ships with the app
 
-**Goal:** users who download the `.exe` can't get at the core logic.
+> **This section was rewritten.** It previously described the desktop client as
+> a *thin shell* that opened a window onto the hosted backend and passed a
+> license key, and instructed the reader to "never bundle the `server/` code
+> into the client". That has not been true since the offline app landed: the
+> desktop build bundles the entire `server/` tree and runs it locally. The old
+> advice now describes the opposite of the shipping design, so it is corrected
+> here rather than left to mislead.
 
-**How ImageSL achieves it:** the desktop client is a *thin shell*. It opens a
-native window to the hosted web app and passes a license key — that's the whole
-program. Every algorithm (`server/ihc/engine.py`), the AI integration, and the
-`ANTHROPIC_API_KEY` live only on the Railway backend. There is nothing
-proprietary compiled into the download, so there is nothing to decompile.
+**How the desktop app works today:** `desktop/launcher.py` starts the real
+FastAPI application on a random loopback port and opens a native window onto it.
+The whole engine — `server/ihc/engine.py`, `detect.py`, the stain registry — is
+inside the download. See [desktop/BUILD.md](../desktop/BUILD.md).
 
-This is strictly stronger than any client-side obfuscation, which can always be
-reversed given enough effort. Keep it that way:
+**What that trades away, deliberately:** the algorithms are no longer hidden.
+Anyone sufficiently motivated can extract the bundled Python from the
+distribution. That is an accepted consequence of the goal that replaced
+obfuscation — a slide never leaves the machine, which matters far more to the
+people using this than source secrecy does, and the source is public anyway.
 
-- Never bundle the `server/` code, model logic, or API keys into the client.
-- Keep secrets in Railway environment variables, never in `client/config.json`
-  (which ships inside the exe and is readable).
-- Gate the API with `IMAGESL_ACCESS_TOKENS` so a leaked backend URL alone can't
-  be used to hammer your Claude quota.
+What still holds:
+
+- **Never ship secrets in the desktop build.** There is no API key, no license
+  key and no account in it, and none should be added — anything bundled is
+  readable. The app authenticates to nothing because it talks to nothing.
+- The launcher clears `IMAGESL_ACCESS_TOKENS` for the embedded server: the
+  socket is bound to `127.0.0.1` on an ephemeral port, so the only caller is the
+  window in front of the user.
+- For the **hosted** deployment, secrets stay in the host's environment
+  variables, and `IMAGESL_ACCESS_TOKENS` still gates `/api/*` so a leaked
+  backend URL alone cannot be used to hammer it.
 
 ## 2. Windows Defender / SmartScreen — what's actually true
 

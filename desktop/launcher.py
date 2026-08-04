@@ -219,16 +219,69 @@ def main() -> int:
     return 0
 
 
+def _crash_log() -> Path:
+    """Where a windowed build leaves its traceback.
+
+    A console build prints and the user can read it. A windowed build has no
+    stdout at all, so an unhandled exception is simply an app that vanishes -
+    which is exactly what happened here, and is unsupportable: there is nothing
+    to send us and nothing to search for. The traceback goes to a file instead.
+    """
+    base = (os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+            or os.path.expanduser("~/.imagesl"))
+    d = Path(base) / APP_NAME
+    d.mkdir(parents=True, exist_ok=True)
+    return d / "last-error.log"
+
+
+def _record_crash(text: str):
+    try:
+        p = _crash_log()
+        p.write_text(f"ImageSL {_read_version()}\n"
+                     f"frozen={getattr(sys, 'frozen', False)}\n"
+                     f"python={sys.version}\n\n{text}\n", encoding="utf-8")
+        return p
+    except Exception:
+        return None
+
+
+def _message_box(msg: str) -> bool:
+    """Win32 message box - the one way to reach the user with no window toolkit
+    and no console. Used when the GUI stack itself is what failed."""
+    try:
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(None, msg, APP_NAME, 0x10)  # MB_ICONERROR
+        return True
+    except Exception:
+        return False
+
+
 def _fatal(msg: str) -> None:
+    _emit(msg + "\n", err=True)
     try:
         import webview
         webview.create_window(APP_NAME, html=(
-            "<body style='font:15px sans-serif;padding:40px;color:#1c1630'>"
-            "<h2>ImageSL</h2><p>" + msg.replace("\n", "<br>") + "</p></body>"))
+            "<body style='font:15px -apple-system,Segoe UI,sans-serif;padding:40px;color:#0d0f12'>"
+            "<h2 style='font-weight:400'>ImageSL</h2><p style='color:#4d535c'>"
+            + msg.replace("\n", "<br>") + "</p></body>"))
         webview.start()
+        return
     except Exception:
-        _emit(msg + "\n", err=True)
+        # The window toolkit is a plausible cause of the failure we are
+        # reporting, so never let it swallow the report.
+        pass
+    _message_box(msg)
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except SystemExit:
+        raise
+    except BaseException:                      # noqa: BLE001 - last line of defence
+        import traceback
+        _tb = traceback.format_exc()
+        _where = _record_crash(_tb)
+        _fatal("ImageSL could not start.\n\n"
+               + (f"The details were written to:\n{_where}" if _where else _tb))
+        raise SystemExit(1)
