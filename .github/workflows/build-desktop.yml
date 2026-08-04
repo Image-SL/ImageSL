@@ -108,13 +108,28 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-          if (-not (Test-Path $iscc)) {
+          # Installers land in different places depending on who put them there:
+          # the runner image and chocolatey use Program Files (x86), winget
+          # installs per-user. Check every candidate rather than one path.
+          function Find-ISCC {
+            $candidates = @(
+              "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+              "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+              "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+            )
+            foreach ($c in $candidates) { if (Test-Path $c) { return $c } }
+            $onPath = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+            if ($onPath) { return $onPath.Source }
+            return $null
+          }
+          $iscc = Find-ISCC
+          if (-not $iscc) {
             Write-Host "Inno Setup not preinstalled; installing via chocolatey."
             choco install innosetup -y --no-progress
-            $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+            $iscc = Find-ISCC
           }
-          if (-not (Test-Path $iscc)) { throw "ISCC.exe not found at $iscc" }
+          if (-not $iscc) { throw "ISCC.exe not found in any known location" }
+          Write-Host "Using $iscc"
           & $iscc "/DMyAppVersion=$env:VERSION" "/DMyAppVersionNum=$env:VERSION_NUM" "desktop\installer.iss"
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with $LASTEXITCODE" }
           if (-not (Test-Path "${{ matrix.asset }}.exe")) { throw "installer not produced" }
