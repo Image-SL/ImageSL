@@ -47,15 +47,18 @@ jobs:
         run: |
           # Only a tag carries a real version. On workflow_dispatch GITHUB_REF_NAME
           # is the branch name, which must not end up in version.txt.
+          # Written as explicit ifs, not `[ x ] && y`: these steps run under
+          # `set -e`, where a trailing false test would abort the step.
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then
             VER="${GITHUB_REF_NAME#v}"
           else
             VER="0.0.0-dev"
           fi
-          [ -z "$VER" ] && VER="0.0.0-dev"
-          # Windows VERSIONINFO needs a strictly numeric x[.y[.z]] form.
+          if [ -z "$VER" ]; then VER="0.0.0-dev"; fi
+          # Windows VERSIONINFO and CFBundleShortVersionString both reject
+          # anything but a numeric x[.y[.z]], so derive one alongside.
           NUM=$(printf '%s' "$VER" | grep -oE '^[0-9]+(\.[0-9]+){0,2}' || true)
-          [ -z "$NUM" ] && NUM="0.0.0"
+          if [ -z "$NUM" ]; then NUM="0.0.0"; fi
           echo "$VER" > version.txt
           echo "VERSION=$VER" >> "$GITHUB_ENV"
           echo "VERSION_NUM=$NUM" >> "$GITHUB_ENV"
@@ -75,8 +78,8 @@ jobs:
         continue-on-error: true
         run: |
           SRC=client/logo-source.png
-          [ -f "$SRC" ] || SRC=server/web/assets/logo.png
-          [ -f "$SRC" ] || exit 0
+          if [ ! -f "$SRC" ]; then SRC=server/web/assets/logo.png; fi
+          if [ ! -f "$SRC" ]; then echo "no icon source found; skipping"; exit 0; fi
           rm -rf ImageSL.iconset && mkdir ImageSL.iconset
           for sz in 16 32 128 256 512; do
             sips -z $sz $sz         "$SRC" --out "ImageSL.iconset/icon_${sz}x${sz}.png"    >/dev/null

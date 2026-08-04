@@ -1,6 +1,6 @@
 # ImageSL
 
-**A fully online tool for DAB IHC stain quantification, with automatic background
+**A tool for DAB IHC stain quantification, with automatic background
 detection and removal.**
 
 Upload an immunohistochemistry (IHC) slide. ImageSL finds the slide background
@@ -14,8 +14,15 @@ re-render the image.
 > name it — they just resolve to DAB. Further stains are added by enabling them
 > in two lists; see [Adding a stain](#adding-a-stain).
 
-There is no desktop app and no download — it's a single web page. All analysis
-runs on the server.
+It runs two ways from the same engine and the same code:
+
+- **Desktop app** (Windows and macOS) — bundles the whole analysis engine and
+  runs it on a private loopback port. Fully offline; a slide never leaves the
+  machine. Download it from the
+  [latest release](https://github.com/solvergent/ImageSL/releases/latest), or see
+  [desktop/BUILD.md](desktop/BUILD.md) to build and release it.
+- **Web page** — the same analyzer served from a host, with analysis running on
+  the server.
 
 > ⚕️ ImageSL assists interpretation. It is **not** a clinical diagnosis; results
 > must be confirmed by a qualified pathologist.
@@ -152,8 +159,15 @@ ImageSL/
 │   │                        #   objects → per-object area → level map
 │   ├── ihc/regions.py       # manual focus / ignore shapes (exact, centre-in-pixel)
 │   ├── ihc/stains.py        # stain registry + ENABLED_KEYS (what is shipped)
-│   ├── web/                 # plain single-page UI (index.html, styles.css, app.js)
+│   ├── web/                 # plain single-page UI — landing.html at "/",
+│   │                        #   index.html (the analyzer) at "/app", styles.css, app.js
 │   └── requirements.txt
+├── desktop/                 # the offline app: launcher.py starts the bundled
+│                            #   engine and opens a native window; ImageSL.spec
+│                            #   (PyInstaller) + installer.iss (Inno Setup)
+│                            #   package it — see desktop/BUILD.md
+├── .github/workflows/       # build-desktop.yml: builds and smoke-tests Windows
+│                            #   and macOS on a tag, then publishes the release
 ├── scripts/backtest.py      # regression suite on real slides: misses, flooding,
 │                            #   grey debris, tissue-mask collapse, and stability
 │                            #   under illumination / resolution / compression
