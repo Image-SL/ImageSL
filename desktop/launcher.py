@@ -43,6 +43,34 @@ def _free_port() -> int:
         return int(s.getsockname()[1])
 
 
+def _ensure_std_streams() -> None:
+    """Give a windowed build the stdout/stderr that third-party code assumes.
+
+    PyInstaller sets both to None when console=False, and libraries do not
+    expect that. uvicorn's default logging config calls sys.stdout.isatty()
+    while constructing its formatter; against None that raises AttributeError,
+    dictConfig turns it into "Unable to configure formatter 'default'", and the
+    server dies before it ever binds. The app then exits with no window and no
+    message.
+
+    This is worth understanding rather than patching narrowly, because the
+    failure is invisible to testing: run the frozen exe from a shell, or with
+    its output redirected - which is what CI does - and stdout is a real handle,
+    so everything passes. It only breaks when launched from Explorer, which is
+    how every user launches it.
+
+    Only substitutes when the stream is genuinely absent, so a redirected or
+    console run keeps its real stream and its output.
+    """
+    for _name in ("stdout", "stderr"):
+        if getattr(sys, _name, None) is None:
+            try:
+                setattr(sys, _name,
+                        open(os.devnull, "w", encoding="utf-8", buffering=1))
+            except Exception:
+                pass
+
+
 def _emit(msg: str, err: bool = False) -> None:
     """Write a line without assuming a console exists.
 
@@ -175,8 +203,22 @@ def _selftest() -> int:
     app can actually run the analysis code without needing a display."""
     port = _free_port()
     _configure_env(port)
-    _start_server(port)
-    if not _wait_healthy(port):
+
+    # Start the engine under the conditions a double-clicked windowed build
+    # actually runs in: no stdout, no stderr. CI invokes this exe from a shell
+    # with its output captured, so both streams are real handles here and the
+    # no-console path would never otherwise be exercised - which is precisely
+    # how a crash that killed every real launch passed every smoke test.
+    _real_out, _real_err = sys.stdout, sys.stderr
+    try:
+        sys.stdout = sys.stderr = None          # type: ignore[assignment]
+        _ensure_std_streams()
+        _start_server(port)
+        healthy = _wait_healthy(port)
+    finally:
+        sys.stdout, sys.stderr = _real_out, _real_err
+
+    if not healthy:
         _emit("SELFTEST FAIL: engine did not become healthy\n", err=True)
         return 1
     import urllib.request
@@ -192,6 +234,9 @@ def _selftest() -> int:
 
 
 def main() -> int:
+    # Must run before anything imports uvicorn or touches logging.
+    _ensure_std_streams()
+
     if "--selftest" in sys.argv:
         return _selftest()
 
