@@ -28,7 +28,8 @@ import zipfile
 import re
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
+                               RedirectResponse, StreamingResponse)
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 import io
@@ -573,27 +574,43 @@ DOWNLOAD_DIR = Path(os.environ.get("IMAGESL_DOWNLOAD_DIR",
                                    str(BASE_DIR.parent / "downloads")))
 
 _DOWNLOADS = {
-    "windows": ("ImageSL-Setup-Windows.exe", "application/octet-stream"),
-    "macos":   ("ImageSL-macOS.dmg",         "application/x-apple-diskimage"),
+    "windows": ("ImageSL-Setup-Windows.exe", "application/octet-stream",
+                "IMAGESL_DOWNLOAD_URL_WINDOWS"),
+    "macos":   ("ImageSL-macOS.dmg",         "application/x-apple-diskimage",
+                "IMAGESL_DOWNLOAD_URL_MACOS"),
 }
+
+
+def _external_url(env_key: str) -> str:
+    """An off-box home for the installer, if one is configured.
+
+    A build is ~80 MB and the repository cannot carry it, so on a hosted deploy
+    the file usually lives in object storage rather than on the application
+    disk. Set the platform's env var to that URL and this app stops serving
+    bytes and just redirects, which also keeps large downloads off the app's
+    own bandwidth. Leave it unset to serve from IMAGESL_DOWNLOAD_DIR instead -
+    which is what a local run and the desktop build both do.
+    """
+    return (os.environ.get(env_key) or "").strip()
 
 
 @app.get("/api/downloads")
 def api_downloads() -> JSONResponse:
     """What can actually be downloaded right now.
 
-    The landing page asks this before enabling its buttons, so a missing build
-    greys the button out and says so, instead of handing the visitor a 404.
+    The landing page asks this before enabling its buttons, so a platform with
+    no build greys out and says so, instead of handing the visitor a 404.
     """
     platforms = {}
-    for key, (name, _ct) in _DOWNLOADS.items():
+    for key, (name, _ct, env_key) in _DOWNLOADS.items():
+        external = _external_url(env_key)
         path = DOWNLOAD_DIR / name
-        exists = path.is_file()
+        on_disk = path.is_file()
         platforms[key] = {
-            "available": exists,
+            "available": bool(external) or on_disk,
             "filename": name,
-            "bytes": path.stat().st_size if exists else 0,
-            "url": f"/download/{key}" if exists else None,
+            "bytes": path.stat().st_size if on_disk else 0,
+            "url": f"/download/{key}" if (external or on_disk) else None,
         }
     return JSONResponse({"version": APP_VERSION, "platforms": platforms})
 
@@ -601,12 +618,19 @@ def api_downloads() -> JSONResponse:
 @app.api_route("/download/{platform}", methods=["GET", "HEAD"])
 def download(platform: str):
     # HEAD is registered alongside GET: proxies, download managers and link
-    # checkers probe a download URL that way, and a bare @app.get answers them
-    # with 405.
+    # checkers probe a download URL that way, and a bare @app.get answers 405.
     entry = _DOWNLOADS.get(platform.lower())
     if entry is None:
         raise HTTPException(status_code=404, detail="Unknown platform.")
-    name, content_type = entry
+    name, content_type, env_key = entry
+
+    external = _external_url(env_key)
+    if external:
+        # 302, not 301: where the file is hosted is an operational detail and
+        # must stay changeable. A permanent redirect gets cached by browsers
+        # and would outlive the decision.
+        return RedirectResponse(external, status_code=302)
+
     path = DOWNLOAD_DIR / name
     if not path.is_file():
         raise HTTPException(status_code=404,

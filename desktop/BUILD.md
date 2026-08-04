@@ -38,10 +38,29 @@ The site serves the installers itself:
 | `GET,HEAD /download/windows` | sends `ImageSL-Setup-Windows.exe` as an attachment |
 | `GET,HEAD /download/macos` | sends `ImageSL-macOS.dmg` as an attachment |
 
-Put the built artefacts in **`IMAGESL_DOWNLOAD_DIR`** (default `<repo>/downloads/`)
-under exactly the filenames in the table above. That directory is gitignored —
-an 82 MB installer does not belong in a repository — so it must be populated as
-part of deployment.
+There are two ways to supply the file, and a hosted deploy needs one of them —
+the installer is gitignored, so pushing code alone gives you the routes and no
+build, and the buttons stay greyed out.
+
+**1. From disk.** Put the artefacts in **`IMAGESL_DOWNLOAD_DIR`** (default
+`<repo>/downloads/`) under exactly the filenames above. This is what a local run
+uses. On a hosted deploy it means a persistent volume, since the file cannot
+come from git.
+
+**2. From object storage (recommended when hosted).** Set
+
+| Variable | Effect |
+| --- | --- |
+| `IMAGESL_DOWNLOAD_URL_WINDOWS` | `/download/windows` 302s here instead of serving bytes |
+| `IMAGESL_DOWNLOAD_URL_MACOS` | same for the macOS disk image |
+
+and upload the installer to S3, R2, or any static host. This keeps ~80 MB per
+download off the application's own bandwidth, and needs no volume. The redirect
+is deliberately **302, not 301** — where a file is hosted is an operational
+detail that must stay changeable, and a permanent redirect would be cached by
+browsers and outlive the decision.
+
+An external URL takes precedence over the local file when both are set.
 
 The landing page asks `/api/downloads` before enabling its buttons, so a platform
 you have not built yet greys out and says "coming soon" instead of handing the
