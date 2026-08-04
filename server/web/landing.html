@@ -3,232 +3,247 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ImageSL — staining quantification</title>
-<meta name="description" content="ImageSL is a tool for staining quantification. Free desktop app for Windows and macOS; runs offline.">
+<title>ImageSL — a tool for staining quantification</title>
+<meta name="description" content="ImageSL is a tool for staining quantification. Automatic background removal, colour deconvolution and positive-area measurement. Free desktop app for Windows and macOS; runs offline.">
 <meta name="theme-color" content="#ffffff">
+
 <link rel="icon" type="image/svg+xml" href="/assets/logo.svg">
 <link rel="icon" type="image/png" sizes="32x32" href="/assets/favicon-32.png">
 <link rel="apple-touch-icon" href="/assets/logo-192.png">
+<link rel="canonical" href="https://imagesl.online/">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="ImageSL">
+<meta property="og:title" content="ImageSL — a tool for staining quantification">
+<meta property="og:description" content="Automatic background removal and positive-area quantification. Runs offline on your own machine.">
+<meta property="og:url" content="https://imagesl.online/">
+<meta property="og:image" content="https://imagesl.online/assets/og-image.png">
+<meta name="twitter:card" content="summary_large_image">
+
+<link rel="stylesheet" href="/tokens.css?v=__ASSET_V__">
+<link rel="stylesheet" href="/site.css?v=__ASSET_V__">
 <style>
-  :root{
-    --ink:#0d0f12;
-    --ink-2:#5d636d;
-    --ink-3:#9aa0aa;
-    --line:#e6e8ec;
-    --line-2:#d3d7dd;
-    --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Helvetica,Arial,sans-serif;
-  }
-  *{box-sizing:border-box}
-  html,body{height:100%}
-  body{
-    margin:0;
-    font-family:var(--font);
-    font-weight:300;
-    color:var(--ink);
-    background:#fff;
-    -webkit-font-smoothing:antialiased;
-    -moz-osx-font-smoothing:grayscale;
-    display:flex;
-    flex-direction:column;
-    min-height:100%;
-  }
-  a{color:inherit}
+  /* Page-specific only. Header, footer, buttons and prose live in site.css. */
 
-  main{
-    flex:1;
-    display:flex;
-    flex-direction:column;
-    align-items:center;
-    justify-content:center;
-    text-align:center;
-    padding:72px 24px 48px;
+  /* -- hero -------------------------------------------------------------- */
+  .hero{text-align:center;padding:104px 0 88px}
+  h1{margin:0;font-size:clamp(30px,5vw,48px);font-weight:var(--w-thin);
+     letter-spacing:-.022em;line-height:1.16;max-width:15ch;margin-inline:auto}
+  .sub{margin:20px auto 0;max-width:44ch;font-size:16px;color:var(--ink-2);line-height:1.6}
+
+  .dl{display:flex;gap:12px;margin-top:38px;flex-wrap:wrap;justify-content:center}
+
+  .hint{margin:16px 0 0;font-size:13px;color:var(--ink-3);min-height:1.2em}
+  .meta{margin:8px 0 0;font-size:13px;color:var(--ink-3)}
+  .meta a{color:var(--ink-2);text-decoration:none;border-bottom:1px solid var(--line-2)}
+  .meta a:hover{color:var(--ink)}
+
+  /* -- what it does ------------------------------------------------------ */
+  .band{border-top:1px solid var(--line);background:var(--surface)}
+  .cols{display:grid;grid-template-columns:repeat(3,1fr);gap:0;padding:0}
+  .col{padding:46px 30px;border-right:1px solid var(--line)}
+  .col:last-child{border-right:0}
+  .col h2{margin:0 0 9px;font-size:14.5px;font-weight:var(--w-med);letter-spacing:-.005em;color:var(--ink)}
+  .col p{margin:0;font-size:14px;color:var(--ink-2);line-height:1.62}
+  @media(max-width:820px){
+    .cols{grid-template-columns:1fr}
+    .col{border-right:0;border-bottom:1px solid var(--line);padding:34px 0}
+    .col:last-child{border-bottom:0}
+    .band .wrap{padding-inline:28px}
   }
 
-  .mark{
-    display:flex;align-items:center;gap:9px;
-    margin-bottom:44px;
-  }
-  .mark svg{width:30px;height:30px;display:block}
-  .mark span{font-size:14px;font-weight:400;letter-spacing:.14em;color:var(--ink-2)}
+  /* -- spec line --------------------------------------------------------- */
+  .spec{border-top:1px solid var(--line);background:var(--bg)}
+  .spec .wrap{display:flex;flex-wrap:wrap;gap:10px 30px;padding-block:26px;
+              font-size:13px;color:var(--ink-3);justify-content:center;text-align:center}
+  .spec b{font-weight:var(--w-normal);color:var(--ink-2)}
 
-  h1{
-    margin:0;
-    font-size:clamp(28px,4.6vw,44px);
-    font-weight:200;
-    letter-spacing:-.02em;
-    line-height:1.18;
-    max-width:14ch;
-  }
-
-  .note{
-    margin:20px 0 0;
-    font-size:14.5px;
-    font-weight:300;
-    color:var(--ink-2);
-    letter-spacing:.005em;
-  }
-
-  .dl{
-    display:flex;
-    gap:12px;
-    margin-top:40px;
-    flex-wrap:wrap;
-    justify-content:center;
-  }
-  .btn{
-    display:inline-flex;align-items:center;gap:9px;
-    font-family:inherit;
-    font-size:14.5px;
-    font-weight:400;
-    letter-spacing:.01em;
-    text-decoration:none;
-    padding:12px 22px;
-    border-radius:3px;
-    border:1px solid var(--line-2);
-    background:#fff;
-    color:var(--ink);
-    transition:border-color .15s ease,background .15s ease,color .15s ease;
-    white-space:nowrap;
-  }
-  .btn svg{width:15px;height:15px;flex:none;opacity:.75}
-  .btn:hover{border-color:var(--ink);}
-  .btn.primary{background:var(--ink);border-color:var(--ink);color:#fff}
-  .btn.primary svg{opacity:.9}
-  .btn.primary:hover{background:#000;border-color:#000}
-
-  .btn.off{opacity:.42;cursor:not-allowed}
-  .btn.off:hover{border-color:var(--line-2)}
-  .btn.primary.off:hover{background:var(--ink);border-color:var(--ink)}
-
-  .meta{
-    margin-top:22px;
-    font-size:12.5px;
-    font-weight:300;
-    color:var(--ink-3);
-    letter-spacing:.02em;
-  }
-  .hint{
-    margin:14px 0 0;
-    font-size:12.5px;
-    font-weight:300;
-    color:var(--ink-3);
-    min-height:1em;
-  }
-  .meta a{color:var(--ink-3);text-decoration:none;border-bottom:1px solid var(--line)}
-  .meta a:hover{color:var(--ink-2);border-bottom-color:var(--line-2)}
-
-  footer{
-    border-top:1px solid var(--line);
-    padding:20px 24px;
-    display:flex;
-    justify-content:center;
-    gap:8px 20px;
-    flex-wrap:wrap;
-    font-size:12.5px;
-    font-weight:300;
-    color:var(--ink-3);
-    letter-spacing:.01em;
-  }
-  footer a{text-decoration:none;color:var(--ink-3)}
-  footer a:hover{color:var(--ink-2)}
-  footer .sep{color:var(--line-2)}
-  @media(max-width:520px){
-    footer .sep{display:none}
-    main{padding-top:56px}
-  }
 </style>
 </head>
 <body>
 
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="/">
+      <svg viewBox="0 0 64 64" role="img" aria-label="ImageSL" xmlns="http://www.w3.org/2000/svg">
+        <defs><linearGradient id="isl-a" x1="8" y1="6" x2="56" y2="58" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#8b5cf6"/><stop offset="1" stop-color="#6d28d9"/></linearGradient></defs>
+        <rect x="2" y="2" width="60" height="60" rx="17" fill="url(#isl-a)"/>
+        <g stroke="#ffffff" stroke-width="2.4">
+          <circle cx="26" cy="30" r="13.5" fill="#ffffff" fill-opacity="0.42"/>
+          <circle cx="39" cy="35.5" r="13.5" fill="#ffffff" fill-opacity="0.42"/>
+        </g>
+      </svg>
+      <span>ImageSL</span>
+    </a>
+    <nav class="site-nav">
+      <a class="opt" href="#what">What it does</a>
+      <a class="opt" href="/privacy">Privacy</a>
+      <a href="https://github.com/solvergent/ImageSL" target="_blank" rel="noopener">Source</a>
+      <a href="/app">Open in browser</a>
+    </nav>
+  </div>
+</header>
+
 <main>
-  <div class="mark">
-    <svg viewBox="0 0 64 64" role="img" aria-label="ImageSL" xmlns="http://www.w3.org/2000/svg">
-      <defs>
-        <linearGradient id="isl-g" x1="8" y1="6" x2="56" y2="58" gradientUnits="userSpaceOnUse">
-          <stop offset="0" stop-color="#8b5cf6"/>
-          <stop offset="1" stop-color="#6d28d9"/>
-        </linearGradient>
-      </defs>
-      <rect x="2" y="2" width="60" height="60" rx="17" fill="url(#isl-g)"/>
-      <g stroke="#ffffff" stroke-width="2.4">
-        <circle cx="26" cy="30" r="13.5" fill="#ffffff" fill-opacity="0.42"/>
-        <circle cx="39" cy="35.5" r="13.5" fill="#ffffff" fill-opacity="0.42"/>
-      </g>
-    </svg>
-    <span>ImageSL</span>
-  </div>
+  <section class="hero">
+    <div class="wrap">
+      <h1>A tool for staining quantification</h1>
+      <p class="sub">Measures stained area on a slide, on your own computer. No account, no upload, no internet connection.</p>
 
-  <h1>A tool for staining quantification</h1>
+      <div class="dl">
+        <a class="btn primary" id="dl-primary" href="#" rel="noopener">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.5 10.2 4.5v6.9H3V5.5Zm0 13 7.2 1v-6.8H3v5.8Zm8.3 1.1L21 21v-9.6h-9.7v8.2Zm0-15.2v8.1H21V3l-9.7 1.4Z"/></svg>
+          <span id="dl-primary-label">Download for Windows</span>
+        </a>
+        <a class="btn" id="dl-secondary" href="#" rel="noopener">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16.4 12.6c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.1-2.8.9-3.5.9s-1.8-.9-3-.8c-1.5 0-2.9.9-3.7 2.3-1.6 2.7-.4 6.8 1.1 9 .7 1.1 1.6 2.3 2.8 2.2 1.1 0 1.5-.7 2.9-.7s1.7.7 2.9.7 2-1.1 2.7-2.1c.8-1.2 1.2-2.4 1.2-2.5-.1 0-2.3-.9-2.3-3.4ZM14.2 5.8c.6-.8 1-1.9.9-3-.9 0-2 .6-2.6 1.4-.6.7-1.1 1.8-.9 2.9 1 0 2-.5 2.6-1.3Z"/></svg>
+          <span id="dl-secondary-label">Download for macOS</span>
+        </a>
+      </div>
 
-  <p class="note">Runs on your computer. Offline.</p>
+      <p class="hint" id="hint"></p>
+      <p class="meta">Version <span id="ver">—</span> · <a href="/app">Use it in the browser instead</a></p>
+    </div>
+  </section>
 
-  <div class="dl">
-    <a class="btn primary" id="dl-primary" href="#" rel="noopener">
-      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.5 10.2 4.5v6.9H3V5.5Zm0 13 7.2 1v-6.8H3v5.8Zm8.3 1.1L21 21v-9.6h-9.7v8.2Zm0-15.2v8.1H21V3l-9.7 1.4Z"/></svg>
-      <span id="dl-primary-label">Download for Windows</span>
-    </a>
-    <a class="btn" id="dl-secondary" href="#" rel="noopener">
-      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16.4 12.6c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.1-2.8.9-3.5.9s-1.8-.9-3-.8c-1.5 0-2.9.9-3.7 2.3-1.6 2.7-.4 6.8 1.1 9 .7 1.1 1.6 2.3 2.8 2.2 1.1 0 1.5-.7 2.9-.7s1.7.7 2.9.7 2-1.1 2.7-2.1c.8-1.2 1.2-2.4 1.2-2.5-.1 0-2.3-.9-2.3-3.4ZM14.2 5.8c.6-.8 1-1.9.9-3-.9 0-2 .6-2.6 1.4-.6.7-1.1 1.8-.9 2.9 1 0 2-.5 2.6-1.3Z"/></svg>
-      <span id="dl-secondary-label">Download for macOS</span>
-    </a>
-  </div>
+  <section class="band" id="what">
+    <div class="wrap">
+      <div class="cols">
+        <div class="col">
+          <h2>Background removed first</h2>
+          <p>The tissue is separated from bare glass, haze and lamp gradient before anything is
+             measured, so an uneven field does not become signal.</p>
+        </div>
+        <div class="col">
+          <h2>Stain separated by absorbance</h2>
+          <p>The chromogen is identified by its optical density signature rather than its hue, so
+             dense deposits are measured instead of being discarded as dark.</p>
+        </div>
+        <div class="col">
+          <h2>Area you can check</h2>
+          <p>Every figure on screen is the figure in the exported CSV, to the pixel, and the rule
+             behind it is readable in the source.</p>
+        </div>
+      </div>
+    </div>
+  </section>
 
-  <p class="hint" id="hint"></p>
-
-  <p class="meta">Version <span id="ver">—</span> · <a href="/app">Open in browser</a></p>
+  <section class="spec">
+    <div class="wrap">
+      <span><b>Windows 10</b> or later</span>
+      <span><b>macOS 12</b> or later</span>
+      <span>Installs for <b>one user</b>, no administrator rights</span>
+      <span>Works <b>offline</b></span>
+    </div>
+  </section>
 </main>
 
-<footer>
-  <span>Research use — not for clinical diagnosis.</span>
-  <span class="sep">·</span>
-  <a href="https://github.com/solvergent/ImageSL" target="_blank" rel="noopener">Source</a>
+<footer class="site-footer">
+  <div class="wrap">
+    <div class="fgrid">
+      <div class="fbrand">
+        <a class="brand" href="/">
+          <svg viewBox="0 0 64 64" role="img" aria-label="ImageSL" xmlns="http://www.w3.org/2000/svg">
+            <rect x="2" y="2" width="60" height="60" rx="17" fill="url(#isl-a)"/>
+            <g stroke="#ffffff" stroke-width="2.4">
+              <circle cx="26" cy="30" r="13.5" fill="#ffffff" fill-opacity="0.42"/>
+              <circle cx="39" cy="35.5" r="13.5" fill="#ffffff" fill-opacity="0.42"/>
+            </g>
+          </svg>
+          <span>ImageSL</span>
+        </a>
+        <p>A tool for staining quantification. Analysis runs on your own machine; slides are
+           never uploaded anywhere.</p>
+      </div>
+
+      <div class="fcol">
+        <h3>Product</h3>
+        <ul>
+          <li><a href="#" id="f-win">Download for Windows</a></li>
+          <li><a href="#" id="f-mac">Download for macOS</a></li>
+          <li><a href="/app">Open in browser</a></li>
+          <li><a href="https://github.com/solvergent/ImageSL/releases" target="_blank" rel="noopener">Release notes</a></li>
+        </ul>
+      </div>
+
+      <div class="fcol">
+        <h3>Legal</h3>
+        <ul>
+          <li><a href="/privacy">Privacy policy</a></li>
+          <li><a href="/terms">Terms of use</a></li>
+          <li><a href="/terms#intended-use">Intended use</a></li>
+        </ul>
+      </div>
+
+      <div class="fcol">
+        <h3>Project</h3>
+        <ul>
+          <li><a href="https://github.com/solvergent/ImageSL" target="_blank" rel="noopener">Source code</a></li>
+          <li><a href="https://github.com/solvergent/ImageSL/issues" target="_blank" rel="noopener">Report an issue</a></li>
+          <li><a href="https://github.com/solvergent/ImageSL/blob/main/README.md" target="_blank" rel="noopener">How detection works</a></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="fbot">
+      <span>© <span id="yr">2026</span> ImageSL. All rights reserved.</span>
+      <span class="note">For research use. Not a medical device and not for clinical diagnosis.</span>
+    </div>
+  </div>
 </footer>
 
 <script>
-  // Release assets are published by .github/workflows/build-desktop.yml.
-  // These names must match its outputs exactly, or the links 404.
+  // Release assets are published by .github/workflows/build-desktop.yml. These
+  // names must match its outputs exactly, or the links 404.
   var REPO  = "solvergent/ImageSL";
   var ASSET = { win: "ImageSL-Setup-Windows.exe", mac: "ImageSL-macOS.dmg" };
   var LABEL = { win: "Download for Windows",      mac: "Download for macOS"  };
 
-  // Release assets are served with Content-Disposition: attachment, so a click
-  // downloads the file and leaves this page where it is. The one case that does
-  // navigate away is a MISSING asset — GitHub answers that with an HTML 404 page.
-  // So the buttons are checked against the API and switched off if there is
-  // nothing to hand over, rather than dropping a visitor on a 404.
+  // A release asset is served with Content-Disposition: attachment, so a click
+  // downloads the file and leaves this page alone. The one case that navigates
+  // away is a MISSING asset - GitHub answers that with an HTML 404 page. So the
+  // buttons are checked against the API and switched off when there is nothing
+  // to hand over, rather than stranding someone on a 404.
   function canonical(os){
     return "https://github.com/" + REPO + "/releases/latest/download/" + ASSET[os];
   }
 
-  var slot = {};                       // button id -> which OS it currently offers
+  var slot = {};
   function setBtn(id, os){
     var el = document.getElementById(id);
-    el.href = canonical(os);           // works with JS disabled, once a release exists
+    el.href = canonical(os);
     el.setAttribute('data-os', os);
-    document.getElementById(id + '-label').textContent = LABEL[os];
+    var label = document.getElementById(id + '-label');
+    if (label) label.textContent = LABEL[os];
     slot[id] = os;
   }
 
-  // Put the visitor's own platform first.
   var isMac = /Mac|iPhone|iPad/.test(navigator.platform || "") ||
               /Mac OS X/.test(navigator.userAgent);
   setBtn('dl-primary',   isMac ? 'mac' : 'win');
   setBtn('dl-secondary', isMac ? 'win' : 'mac');
 
+  document.getElementById('f-win').href = canonical('win');
+  document.getElementById('f-mac').href = canonical('mac');
+  document.getElementById('yr').textContent = new Date().getFullYear();
+
   function disable(id, msg){
     var el = document.getElementById(id);
+    if (!el) return;
     el.classList.add('off');
     el.setAttribute('aria-disabled', 'true');
     el.addEventListener('click', function(e){
       e.preventDefault();
-      document.getElementById('hint').textContent = msg;
+      var h = document.getElementById('hint');
+      if (h) h.textContent = msg;
     });
   }
 
   fetch("https://api.github.com/repos/" + REPO + "/releases/latest")
     .then(function(r){ return r.ok ? r.json() : null; })
     .then(function(j){
-      if (!j){                         // no release published yet
+      if (!j){
         disable('dl-primary',   "No build has been published yet.");
         disable('dl-secondary', "No build has been published yet.");
         return;
@@ -240,14 +255,13 @@
 
       ['dl-primary', 'dl-secondary'].forEach(function(id){
         var direct = url[ASSET[slot[id]]];
-        if (direct){
-          document.getElementById(id).href = direct;   // straight at the file
-        } else {
-          disable(id, "That build is not in the latest release yet.");
-        }
+        if (direct){ document.getElementById(id).href = direct; }
+        else { disable(id, "That build is not in the latest release yet."); }
       });
+      if (url[ASSET.win]) document.getElementById('f-win').href = url[ASSET.win];
+      if (url[ASSET.mac]) document.getElementById('f-mac').href = url[ASSET.mac];
     })
-    // Offline or rate-limited: leave the canonical links alone. They are correct;
+    // Offline or rate-limited: leave the canonical links alone. They are correct,
     // we simply could not confirm them, and guessing "unavailable" would be worse.
     .catch(function(){});
 </script>

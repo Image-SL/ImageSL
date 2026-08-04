@@ -558,16 +558,42 @@ def analyzer() -> HTMLResponse:
     return _serve_html("index.html")
 
 
+@app.get("/privacy", response_class=HTMLResponse)
+def privacy() -> HTMLResponse:
+    return _serve_html("privacy.html")
+
+
+@app.get("/terms", response_class=HTMLResponse)
+def terms() -> HTMLResponse:
+    return _serve_html("terms.html")
+
+
 # CSS/JS carry a `?v=` in the HTML, so a new build always requests a new URL and
 # these can be cached hard.
 _STATIC_CACHE = {"Cache-Control": "public, max-age=31536000"}
 
 
-@app.get("/styles.css")
-def styles_css():
-    path = WEB_DIR / "styles.css"
+def _serve_css(name: str):
+    path = WEB_DIR / name
     return (FileResponse(str(path), media_type="text/css", headers=_STATIC_CACHE)
             if path.is_file() else HTMLResponse("", status_code=404))
+
+
+@app.get("/styles.css")
+def styles_css():
+    return _serve_css("styles.css")
+
+
+@app.get("/tokens.css")
+def tokens_css():
+    """Design tokens shared by the landing page and the analyzer."""
+    return _serve_css("tokens.css")
+
+
+@app.get("/site.css")
+def site_css():
+    """Chrome shared by the public pages (landing, privacy, terms)."""
+    return _serve_css("site.css")
 
 
 @app.get("/app.js")

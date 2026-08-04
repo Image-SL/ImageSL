@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy policy — ImageSL</title>
+<meta name="description" content="How ImageSL handles slides and data. The desktop app works offline; the browser version deletes uploads after eight hours. No accounts, no cookies, no analytics.">
+<meta name="theme-color" content="#ffffff">
+<meta name="robots" content="index,follow">
+
+<link rel="icon" type="image/svg+xml" href="/assets/logo.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="/assets/favicon-32.png">
+<link rel="apple-touch-icon" href="/assets/logo-192.png">
+<link rel="canonical" href="https://imagesl.online/privacy">
+
+<link rel="stylesheet" href="/tokens.css?v=__ASSET_V__">
+<link rel="stylesheet" href="/site.css?v=__ASSET_V__">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="/">
+      <svg viewBox="0 0 64 64" role="img" aria-label="ImageSL" xmlns="http://www.w3.org/2000/svg">
+        <defs><linearGradient id="isl-a" x1="8" y1="6" x2="56" y2="58" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#8b5cf6"/><stop offset="1" stop-color="#6d28d9"/></linearGradient></defs>
+        <rect x="2" y="2" width="60" height="60" rx="17" fill="url(#isl-a)"/>
+        <g stroke="#ffffff" stroke-width="2.4">
+          <circle cx="26" cy="30" r="13.5" fill="#ffffff" fill-opacity="0.42"/>
+          <circle cx="39" cy="35.5" r="13.5" fill="#ffffff" fill-opacity="0.42"/>
+        </g>
+      </svg>
+      <span>ImageSL</span>
+    </a>
+    <nav class="site-nav">
+      <a class="opt" href="/terms">Terms</a>
+      <a href="https://github.com/solvergent/ImageSL" target="_blank" rel="noopener">Source</a>
+      <a href="/app">Open in browser</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="wrap">
+    <article class="doc">
+      <p class="eyebrow">Legal</p>
+      <h1>Privacy policy</h1>
+      <p class="updated">Last updated 4 August 2026</p>
+
+      <div class="callout">
+        <p><strong>The short version.</strong> ImageSL has no accounts, sets no cookies, and runs
+           no analytics or tracking of any kind.</p>
+        <p>In the <strong>desktop app</strong>, your slides never leave your computer. In the
+           <strong>browser version</strong>, a slide is uploaded so it can be measured, and is
+           deleted automatically within eight hours.</p>
+      </div>
+
+      <h2>Who this covers</h2>
+      <p>This policy applies to the ImageSL desktop application for Windows and macOS, and to the
+         browser version of the analyzer. ImageSL is an open-source project; the code that does
+         everything described here is public and can be
+         <a href="https://github.com/solvergent/ImageSL" target="_blank" rel="noopener">read in full</a>.
+         Where this document and the source disagree, the source is the truth, and that is a bug
+         we want reported.</p>
+
+      <h2>The desktop app</h2>
+      <p>The desktop app contains the entire analysis engine. When you open it, it starts that
+         engine privately on your own machine and shows you the interface. Your slides are read
+         from your disk, measured in memory on your computer, and written back only where you ask
+         them to be written.</p>
+      <p><strong>No image, measurement, filename or result is ever transmitted anywhere.</strong>
+         The application works with networking completely disabled, and you are welcome to verify
+         that by running it offline.</p>
+      <p>There is exactly one thing the desktop app sends over the network, and only if you have a
+         connection:</p>
+      <dl>
+        <dt>A check for a newer version</dt>
+        <dd>On launch it asks GitHub which release is the most recent, so it can tell you if an
+            update exists. This is an ordinary web request to <span class="mono">api.github.com</span>.
+            It sends no identifier, no filename and no usage data — it asks a public question and
+            reads a public answer. GitHub will see the request, including the network address it
+            came from, as it would for any visit to a public page. If the request fails, the app
+            carries on silently.</dd>
+      </dl>
+      <p>The app does not download or install updates by itself. If a newer version exists it shows
+         a dismissible notice, and the decision is yours.</p>
+      <p>Working files are cached under your own user profile so a large batch does not have to be
+         re-read repeatedly. That cache is on your machine, belongs to you, and is removed when you
+         uninstall the application.</p>
+
+      <h2>The browser version</h2>
+      <p>The browser version cannot measure a slide without receiving it, so using it means
+         uploading the image to the server that runs the analyzer.</p>
+      <dl>
+        <dt>What is received</dt>
+        <dd>The image file you choose, and the settings you pick for measuring it.</dd>
+
+        <dt>What it is used for</dt>
+        <dd>Measuring that image and returning the result to your browser. Nothing else. Your
+            slides are never used to train anything, are never reviewed by a person, and are never
+            shared with or sold to anyone.</dd>
+
+        <dt>How long it is kept</dt>
+        <dd>An analysis is held so that you can adjust settings and export results without
+            re-uploading, then deleted automatically after <strong>eight hours</strong> without
+            activity. Closing the page and waiting is enough; nothing is retained afterwards.</dd>
+
+        <dt>How it is identified</dt>
+        <dd>Each analysis gets a random identifier held only in the page you are using. It is not
+            linked to you, and it is discarded with the analysis.</dd>
+      </dl>
+      <p>If your slides are confidential, identifiable, or covered by an ethics approval, an
+         institutional policy, HIPAA, or the GDPR, <strong>use the desktop app.</strong> It is free,
+         it is the same engine, and it removes the question entirely by never transmitting anything.</p>
+
+      <h2>What is never collected</h2>
+      <ul>
+        <li>No accounts, names, email addresses or passwords — there is no sign-up.</li>
+        <li>No cookies, local storage or session storage. The site sets none at all.</li>
+        <li>No analytics, no tracking pixels, no advertising, no third-party scripts.</li>
+        <li>No usage telemetry, crash reporting or "improvement" data.</li>
+        <li>No payment details. Nothing is sold.</li>
+      </ul>
+
+      <h2>Other services</h2>
+      <p>Downloads are hosted on GitHub, and the version number shown on the home page is read from
+         GitHub's public API. Requesting a page or a download from GitHub is a request to GitHub,
+         and is covered by
+         <a href="https://docs.github.com/site-policy/privacy-policies/github-privacy-statement" target="_blank" rel="noopener">their privacy statement</a>,
+         not this one. ImageSL embeds no other third-party service.</p>
+      <p>If you use the browser version, it is served from hosting infrastructure that keeps
+         standard operational server logs, as effectively all web hosting does.</p>
+
+      <h2>Your rights</h2>
+      <p>Because ImageSL holds no personal data and no account, there is normally nothing to
+         request, correct or erase. If you used the browser version and want an analysis removed
+         before it expires on its own, stop using it and it will be deleted within eight hours. If
+         you believe personal data has reached us some other way, contact us and we will delete it.</p>
+
+      <h2>Children</h2>
+      <p>ImageSL is a research tool for laboratory and educational use and is not directed at
+         children.</p>
+
+      <h2>Changes</h2>
+      <p>If this policy changes materially, the date at the top will change and the revision will be
+         visible in the project's public commit history.</p>
+
+      <h2>Contact</h2>
+      <p>Questions about privacy, or a correction to this page, can be raised at
+         <a href="https://github.com/solvergent/ImageSL/issues" target="_blank" rel="noopener">the project issue tracker</a>.</p>
+    </article>
+  </div>
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <div class="fbot">
+      <span>© <span id="yr">2026</span> ImageSL. All rights reserved.</span>
+      <span><a href="/privacy" style="color:var(--ink-2);text-decoration:none">Privacy</a> ·
+            <a href="/terms" style="color:var(--ink-2);text-decoration:none">Terms</a> ·
+            <a href="/" style="color:var(--ink-2);text-decoration:none">Home</a></span>
+    </div>
+  </div>
+</footer>
+
+<script>document.getElementById('yr').textContent = new Date().getFullYear();</script>
+</body>
+</html>

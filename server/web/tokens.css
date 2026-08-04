@@ -1,0 +1,91 @@
+/* ============================================================================
+   ImageSL design tokens — the single source of truth for both surfaces.
+
+   Loaded by the landing page and by the analyzer, so the site and the desktop
+   app cannot drift apart. Change a value here and it changes everywhere.
+
+   The aesthetic: white, sharp, hairline-ruled, light weights, sentence case.
+   Colour is reserved for the brand mark and for status; nothing else is
+   tinted, so the things that ARE coloured actually mean something.
+
+   Every ink step below is measured against white. The contrast ratios are not
+   decoration - --ink-3 is the lightest text allowed anywhere, and it sits at
+   4.83:1, just over the 4.5:1 WCAG AA floor for normal-size text. Do not
+   introduce a lighter grey for text; if something needs to recede, make it
+   smaller or give it more space, not less contrast.
+   ========================================================================== */
+
+:root{
+  /* -- Ink ---------------------------------------------------------------- */
+  --ink:#0d0f12;        /* primary text            18.9:1 on white */
+  --ink-2:#4d535c;      /* secondary text           7.8:1 */
+  --ink-3:#6b7280;      /* tertiary / meta          4.8:1  <- the floor */
+
+  /* -- Rules and surfaces ------------------------------------------------- */
+  --line:#e6e8ec;       /* default hairline */
+  --line-2:#d3d7dd;     /* emphasised border, control outlines */
+  --bg:#ffffff;
+  --surface:#fafbfc;    /* faintly raised panel */
+  --card:#ffffff;
+
+  /* -- Brand -------------------------------------------------------------- */
+  /* The violet of the logo mark. Used for the mark, focus rings and the one
+     accent action per view - never as page furniture. */
+  --accent:#6d28d9;
+  --accent-2:#5b21b6;   /* hover / pressed */
+  --accent-weak:#f5f3ff;
+  --accent-line:#ddd6fe;
+
+  /* -- Status ------------------------------------------------------------- */
+  /* Darkened from the usual web palette so they clear 4.5:1 on white; the
+     stock #22c55e green is 2.3:1 and unreadable as text. */
+  --pos:#15803d;   --pos-weak:#f0fdf4;
+  --danger:#b91c1c; --danger-weak:#fef2f2;
+  --warn:#a16207;  --warn-weak:#fffbeb;
+
+  /* -- Geometry ----------------------------------------------------------- */
+  --radius:3px; --radius-sm:2px; --radius-lg:4px;
+
+  /* -- Elevation ---------------------------------------------------------- */
+  /* Almost nothing. Depth comes from hairlines and whitespace, not shadow. */
+  --shadow-sm:0 1px 2px rgba(13,15,18,.04);
+  --shadow:0 1px 3px rgba(13,15,18,.06), 0 1px 2px rgba(13,15,18,.04);
+  --shadow-lg:0 8px 28px rgba(13,15,18,.10), 0 2px 8px rgba(13,15,18,.05);
+
+  /* -- Type --------------------------------------------------------------- */
+  --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+
+  /* Weights. Two rules: nothing below 200, nothing above 500. */
+  --w-thin:200; --w-light:300; --w-normal:400; --w-med:500;
+
+  /* -- Motion ------------------------------------------------------------- */
+  --dur:.15s; --ease:cubic-bezier(.2,.7,.3,1);
+}
+
+/* Shared primitives, so both surfaces agree on the basics without copying. */
+*{box-sizing:border-box}
+html,body{margin:0}
+body{
+  font-family:var(--font);
+  color:var(--ink);
+  background:var(--bg);
+  -webkit-font-smoothing:antialiased;
+  -moz-osx-font-smoothing:grayscale;
+}
+
+/* A visible focus ring everywhere. Keyboard users are not an edge case, and
+   the default ring disappears against a white page in several browsers. */
+:where(a,button,input,select,textarea,[tabindex]):focus-visible{
+  outline:2px solid var(--accent);
+  outline-offset:2px;
+  border-radius:var(--radius-sm);
+}
+
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{
+    animation-duration:.01ms !important;
+    animation-iteration-count:1 !important;
+    transition-duration:.01ms !important;
+  }
+}
