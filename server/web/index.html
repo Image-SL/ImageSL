@@ -63,8 +63,8 @@
   <!-- ================= UPLOAD VIEW ================= -->
   <section id="uploadView" class="view">
     <div class="hero">
-      <h1>Quantify DAB immunohistochemistry, precisely.</h1>
-      <p class="lede">Automatic background removal · color deconvolution · positive-area measurement. Drop one slide or a whole batch — ImageSL finds the tissue, throws away the background, and measures the brown.</p>
+      <h1>DAB staining quantification</h1>
+      <p class="lede">Measures stained area. For research.</p>
     </div>
 
     <!-- mode selector (before upload) -->
@@ -73,13 +73,13 @@
         <span class="mode-ic">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v2M12 19v2M5 12H3M21 12h-2M6.3 6.3 4.9 4.9M19.1 19.1l-1.4-1.4M17.7 6.3l1.4-1.4M4.9 19.1l1.4-1.4"/><circle cx="12" cy="12" r="4"/></svg>
         </span>
-        <span class="mode-txt"><b>Auto-detect</b><small>ImageSL finds the background and the DAB for you</small></span>
+        <span class="mode-txt"><b>Auto-detect</b><small>Background and stain found for you</small></span>
       </button>
       <button type="button" class="mode-card" data-mode="select" role="tab" aria-selected="false">
         <span class="mode-ic">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 2v6.5a3 3 0 0 1-.5 1.6L4 20a2 2 0 0 0 1.7 3h12.6a2 2 0 0 0 1.7-3l-6.5-9.9a3 3 0 0 1-.5-1.6V2"/><path d="M8.5 2h7M7 15h10"/></svg>
         </span>
-        <span class="mode-txt"><b>Select stain</b><small>Name the stain yourself — DAB today, more coming</small></span>
+        <span class="mode-txt"><b>Select stain</b><small>Name the stain yourself</small></span>
       </button>
     </div>
 
@@ -100,14 +100,9 @@
           <path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><path d="M20 16.5V19a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-2.5"/>
         </svg>
       </div>
-      <h2>Drop histology slides here</h2>
-      <p>or <span class="link-inline">click to browse</span> — TIFF, PNG, JPG. Multiple files welcome.</p>
+      <h2>Drop slides here</h2>
+      <p>or <span class="link-inline">click to browse</span> · TIFF, PNG, JPG</p>
       <input type="file" id="file" multiple accept=".tif,.tiff,.png,.jpg,.jpeg" hidden>
-    </div>
-    <div class="feature-row">
-      <div class="feature"><b>DAB, done properly</b><span>brown chromogen only — nothing else counted</span></div>
-      <div class="feature"><b>Background removed</b><span>glass, debris &amp; counterstain stripped out</span></div>
-      <div class="feature"><b>Batch &amp; export</b><span>ZIP of overlays + CSV in one click</span></div>
     </div>
     <div class="upload-foot">
       <p id="uploadError" class="err hidden"></p>

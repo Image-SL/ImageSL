@@ -22,13 +22,38 @@ desktop/
 | Windows | `ImageSL-Setup-Windows.exe` | Inno Setup installer — per-user, no admin prompt, Start Menu entry + uninstaller |
 | macOS | `ImageSL-macOS.dmg` | disk image containing `ImageSL.app` and an Applications shortcut — drag to install |
 
-The landing page's Download buttons point at
-`github.com/<repo>/releases/latest/download/<asset>`, which always redirects to
-the newest release — so they never need editing.
+## Distribution — served by us, not by GitHub
 
-> **These three names must agree, or the buttons 404:** `ASSET` in
-> `server/web/landing.html`, the `asset:`/`ext:` matrix in the workflow, and
-> `OutputBaseFilename` in `installer.iss`. Change one, change all three.
+**The repository is private, so GitHub release links cannot be used.** A
+`releases/latest/download/...` URL only resolves for accounts that can see the
+repo; to everyone else it is a 404 *HTML page*, which navigates the visitor away
+instead of downloading. That silently breaks every download button on a public
+site, and it was doing exactly that.
+
+The site serves the installers itself:
+
+| Route | What it does |
+| --- | --- |
+| `GET /api/downloads` | reports the current version and which platforms have a build |
+| `GET,HEAD /download/windows` | sends `ImageSL-Setup-Windows.exe` as an attachment |
+| `GET,HEAD /download/macos` | sends `ImageSL-macOS.dmg` as an attachment |
+
+Put the built artefacts in **`IMAGESL_DOWNLOAD_DIR`** (default `<repo>/downloads/`)
+under exactly the filenames in the table above. That directory is gitignored —
+an 82 MB installer does not belong in a repository — so it must be populated as
+part of deployment.
+
+The landing page asks `/api/downloads` before enabling its buttons, so a platform
+you have not built yet greys out and says "coming soon" instead of handing the
+visitor a broken link. The desktop app's update check asks the same endpoint.
+
+> **These names must agree, or downloads break:** `_DOWNLOADS` in
+> `server/app.py`, `OutputBaseFilename` in `installer.iss`, and the `asset:`
+> matrix in the workflow.
+
+If the repository is ever made public, GitHub releases become a viable host
+again and the CI workflow already publishes them — but the site's own routes
+work either way, so there is no reason to go back.
 
 The Windows installer is deliberately **per-user** (`PrivilegesRequired=lowest`,
 installing under `%LOCALAPPDATA%\Programs\ImageSL`). An unsigned installer that

@@ -23,8 +23,10 @@ import time
 from pathlib import Path
 
 APP_NAME = "ImageSL"
-# Repo the auto-updater watches. Keep in step with landing.html's REPO.
-REPO = os.environ.get("IMAGESL_REPO", "solvergent/ImageSL")
+# Site the auto-updater asks what the current build is, and where the download
+# lives. Not a GitHub repo: the repository is private, so the releases API 404s
+# for everyone and the check never fires.
+SITE = os.environ.get("IMAGESL_SITE", "https://imagesl.online")
 
 
 # --------------------------------------------------------------------------- #
@@ -164,7 +166,7 @@ def _check_update_async(window) -> None:
                 from updater import check_for_update
             except Exception:
                 return
-        info = check_for_update(_read_version(), REPO)
+        info = check_for_update(_read_version(), SITE)
         if info.get("available") and window is not None:
             _show_update_banner(window, info)
     threading.Thread(target=run, name="imagesl-update", daemon=True).start()

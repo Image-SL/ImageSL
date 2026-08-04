@@ -38,20 +38,6 @@
   .meta a{color:var(--ink-2);text-decoration:none;border-bottom:1px solid var(--line-2)}
   .meta a:hover{color:var(--ink)}
 
-  /* -- what it does ------------------------------------------------------ */
-  .band{border-top:1px solid var(--line);background:var(--surface)}
-  .cols{display:grid;grid-template-columns:repeat(3,1fr);gap:0;padding:0}
-  .col{padding:46px 30px;border-right:1px solid var(--line)}
-  .col:last-child{border-right:0}
-  .col h2{margin:0 0 9px;font-size:14.5px;font-weight:var(--w-med);letter-spacing:-.005em;color:var(--ink)}
-  .col p{margin:0;font-size:14px;color:var(--ink-2);line-height:1.62}
-  @media(max-width:820px){
-    .cols{grid-template-columns:1fr}
-    .col{border-right:0;border-bottom:1px solid var(--line);padding:34px 0}
-    .col:last-child{border-bottom:0}
-    .band .wrap{padding-inline:28px}
-  }
-
   /* -- spec line --------------------------------------------------------- */
   .spec{border-top:1px solid var(--line);background:var(--bg)}
   .spec .wrap{display:flex;flex-wrap:wrap;gap:10px 30px;padding-block:26px;
@@ -77,9 +63,7 @@
       <span>ImageSL</span>
     </a>
     <nav class="site-nav">
-      <a class="opt" href="#what">What it does</a>
       <a class="opt" href="/privacy">Privacy</a>
-      <a href="https://github.com/solvergent/ImageSL" target="_blank" rel="noopener">Source</a>
       <a href="/app">Open in browser</a>
     </nav>
   </div>
@@ -89,7 +73,7 @@
   <section class="hero">
     <div class="wrap">
       <h1>A tool for staining quantification</h1>
-      <p class="sub">Measures stained area on a slide, on your own computer. No account, no upload, no internet connection.</p>
+      <p class="sub">Measures stained area. Runs on your computer, offline.</p>
 
       <div class="dl">
         <a class="btn primary" id="dl-primary" href="#" rel="noopener">
@@ -107,28 +91,6 @@
     </div>
   </section>
 
-  <section class="band" id="what">
-    <div class="wrap">
-      <div class="cols">
-        <div class="col">
-          <h2>Background removed first</h2>
-          <p>The tissue is separated from bare glass, haze and lamp gradient before anything is
-             measured, so an uneven field does not become signal.</p>
-        </div>
-        <div class="col">
-          <h2>Stain separated by absorbance</h2>
-          <p>The chromogen is identified by its optical density signature rather than its hue, so
-             dense deposits are measured instead of being discarded as dark.</p>
-        </div>
-        <div class="col">
-          <h2>Area you can check</h2>
-          <p>Every figure on screen is the figure in the exported CSV, to the pixel, and the rule
-             behind it is readable in the source.</p>
-        </div>
-      </div>
-    </div>
-  </section>
-
   <section class="spec">
     <div class="wrap">
       <span><b>Windows 10</b> or later</span>
@@ -142,7 +104,7 @@
 <footer class="site-footer">
   <div class="wrap">
     <div class="fgrid">
-      <div class="fbrand">
+      <div class="fbrand" style="grid-column:span 2">
         <a class="brand" href="/">
           <svg viewBox="0 0 64 64" role="img" aria-label="ImageSL" xmlns="http://www.w3.org/2000/svg">
             <rect x="2" y="2" width="60" height="60" rx="17" fill="url(#isl-a)"/>
@@ -163,7 +125,6 @@
           <li><a href="#" id="f-win">Download for Windows</a></li>
           <li><a href="#" id="f-mac">Download for macOS</a></li>
           <li><a href="/app">Open in browser</a></li>
-          <li><a href="https://github.com/solvergent/ImageSL/releases" target="_blank" rel="noopener">Release notes</a></li>
         </ul>
       </div>
 
@@ -175,44 +136,29 @@
           <li><a href="/terms#intended-use">Intended use</a></li>
         </ul>
       </div>
-
-      <div class="fcol">
-        <h3>Project</h3>
-        <ul>
-          <li><a href="https://github.com/solvergent/ImageSL" target="_blank" rel="noopener">Source code</a></li>
-          <li><a href="https://github.com/solvergent/ImageSL/issues" target="_blank" rel="noopener">Report an issue</a></li>
-          <li><a href="https://github.com/solvergent/ImageSL/blob/main/README.md" target="_blank" rel="noopener">How detection works</a></li>
-        </ul>
-      </div>
     </div>
 
     <div class="fbot">
       <span>© <span id="yr">2026</span> ImageSL. All rights reserved.</span>
-      <span class="note">For research use. Not a medical device and not for clinical diagnosis.</span>
+      <span class="note">For research. <a href="/terms#intended-use" style="color:inherit">Intended use</a></span>
     </div>
   </div>
 </footer>
 
 <script>
-  // Release assets are published by .github/workflows/build-desktop.yml. These
-  // names must match its outputs exactly, or the links 404.
-  var REPO  = "solvergent/ImageSL";
-  var ASSET = { win: "ImageSL-Setup-Windows.exe", mac: "ImageSL-macOS.dmg" };
-  var LABEL = { win: "Download for Windows",      mac: "Download for macOS"  };
-
-  // A release asset is served with Content-Disposition: attachment, so a click
-  // downloads the file and leaves this page alone. The one case that navigates
-  // away is a MISSING asset - GitHub answers that with an HTML 404 page. So the
-  // buttons are checked against the API and switched off when there is nothing
-  // to hand over, rather than stranding someone on a 404.
-  function canonical(os){
-    return "https://github.com/" + REPO + "/releases/latest/download/" + ASSET[os];
-  }
+  // Downloads are served by this site, not by GitHub. A GitHub release link
+  // only resolves for people who can see the repository, so a private repo
+  // silently 404s every download button - and it does it as an HTML page, which
+  // navigates the visitor away instead of downloading. /download/<platform>
+  // sends Content-Disposition: attachment, so a click downloads and the page
+  // stays put.
+  var LABEL = { win: "Download for Windows", mac: "Download for macOS" };
+  var KEY   = { win: "windows",              mac: "macos"              };
 
   var slot = {};
   function setBtn(id, os){
     var el = document.getElementById(id);
-    el.href = canonical(os);
+    el.href = "/download/" + KEY[os];
     el.setAttribute('data-os', os);
     var label = document.getElementById(id + '-label');
     if (label) label.textContent = LABEL[os];
@@ -224,8 +170,8 @@
   setBtn('dl-primary',   isMac ? 'mac' : 'win');
   setBtn('dl-secondary', isMac ? 'win' : 'mac');
 
-  document.getElementById('f-win').href = canonical('win');
-  document.getElementById('f-mac').href = canonical('mac');
+  document.getElementById('f-win').href = "/download/windows";
+  document.getElementById('f-mac').href = "/download/macos";
   document.getElementById('yr').textContent = new Date().getFullYear();
 
   function disable(id, msg){
@@ -240,29 +186,22 @@
     });
   }
 
-  fetch("https://api.github.com/repos/" + REPO + "/releases/latest")
+  // Ask what actually exists before offering it, so a build we have not
+  // produced yet reads as "coming soon" rather than handing over a 404.
+  fetch("/api/downloads")
     .then(function(r){ return r.ok ? r.json() : null; })
     .then(function(j){
-      if (!j){
-        disable('dl-primary',   "No build has been published yet.");
-        disable('dl-secondary', "No build has been published yet.");
-        return;
-      }
-      if (j.tag_name) document.getElementById('ver').textContent = j.tag_name;
-
-      var url = {};
-      (j.assets || []).forEach(function(a){ url[a.name] = a.browser_download_url; });
-
+      if (!j) return;
+      if (j.version) document.getElementById('ver').textContent = j.version;
+      var p = j.platforms || {};
       ['dl-primary', 'dl-secondary'].forEach(function(id){
-        var direct = url[ASSET[slot[id]]];
-        if (direct){ document.getElementById(id).href = direct; }
-        else { disable(id, "That build is not in the latest release yet."); }
+        var info = p[KEY[slot[id]]];
+        if (!info || !info.available){
+          disable(id, (slot[id] === 'mac' ? "The macOS build" : "The Windows build")
+                      + " is coming soon.");
+        }
       });
-      if (url[ASSET.win]) document.getElementById('f-win').href = url[ASSET.win];
-      if (url[ASSET.mac]) document.getElementById('f-mac').href = url[ASSET.mac];
     })
-    // Offline or rate-limited: leave the canonical links alone. They are correct,
-    // we simply could not confirm them, and guessing "unavailable" would be worse.
     .catch(function(){});
 </script>
 </body>

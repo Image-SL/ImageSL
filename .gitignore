@@ -37,3 +37,7 @@ Thumbs.db
 *.svs
 samples/*.tif
 samples/*.tiff
+
+# Built installers served by /download/<platform>. Populated at deploy time;
+# an 82MB binary does not belong in git.
+/downloads/

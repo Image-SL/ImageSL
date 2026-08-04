@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 import urllib.request
 
 TIMEOUT = 4.0
@@ -34,12 +35,19 @@ def _is_newer(latest: str, current: str) -> bool:
     return a > b
 
 
-def check_for_update(current_version: str, repo: str) -> dict:
-    """Return {available, version, url, notes} — never raises."""
-    api = f"https://api.github.com/repos/{repo}/releases/latest"
+def check_for_update(current_version: str, site: str) -> dict:
+    """Return {available, version, url} — never raises.
+
+    Asks the ImageSL site what it is currently serving. This used to ask the
+    GitHub releases API, which cannot work: the repository is private, so an
+    anonymous request gets 404 and the check silently reported "no update"
+    forever. The site's own /api/downloads is the authority on what a user can
+    actually install, which is the question being asked.
+    """
+    base = (site or "").rstrip("/")
     try:
-        req = urllib.request.Request(api, headers={
-            "Accept": "application/vnd.github+json",
+        req = urllib.request.Request(f"{base}/api/downloads", headers={
+            "Accept": "application/json",
             "User-Agent": "ImageSL-Updater",
         })
         with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
@@ -49,20 +57,20 @@ def check_for_update(current_version: str, repo: str) -> dict:
     except Exception:
         return {"available": False}
 
-    tag = data.get("tag_name") or ""
-    if not tag or not _is_newer(tag, current_version or "0"):
+    latest = str(data.get("version") or "")
+    if not latest or not _is_newer(latest, current_version or "0"):
         return {"available": False}
 
-    return {
-        "available": True,
-        "version": tag,
-        "url": data.get("html_url") or f"https://github.com/{repo}/releases/latest",
-        "notes": (data.get("body") or "")[:2000],
-    }
+    # Only offer it if there is genuinely a build for this platform to fetch.
+    key = "windows" if sys.platform.startswith("win") else "macos"
+    platform = (data.get("platforms") or {}).get(key) or {}
+    if not platform.get("available"):
+        return {"available": False}
+
+    return {"available": True, "version": latest, "url": base}
 
 
 if __name__ == "__main__":
-    import sys
     cur = sys.argv[1] if len(sys.argv) > 1 else "0.0.0"
-    rp = sys.argv[2] if len(sys.argv) > 2 else "solvergent/ImageSL"
-    print(check_for_update(cur, rp))
+    site = sys.argv[2] if len(sys.argv) > 2 else "https://imagesl.online"
+    print(check_for_update(cur, site))

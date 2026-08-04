@@ -558,6 +558,64 @@ def analyzer() -> HTMLResponse:
     return _serve_html("index.html")
 
 
+# --------------------------------------------------------------------------- #
+# Desktop downloads, served by us
+# --------------------------------------------------------------------------- #
+# The installers are served from this application rather than linked to GitHub.
+# GitHub release links only work for people who can see the repository, so a
+# private repository silently breaks every download button on a public site --
+# and it breaks it as a 404 page, which is worse than an honest "not yet".
+#
+# Put the built artefacts in IMAGESL_DOWNLOAD_DIR (default: <repo>/downloads/)
+# under exactly these names. The directory is deliberately NOT in git: an 82 MB
+# installer does not belong in a repository, and it is rebuilt by CI anyway.
+DOWNLOAD_DIR = Path(os.environ.get("IMAGESL_DOWNLOAD_DIR",
+                                   str(BASE_DIR.parent / "downloads")))
+
+_DOWNLOADS = {
+    "windows": ("ImageSL-Setup-Windows.exe", "application/octet-stream"),
+    "macos":   ("ImageSL-macOS.dmg",         "application/x-apple-diskimage"),
+}
+
+
+@app.get("/api/downloads")
+def api_downloads() -> JSONResponse:
+    """What can actually be downloaded right now.
+
+    The landing page asks this before enabling its buttons, so a missing build
+    greys the button out and says so, instead of handing the visitor a 404.
+    """
+    platforms = {}
+    for key, (name, _ct) in _DOWNLOADS.items():
+        path = DOWNLOAD_DIR / name
+        exists = path.is_file()
+        platforms[key] = {
+            "available": exists,
+            "filename": name,
+            "bytes": path.stat().st_size if exists else 0,
+            "url": f"/download/{key}" if exists else None,
+        }
+    return JSONResponse({"version": APP_VERSION, "platforms": platforms})
+
+
+@app.api_route("/download/{platform}", methods=["GET", "HEAD"])
+def download(platform: str):
+    # HEAD is registered alongside GET: proxies, download managers and link
+    # checkers probe a download URL that way, and a bare @app.get answers them
+    # with 405.
+    entry = _DOWNLOADS.get(platform.lower())
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Unknown platform.")
+    name, content_type = entry
+    path = DOWNLOAD_DIR / name
+    if not path.is_file():
+        raise HTTPException(status_code=404,
+                            detail="That build has not been published yet.")
+    # filename= sets Content-Disposition: attachment, so a click downloads the
+    # file and leaves the page where it is.
+    return FileResponse(str(path), media_type=content_type, filename=name)
+
+
 @app.get("/privacy", response_class=HTMLResponse)
 def privacy() -> HTMLResponse:
     return _serve_html("privacy.html")
