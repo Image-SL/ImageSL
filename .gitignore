@@ -4,7 +4,11 @@
 
 # Python
 __pycache__/
-*.py[cod]
+# NOT *.py[cod] — that bracket also matches .pyd, which is a compiled extension
+# module, not a build artefact. It silently stripped every C extension out of a
+# committed PyInstaller build; the result installed fine and died on launch with
+# "No module named '_socket'".
+*.py[co]
 .venv/
 venv/
 *.egg-info/
