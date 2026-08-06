@@ -23,6 +23,12 @@ RUN pip install --upgrade pip && pip install -r requirements.txt
 
 COPY server/ ./
 
+# The version lives in exactly one file (see desktop/BUILD.md). deploy.yml also
+# passes it as IMAGESL_VERSION, which wins; carrying it here as well means a
+# plain `docker run` of this image still reports what it actually is instead of
+# falling back to 0.0.0-dev.
+COPY version.txt ./version.txt
+
 # Bind to $PORT where the platform injects one; default to 8000 otherwise.
 ENV PORT=8000
 EXPOSE 8000

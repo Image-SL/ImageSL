@@ -50,7 +50,30 @@ WEB_DIR = BASE_DIR / "web"
 ASSETS_DIR = WEB_DIR / "assets"
 
 MAX_UPLOAD_BYTES = int(os.environ.get("IMAGESL_MAX_UPLOAD_MB", "256")) * 1024 * 1024
-APP_VERSION = os.environ.get("IMAGESL_VERSION", "2.0.0")
+
+
+def _repo_version() -> str:
+    """The version this checkout declares, from version.txt at the repo root.
+
+    version.txt is the single source of truth for the version, and every other
+    place that needs one reads it rather than repeating the number: the desktop
+    build (desktop/ImageSL.spec, desktop/launcher.py), the deployment
+    (.github/workflows/deploy.yml) and this server. A version that is written
+    down in more than one place is a version that will disagree with itself, and
+    this one has a consumer that breaks when it does -- see /api/downloads.
+    """
+    for p in (BASE_DIR.parent / "version.txt", BASE_DIR / "version.txt"):
+        try:
+            if p.is_file():
+                v = p.read_text(encoding="utf-8").strip()
+                if v:
+                    return v
+        except Exception:
+            pass
+    return "0.0.0-dev"
+
+
+APP_VERSION = os.environ.get("IMAGESL_VERSION") or _repo_version()
 
 # Set by the offline desktop launcher. When true, "/" boots straight into the
 # analyzer instead of the public landing page — the download button only makes

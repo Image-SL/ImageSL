@@ -66,8 +66,26 @@ def _rgb_from_od(od: np.ndarray) -> np.ndarray:
     return np.clip(255.0 * np.power(10.0, -od), 0, 255)
 
 
+# The chromogen a scene is stained with. Keys match engine._REF_BASES, and the
+# vectors are that file's target ODs, so a grid run against a family is testing
+# the same colour the engine would resolve to for it.
+#
+# This is parametrised because the grid is the evidence for switching a stain on
+# (engine.ENABLED_FAMILIES / stains.ENABLED_KEYS), and a grid hardcoded to DAB
+# can only ever be evidence about DAB. The default is DAB, so every existing
+# condition builds the identical scene it did before.
+CHROMOGENS: dict[str, list[float]] = {
+    "H-DAB":   [0.270, 0.570, 0.780],   # brown  — the shipped default
+    "H-Red":   [0.210, 0.760, 0.615],   # red chromogen (AEC / Fast Red)
+    "H-AP":    [0.190, 0.760, 0.620],   # alkaline-phosphatase red
+    "H-GREEN": [0.400, 0.610, 0.680],   # green chromogen (Vina Green)
+    "H&E":     [0.070, 0.990, 0.110],   # eosin
+}
+DEFAULT_CHROMOGEN = "H-DAB"
+
+
 def build_scene(*, obj_radius, obj_count, stain_od, tissue_od, tone, lumina,
-                debris, noise, blur, seed=0):
+                debris, noise, blur, seed=0, chromogen=DEFAULT_CHROMOGEN):
     """Compose a scene in ABSORBANCE, which is how staining actually works:
     tissue and chromogen add, they do not paint over one another."""
     rng = np.random.default_rng(seed)
@@ -93,7 +111,7 @@ def build_scene(*, obj_radius, obj_count, stain_od, tissue_od, tone, lumina,
     od[nuc] += 0.45 * hema[None, :]
 
     # a slow tonal gradient of REAL chromogen — more stain, but not a structure
-    dab = np.array([0.270, 0.570, 0.780])
+    dab = np.array(CHROMOGENS[chromogen], dtype=float)
     if tone > 0:
         ramp = 0.5 + 0.5 * np.sin(xx / 190.0) * np.cos(yy / 220.0)
         od += (tone * ramp)[..., None] * dab[None, None, :]
@@ -312,7 +330,15 @@ def main() -> int:
     ap.add_argument("--full", action="store_true", help="the dense grid")
     ap.add_argument("--json", default=None)
     ap.add_argument("--only", default=None)
+    ap.add_argument("--chromogen", default=DEFAULT_CHROMOGEN, choices=sorted(CHROMOGENS),
+                    help="stain the scenes with this chromogen family (default: %(default)s). "
+                         "Use it to decide whether a family is fit to enable.")
     args = ap.parse_args()
+
+    if args.chromogen != DEFAULT_CHROMOGEN:
+        live = args.chromogen in engine.ENABLED_FAMILIES
+        print(f"chromogen: {args.chromogen} "
+              f"({'enabled' if live else 'NOT enabled'} in engine.ENABLED_FAMILIES)\n")
 
     rows, bad = [], 0
     for name, kw, rule in conditions(args.full):
@@ -332,7 +358,7 @@ def main() -> int:
         # noise in the suite rather than as the bug it was.
         rr = []
         for seed in SEEDS:
-            rgb, truth, deb = build_scene(seed=seed, **kw)
+            rgb, truth, deb = build_scene(seed=seed, chromogen=args.chromogen, **kw)
             rr.append(score(rgb, truth, deb))
         r = {
             "positive_pct": float(np.median([x["positive_pct"] for x in rr])),

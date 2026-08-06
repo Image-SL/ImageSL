@@ -155,7 +155,14 @@ _REF_BASES = {
 #   2. add the matching key to
 #      ihc/stains.py ENABLED_KEYS          → it appears in the "Select stain" list
 #
-# Nothing else in the engine or the UI needs to change.
+# Nothing else in the engine or the UI needs to change — but "signed off" is
+# doing the load-bearing work in that sentence, and it is not a formality.
+# `detect.py` projects the background field and the excess onto DAB_OD, and its
+# two discriminators (the brownness axis, the washed-out-and-olive debris rule)
+# are drawn around DAB's measured colour. Neither transfers to a red or green
+# chromogen by being listed here. Measure first:
+#
+#   python scripts/synthetic_matrix.py --chromogen H-Red
 ENABLED_FAMILIES: tuple[str, ...] = ("H-DAB",)
 
 # Hue window (deg) that counts as "brown DAB" — see _REF_BASES["H-DAB"]["band"].

@@ -61,6 +61,23 @@ jobs:
             VER="0.0.0-dev"
           fi
           if [ -z "$VER" ]; then VER="0.0.0-dev"; fi
+
+          # A tag must agree with the committed version.txt, because the two feed
+          # different consumers that are then compared to each other: this build
+          # stamps the installer from the tag, while deploy.yml stamps the server
+          # (and so /api/downloads) from version.txt. If they drift, the update
+          # check in desktop/updater.py compares an installer version against a
+          # server version that means something else - and either never offers a
+          # published update, or offers one that was never built. Fail loudly at
+          # the tag rather than shipping a silently broken update path.
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            FILE_VER="$(tr -d ' \t\r\n' < version.txt || true)"
+            if [ "$FILE_VER" != "$VER" ]; then
+              echo "::error::Tag ${GITHUB_REF_NAME} declares version '${VER}' but version.txt says '${FILE_VER}'."
+              echo "::error::Bump version.txt, commit it, and re-tag that commit. See desktop/BUILD.md."
+              exit 1
+            fi
+          fi
           # Windows VERSIONINFO and CFBundleShortVersionString both reject
           # anything but a numeric x[.y[.z]], so derive one alongside.
           NUM=$(printf '%s' "$VER" | grep -oE '^[0-9]+(\.[0-9]+){0,2}' || true)

@@ -183,6 +183,7 @@ stop the engine being right about a handful of slides and wrong in general.
 python scripts/backtest.py /path/to/slides --montage out/ --json results.json
 python scripts/synthetic_cases.py
 python scripts/synthetic_matrix.py            # --full for the dense grid
+python scripts/synthetic_matrix.py --chromogen H-Red   # a family before enabling it
 ```
 
 `backtest.py` runs real sections and applies checks that need no hand-drawn
@@ -265,8 +266,35 @@ deleted. To bring one online:
 2. if auto-detect should also be able to find it unaided, add its family to
    `ENABLED_FAMILIES` in `server/ihc/engine.py`.
 
-Nothing else needs to change. A request naming a stain that is not enabled falls
-back to auto-detect rather than failing.
+Nothing else needs to change *mechanically*. A request naming a stain that is not
+enabled falls back to auto-detect rather than failing.
+
+**But the switch is not the work.** Flipping either list is one line; earning the
+right to flip it is not, because the detector's discrimination gates are written
+in DAB's terms and do not transfer to another colour by themselves:
+
+- the background field and the excess are projected onto `DAB_OD`
+  (`detect.py`, `_background_field`);
+- the test that rescues the densest staining reads *brownness*, `(od_B − od_R)`,
+  where DAB sits at **+0.51** and haematoxylin at **−0.36** — but a red chromogen
+  sits at **+0.03**, which is where neutral debris (0.00) sits too, so on a red
+  stain that test vouches for nothing;
+- the intraluminal-debris rule refuses material that is washed-out **and** olive,
+  `DEBRIS_HUE_MIN = 30°`, drawn around DAB's measured 15.7-28.9°. A green
+  chromogen at ~140° is olive by that definition.
+
+So the honest order is: run the grid for the candidate family, read what it
+actually scores, and only then decide whether the work is a switch or an engine
+change:
+
+```bash
+python scripts/synthetic_matrix.py --chromogen H-Red
+```
+
+The suite stains its scenes with the family you name and scores recall and
+precision against exact ground truth, the same way it does for DAB. A family that
+cannot pass it is not ready to be offered in the picker, however complete its
+entry in the registry looks.
 
 ## Run it — see GETTING_STARTED
 

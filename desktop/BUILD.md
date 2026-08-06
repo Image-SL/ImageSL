@@ -224,10 +224,25 @@ runners, smoke-tests each frozen binary, uploads them to S3 (which is what makes
 the site's buttons live), and on a tag also attaches them to a GitHub Release:
 
 ```bash
-# cut a release
+# cut a release: bump the version first, then tag THAT commit
+echo 2.0.1 > version.txt
+git commit -am "v2.0.1"
+git push                      # deploys the server, which now reports 2.0.1
 git tag v2.0.1
-git push origin v2.0.1
+git push origin v2.0.1        # builds + publishes the installers
 ```
+
+**The bump has to be committed before the tag, and the tag has to match it.** The
+build refuses a tag whose version disagrees with `version.txt` and tells you so,
+because the two feed opposite ends of the same comparison: the tag stamps the
+installer, `version.txt` stamps the server (and therefore `/api/downloads`), and
+`updater.py` compares one against the other. Drift there does not fail visibly —
+it just means no installed app is ever told an update exists. See
+[Version](#version).
+
+Pushing the branch before the tag is what makes the server advertise the new
+version; tagging first only means the site keeps reporting the old one until the
+branch deploy catches up.
 
 A manual run (Actions → "Build desktop apps" → Run workflow) builds,
 smoke-tests, and still publishes to S3 — under a `dev-<sha>` archive key plus the
@@ -298,6 +313,23 @@ its analysis code mid-session without the user's consent.
 
 ## Version
 
-`version.txt` at the repo root is the source of truth. CI writes it from the git
-tag (`v2.0.1` → `2.0.1`). The running app reads it back for the update check and
-the window's About text.
+`version.txt` at the repo root is the source of truth, and it is the only place
+the number is written down. Everything that needs a version reads it:
+
+| Consumer | Reads it via | Used for |
+| --- | --- | --- |
+| Desktop app | `desktop/launcher.py` → bundled by `ImageSL.spec` | About text, and the version it reports to the update check |
+| Installer metadata | `ImageSL.spec` (numeric part only) | Windows VERSIONINFO, macOS `CFBundleShortVersionString` |
+| Server | `server/app.py` `_repo_version()`, overridable by `IMAGESL_VERSION` | `/api/health`, and the `version` in `/api/downloads` |
+| Deployment | `.github/workflows/deploy.yml` reads `version.txt` into `IMAGESL_VERSION` | what the live site reports |
+
+A tag build checks the tag against the file and fails if they disagree, so
+`v2.0.1` cannot ship an installer that says `2.0.0`.
+
+**Why this matters more than it looks.** `desktop/updater.py` asks the site's
+`/api/downloads` for its `version` and compares it against the running app's own.
+Those are two different numbers from two different pipelines — the server's comes
+from a push to `main`, the installer's from a tag — and nothing but this shared
+file keeps them commensurable. When the server's version was a literal pinned in
+`deploy.yml`, it stayed at `2.0.0` through every release, so `_is_newer()` always
+answered "no" and the update banner could never appear for anyone.

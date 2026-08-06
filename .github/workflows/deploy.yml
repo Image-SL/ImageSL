@@ -65,6 +65,19 @@ jobs:
         run: |
           set -euo pipefail
 
+          # The version comes from version.txt, never from a literal here. This
+          # value is what /api/downloads reports, and desktop/updater.py compares
+          # it against the version of the installed app to decide whether to
+          # offer an update. A number pinned in this file does not move when a
+          # release is tagged, so the comparison silently answers "you are up to
+          # date" forever. See the release procedure in desktop/BUILD.md.
+          VERSION="$(tr -d ' \t\r\n' < version.txt)"
+          if [ -z "$VERSION" ]; then
+            echo "::error::version.txt is empty - refusing to deploy a versionless build."
+            exit 1
+          fi
+          echo "Deploying version $VERSION"
+
           # Unset means "no installer hosted yet". The app treats an empty value
           # as unconfigured and the landing page greys the button out and says
           # "coming soon" - which is the honest state, and strictly better than
@@ -92,7 +105,7 @@ jobs:
               "imagesl": {
                 "image": "${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}",
                 "environment": {
-                  "IMAGESL_VERSION": "2.0.0",
+                  "IMAGESL_VERSION": "${VERSION}",
                   "IMAGESL_MAX_CONCURRENCY": "2",
                   "IMAGESL_CACHE_MAX": "400",
                   "IMAGESL_CACHE_MB": "6144",

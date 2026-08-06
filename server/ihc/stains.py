@@ -170,6 +170,20 @@ STAINS: list[dict] = [
 #
 # Everything above this line stays exactly as it is. A request naming a stain
 # that is not enabled falls back to auto-detect rather than failing.
+#
+# THE EDIT IS ONE LINE; THE VALIDATION IS NOT. An entry in this registry means
+# "we know this chromogen's OD vector", which is necessary and nowhere near
+# sufficient — `ihc/detect.py` separates stain from debris with tests written in
+# DAB's terms (a brownness axis on which DAB reads +0.51 and a red chromogen
+# +0.03, indistinguishable from neutral debris at 0.00; a debris rule that
+# refuses hues above 30 deg, which is most of a green chromogen). Adding a key
+# here without checking those transfer ships a picker entry that measures
+# confidently and wrongly, which is worse than the honest "not yet" it replaces.
+#
+# The evidence to gather first, which stains the grid with that family and scores
+# it against exact ground truth:
+#
+#   python scripts/synthetic_matrix.py --chromogen H-Red
 ENABLED_KEYS: set[str] = {"dab"}
 
 _BY_KEY = {s["key"]: s for s in STAINS}
