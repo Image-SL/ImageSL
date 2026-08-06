@@ -103,6 +103,31 @@ jobs:
             echo "::warning::No IMAGESL_DOWNLOAD_BUCKET / _BASE_URL set - the desktop download buttons will stay greyed out."
           fi
 
+          # Emit only the installer variables that actually HAVE a value.
+          #
+          # An unset repository variable arrives here as an empty string, and the
+          # deployment then carried "IMAGESL_DOWNLOAD_URL_WINDOWS": "". That is
+          # what changed in v1.0, and deploy #30 (green, 1m11s) to #31 (red, 15m)
+          # is the only thing that changed with it: Lightsail will not accept an
+          # empty value for a container environment variable, and every later
+          # push inherited the same rejection.
+          #
+          # Omitting the key is also the more accurate statement. server/app.py
+          # reads these with `os.environ.get(key) or ""` and treats absent and
+          # empty identically, so there is no behaviour to preserve by sending a
+          # blank - only a value for AWS to refuse.
+          DL_ENV=""
+          for pair in "IMAGESL_DOWNLOAD_URL_WINDOWS=${DL_WIN}" \
+                      "IMAGESL_DOWNLOAD_URL_MACOS=${DL_MAC}" \
+                      "IMAGESL_DOWNLOAD_VERSION_URL=${DL_VER}"; do
+            key="${pair%%=*}"
+            val="${pair#*=}"
+            if [ -n "$val" ]; then
+              DL_ENV="${DL_ENV},
+                  \"${key}\": \"${val}\""
+            fi
+          done
+
           cat > deploy.json <<EOF
           {
             "serviceName": "${SERVICE}",
@@ -114,10 +139,7 @@ jobs:
                   "IMAGESL_MAX_CONCURRENCY": "2",
                   "IMAGESL_CACHE_MAX": "400",
                   "IMAGESL_CACHE_MB": "6144",
-                  "IMAGESL_CACHE_TTL": "28800",
-                  "IMAGESL_DOWNLOAD_URL_WINDOWS": "${DL_WIN}",
-                  "IMAGESL_DOWNLOAD_URL_MACOS": "${DL_MAC}",
-                  "IMAGESL_DOWNLOAD_VERSION_URL": "${DL_VER}"
+                  "IMAGESL_CACHE_TTL": "28800"${DL_ENV}
                 },
                 "ports": { "8000": "HTTP" }
               }
@@ -136,14 +158,38 @@ jobs:
             }
           }
           EOF
-          # Retry while a previous deployment is still rolling out.
+          echo "--- deployment payload ---"
+          cat deploy.json
+          echo "--------------------------"
+
+          # Retry while a previous deployment is still rolling out — and ONLY
+          # then.
+          #
+          # This loop used to treat every failure as "service busy". A permanent
+          # error therefore took twelve attempts and fifteen minutes to surface,
+          # and surfaced as "Could not submit deployment after retries", which
+          # names the loop rather than the cause: the AWS message scrolled past
+          # eleven times and the last line of the log was the one sentence that
+          # said nothing. A rejection that will be identical on the twelfth try
+          # should be reported on the first.
           for i in $(seq 1 12); do
-            if aws lightsail create-container-service-deployment --region "$AWS_REGION" --cli-input-json file://deploy.json; then
+            if err="$(aws lightsail create-container-service-deployment \
+                        --region "$AWS_REGION" --cli-input-json file://deploy.json 2>&1)"; then
+              echo "$err"
               echo "Deployment submitted."
               exit 0
             fi
-            echo "Service busy (attempt $i) — retrying in 20s…"
+            echo "$err" >&2
+            case "$err" in
+              *InvalidInputException*|*ValidationException*|*ValidationError*|\
+              *AccessDenied*|*UnauthorizedOperation*|*NotFoundException*|\
+              *does\ not\ exist*|*could\ not\ be\ found*)
+                echo "::error::Lightsail rejected this deployment outright - the same request will be refused every time, so it is not being retried. The AWS message is immediately above."
+                exit 1
+                ;;
+            esac
+            echo "Service busy (attempt $i) - retrying in 20s..."
             sleep 20
           done
-          echo "Could not submit deployment after retries." >&2
+          echo "::error::Service was still busy after 12 attempts over ~4 minutes. Last AWS message is above."
           exit 1
