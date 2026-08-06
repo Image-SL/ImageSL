@@ -304,6 +304,24 @@ jobs:
           upload "artifacts/ImageSL-macOS/ImageSL-macOS.dmg" \
                  "ImageSL-macOS.dmg" "application/x-apple-diskimage"
 
+          # What version those bytes ARE, published next to them.
+          #
+          # /api/downloads has to answer "what can this user install", and until
+          # this marker existed it answered with the SERVER's version instead -
+          # a different number, deployed by a different workflow. The two agree
+          # right up until a release where the server rolls out and this build
+          # does not, and then every installed app is offered an update that was
+          # never published. Only a value written by the job that uploaded the
+          # installers can speak for the installers.
+          #
+          # Written last: if any upload above failed, the marker still names the
+          # previous release, which is the truthful answer.
+          printf '%s' "$VER" > VERSION
+          aws s3 cp VERSION "s3://${BUCKET}/latest/VERSION" \
+            --content-type "text/plain; charset=utf-8" \
+            --cache-control "public, max-age=60"
+          echo "Published version marker: $VER"
+
       - name: Confirm the live site can see them
         if: steps.cfg.outputs.go == 'true'
         run: |

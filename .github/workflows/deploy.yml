@@ -91,10 +91,15 @@ jobs:
           if [ -n "$BASE" ]; then
             DL_WIN="${BASE}/latest/ImageSL-Setup-Windows.exe"
             DL_MAC="${BASE}/latest/ImageSL-macOS.dmg"
+            # Written by build-desktop.yml's publish job next to the installers,
+            # so /api/downloads can report the version of the bytes a user would
+            # actually get rather than the version of this server.
+            DL_VER="${BASE}/latest/VERSION"
             echo "Installer base: $BASE"
           else
             DL_WIN=""
             DL_MAC=""
+            DL_VER=""
             echo "::warning::No IMAGESL_DOWNLOAD_BUCKET / _BASE_URL set - the desktop download buttons will stay greyed out."
           fi
 
@@ -111,7 +116,8 @@ jobs:
                   "IMAGESL_CACHE_MB": "6144",
                   "IMAGESL_CACHE_TTL": "28800",
                   "IMAGESL_DOWNLOAD_URL_WINDOWS": "${DL_WIN}",
-                  "IMAGESL_DOWNLOAD_URL_MACOS": "${DL_MAC}"
+                  "IMAGESL_DOWNLOAD_URL_MACOS": "${DL_MAC}",
+                  "IMAGESL_DOWNLOAD_VERSION_URL": "${DL_VER}"
                 },
                 "ports": { "8000": "HTTP" }
               }

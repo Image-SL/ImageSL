@@ -673,6 +673,69 @@ def _probe_external(url: str) -> tuple[bool, int]:
     return ok, size
 
 
+# The version of the INSTALLERS, which is not this server's version.
+#
+# build-desktop.yml writes it beside the installers it uploads; deploy.yml points
+# this at that object. They are two different workflows on two different triggers
+# (a tag; a push to main), so the only honest answer to "what version can I
+# install" comes from the one that did the uploading. Reporting APP_VERSION here
+# means that a release where the server rolls out and the installer build does
+# not offers every user an update that does not exist.
+#
+# Unset - a local run, or a deploy with no bucket - falls back to APP_VERSION,
+# which is correct there: the desktop build and the server are the same tree.
+_VERSION_URL_KEY = "IMAGESL_DOWNLOAD_VERSION_URL"
+_VERSION_TTL_OK = 300.0
+_VERSION_TTL_BAD = 60.0
+_version_cache: tuple[float, str] | None = None
+_version_lock = threading.Lock()
+
+
+def _published_version() -> str:
+    """The version published alongside the installers, or "" if not knowable.
+
+    Cached on the same reasoning as _probe_external: this sits behind a
+    landing-page fetch and must not become one request per visitor. A failed
+    read keeps the last good answer rather than replacing it with a guess.
+    """
+    url = (os.environ.get(_VERSION_URL_KEY) or "").strip()
+    if not url:
+        return ""
+
+    global _version_cache
+    now = time.time()
+    with _version_lock:
+        if _version_cache is not None:
+            checked_at, val = _version_cache
+            if now - checked_at < (_VERSION_TTL_OK if val else _VERSION_TTL_BAD):
+                return val
+
+    import urllib.request
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "ImageSL"})
+        with urllib.request.urlopen(req, timeout=4) as r:
+            if not (200 <= getattr(r, "status", 200) < 300):
+                raise ValueError("bad status")
+            # Bounded read: this is a version string, and an unbounded read of
+            # whatever is at a configured URL is not something to do on a path
+            # a visitor can trigger.
+            val = r.read(64).decode("utf-8", "replace").strip()
+    except Exception:
+        with _version_lock:
+            if _version_cache is not None:
+                return _version_cache[1]
+        return ""
+
+    # Anything that is not a plain version string is treated as unreadable
+    # rather than echoed to every visitor of the landing page.
+    if not re.fullmatch(r"[0-9A-Za-z._+-]{1,32}", val or ""):
+        val = ""
+
+    with _version_lock:
+        _version_cache = (now, val)
+    return val
+
+
 @app.get("/api/downloads")
 async def api_downloads() -> JSONResponse:
     """What can actually be downloaded right now.
@@ -698,10 +761,17 @@ async def api_downloads() -> JSONResponse:
             "bytes": size,
             "url": f"/download/{key}" if ok else None,
         }
+    # `version` is what a user can INSTALL, which is what desktop/updater.py is
+    # asking. Only fall back to this server's own version when nothing published
+    # a marker to read -- see _published_version().
+    published = await run_in_threadpool(_published_version)
+
     # Never cached. This endpoint is ~200 bytes and its whole job is to be
     # current: an intermediary holding yesterday's "available: false" would keep
     # the site advertising "coming soon" for a build that shipped hours ago.
-    return JSONResponse({"version": APP_VERSION, "platforms": platforms},
+    return JSONResponse({"version": published or APP_VERSION,
+                         "server_version": APP_VERSION,
+                         "platforms": platforms},
                         headers={"Cache-Control": "no-store"})
 
 

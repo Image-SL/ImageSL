@@ -311,6 +311,17 @@ not "does a git tag exist".
 It does **not** silently replace itself — a quantification tool should not swap
 its analysis code mid-session without the user's consent.
 
+**What `/api/downloads` reports as `version` is the version of the installers,
+not of the server.** The publish job writes a plain-text `VERSION` into S3 beside
+the installers it just uploaded, `deploy.yml` points
+`IMAGESL_DOWNLOAD_VERSION_URL` at that object, and the server reads it (its own
+version is still reported, as `server_version`). Whatever uploaded the installers
+is the only thing that can speak for them: a release where the server rolls out
+and the desktop build does not would otherwise offer every user an update that
+was never published. Unset — a local run, or a deploy with no bucket — it falls
+back to the server's version, which is right there because both come from one
+tree.
+
 ## Version
 
 `version.txt` at the repo root is the source of truth, and it is the only place
@@ -320,16 +331,25 @@ the number is written down. Everything that needs a version reads it:
 | --- | --- | --- |
 | Desktop app | `desktop/launcher.py` → bundled by `ImageSL.spec` | About text, and the version it reports to the update check |
 | Installer metadata | `ImageSL.spec` (numeric part only) | Windows VERSIONINFO, macOS `CFBundleShortVersionString` |
-| Server | `server/app.py` `_repo_version()`, overridable by `IMAGESL_VERSION` | `/api/health`, and the `version` in `/api/downloads` |
-| Deployment | `.github/workflows/deploy.yml` reads `version.txt` into `IMAGESL_VERSION` | what the live site reports |
+| Server | `server/app.py` `_repo_version()`, overridable by `IMAGESL_VERSION` | `/api/health`, and `server_version` in `/api/downloads` |
+| Deployment | `.github/workflows/deploy.yml` reads `version.txt` into `IMAGESL_VERSION` | what the live server reports |
+| Published installers | the publish job writes `latest/VERSION` to S3 from the tag | the `version` in `/api/downloads` — what a user can install |
 
 A tag build checks the tag against the file and fails if they disagree, so
 `v2.0.1` cannot ship an installer that says `2.0.0`.
 
 **Why this matters more than it looks.** `desktop/updater.py` asks the site's
 `/api/downloads` for its `version` and compares it against the running app's own.
-Those are two different numbers from two different pipelines — the server's comes
-from a push to `main`, the installer's from a tag — and nothing but this shared
-file keeps them commensurable. When the server's version was a literal pinned in
-`deploy.yml`, it stayed at `2.0.0` through every release, so `_is_newer()` always
-answered "no" and the update banner could never appear for anyone.
+Those numbers come from two different pipelines — the server from a push to
+`main`, the installers from a tag — so they have to be made commensurable
+deliberately, in two places:
+
+1. `version.txt` is the one place the number is written, so a release moves the
+   server and the installer together instead of only one of them. When the
+   server's version was a literal pinned in `deploy.yml` it stayed at `2.0.0`
+   through every release, `_is_newer()` always answered "no", and the update
+   banner could never appear for anyone.
+2. `/api/downloads` reports the version published *beside the installers*, not
+   the server's own, so the answer stays right even when the two pipelines
+   diverge — a server that rolled out ahead of a failed installer build reports
+   what is genuinely downloadable rather than what it wishes were.
