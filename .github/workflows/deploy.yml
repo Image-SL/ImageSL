@@ -105,17 +105,17 @@ jobs:
 
           # Emit only the installer variables that actually HAVE a value.
           #
-          # An unset repository variable arrives here as an empty string, and the
-          # deployment then carried "IMAGESL_DOWNLOAD_URL_WINDOWS": "". That is
-          # what changed in v1.0, and deploy #30 (green, 1m11s) to #31 (red, 15m)
-          # is the only thing that changed with it: Lightsail will not accept an
-          # empty value for a container environment variable, and every later
-          # push inherited the same rejection.
+          # Defensive, not a fix for anything observed. An unset repository
+          # variable arrives here as an empty string, and the deployment then
+          # carries "IMAGESL_DOWNLOAD_URL_WINDOWS": "". Whether Lightsail accepts
+          # that is untested: no deployment carrying one has ever reached the API
+          # (the last created deployment is version 33, from 2069556 on Aug 4,
+          # and the runs after it failed before authenticating to AWS at all).
           #
-          # Omitting the key is also the more accurate statement. server/app.py
-          # reads these with `os.environ.get(key) or ""` and treats absent and
-          # empty identically, so there is no behaviour to preserve by sending a
-          # blank - only a value for AWS to refuse.
+          # It is kept because omitting the key is the more accurate statement
+          # either way. server/app.py reads these with `os.environ.get(key) or ""`
+          # and treats absent and empty identically, so a blank preserves no
+          # behaviour - it only asserts "this is configured, to nothing".
           DL_ENV=""
           for pair in "IMAGESL_DOWNLOAD_URL_WINDOWS=${DL_WIN}" \
                       "IMAGESL_DOWNLOAD_URL_MACOS=${DL_MAC}" \
