@@ -91,9 +91,13 @@ real path, and it's the industry-standard one.
 
 ## 3. Handling user data
 
-- Slides are processed in memory and cached briefly (default 15 min) only to
-  power the render sliders; they are not persisted to disk by the backend.
-- Only a downsampled thumbnail is sent to the Claude API for vision reasoning,
-  and only when the user leaves "Use AI" enabled.
+- Slides are processed in memory and cached only to power the render sliders and
+  the exports; they are not persisted to disk by the backend. An idle analysis is
+  dropped after `IMAGESL_CACHE_TTL` (default 8 hours).
+- **No part of a slide is sent to any third party.** The engine is numpy and
+  scikit-image running in this process; there is no model API call anywhere in
+  the codebase, and no network egress on the analysis path at all.
+- In the desktop app the analysis never leaves the machine in the first place —
+  the engine is bundled and served on a private loopback port.
 - Add a privacy notice appropriate to your users (e.g. HIPAA considerations if
   slides are patient-linked) before production clinical use.

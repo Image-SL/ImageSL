@@ -18,19 +18,16 @@ It runs two ways from the same engine and the same code:
 
 - **Desktop app** (Windows and macOS) — bundles the whole analysis engine and
   runs it on a private loopback port. Fully offline; a slide never leaves the
-  machine. Download it from the
-  [latest release](https://github.com/solvergent/ImageSL/releases/latest), or see
-  [desktop/BUILD.md](desktop/BUILD.md) to build and release it.
+  machine. Download it from **<https://imagesl.online>**, or see
+  [desktop/BUILD.md](desktop/BUILD.md) to build and publish it. (Not from GitHub
+  Releases: this repository is private, so a release link 404s for everyone who
+  cannot see it — and it 404s as an HTML page, which navigates the visitor away
+  instead of downloading.)
 - **Web page** — the same analyzer served from a host, with analysis running on
   the server.
 
 > ⚕️ ImageSL assists interpretation. It is **not** a clinical diagnosis; results
 > must be confirmed by a qualified pathologist.
-
-> **Note:** an earlier design included an in-app Claude assistant with
-> recalculation tools (`server/ai/claude_client.py`, `POST /api/chat`). That code
-> is **not present in this repository** — `docs/` still describes it in places.
-> Nothing in the current app calls the Anthropic API.
 
 ## How detection works
 
@@ -150,7 +147,7 @@ handing over a ZIP with nothing in it.
 
 ```
 ImageSL/
-├── server/                  # FastAPI backend (deployed to Railway) — the whole app
+├── server/                  # FastAPI backend (deployed to AWS Lightsail) — the whole app
 │   ├── app.py               # routes: page, /api/analyze, /api/appearance, /api/stains,
 │   │                        #         /api/download_tif, /api/export_csv, /api/export_zip
 │   ├── ihc/engine.py        # white point → tissue segmentation → stain basis →
@@ -173,7 +170,7 @@ ImageSL/
 │                            #   under illumination / resolution / compression
 ├── scripts/synthetic_cases.py  # constructed scenes with a known answer
 ├── scripts/synthetic_matrix.py # parameter grid: recall/precision vs ground truth
-├── Dockerfile, railway.json, .env.example
+├── Dockerfile, .env.example
 └── docs/                    # ARCHITECTURE.md, SECURITY.md, DEPLOY.md
 ```
 
@@ -273,14 +270,10 @@ back to auto-detect rather than failing.
 
 ## Run it — see GETTING_STARTED
 
-Step-by-step (local + Railway) is in
-**[docs/GETTING_STARTED.md](docs/GETTING_STARTED.md)**. Ignore its
-`ANTHROPIC_API_KEY` steps — see the note above; no key is needed.
+Step-by-step is in **[docs/GETTING_STARTED.md](docs/GETTING_STARTED.md)**. There
+are no keys or accounts to configure.
 
-Shortest path:
-
-1. Push this repo to GitHub and point a Railway service at it (Dockerfile build).
-2. Open the Railway URL and drop a slide on it.
+Shortest path: open **<https://imagesl.online>** and drop a slide on it.
 
 Locally:
 

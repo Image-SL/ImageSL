@@ -76,11 +76,16 @@
       <p class="sub">Measures stained area. Runs on your computer, offline.</p>
 
       <div class="dl">
-        <a class="btn primary" id="dl-primary" href="#" rel="noopener">
+        <!-- Both buttons ship DISABLED and are switched on only once
+             /api/downloads confirms a real file. Starting them enabled meant
+             every visitor got a live link during the fetch, and on a platform
+             with no build that link is a 404 - the exact thing this page is
+             built to avoid. Failing dark is the honest direction. -->
+        <a class="btn primary off" id="dl-primary" href="#" rel="noopener" aria-disabled="true">
           <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.5 10.2 4.5v6.9H3V5.5Zm0 13 7.2 1v-6.8H3v5.8Zm8.3 1.1L21 21v-9.6h-9.7v8.2Zm0-15.2v8.1H21V3l-9.7 1.4Z"/></svg>
           <span id="dl-primary-label">Download for Windows</span>
         </a>
-        <a class="btn" id="dl-secondary" href="#" rel="noopener">
+        <a class="btn off" id="dl-secondary" href="#" rel="noopener" aria-disabled="true">
           <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16.4 12.6c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.1-2.8.9-3.5.9s-1.8-.9-3-.8c-1.5 0-2.9.9-3.7 2.3-1.6 2.7-.4 6.8 1.1 9 .7 1.1 1.6 2.3 2.8 2.2 1.1 0 1.5-.7 2.9-.7s1.7.7 2.9.7 2-1.1 2.7-2.1c.8-1.2 1.2-2.4 1.2-2.5-.1 0-2.3-.9-2.3-3.4ZM14.2 5.8c.6-.8 1-1.9.9-3-.9 0-2 .6-2.6 1.4-.6.7-1.1 1.8-.9 2.9 1 0 2-.5 2.6-1.3Z"/></svg>
           <span id="dl-secondary-label">Download for macOS</span>
         </a>
@@ -154,11 +159,11 @@
   // stays put.
   var LABEL = { win: "Download for Windows", mac: "Download for macOS" };
   var KEY   = { win: "windows",              mac: "macos"              };
+  var NAME  = { win: "The Windows build",    mac: "The macOS build"    };
 
   var slot = {};
   function setBtn(id, os){
     var el = document.getElementById(id);
-    el.href = "/download/" + KEY[os];
     el.setAttribute('data-os', os);
     var label = document.getElementById(id + '-label');
     if (label) label.textContent = LABEL[os];
@@ -170,39 +175,71 @@
   setBtn('dl-primary',   isMac ? 'mac' : 'win');
   setBtn('dl-secondary', isMac ? 'win' : 'mac');
 
-  document.getElementById('f-win').href = "/download/windows";
-  document.getElementById('f-mac').href = "/download/macos";
   document.getElementById('yr').textContent = new Date().getFullYear();
 
-  function disable(id, msg){
-    var el = document.getElementById(id);
-    if (!el) return;
-    el.classList.add('off');
-    el.setAttribute('aria-disabled', 'true');
-    el.addEventListener('click', function(e){
-      e.preventDefault();
-      var h = document.getElementById('hint');
-      if (h) h.textContent = msg;
-    });
+  function say(msg){
+    var h = document.getElementById('hint');
+    if (h) h.textContent = msg;
   }
 
-  // Ask what actually exists before offering it, so a build we have not
-  // produced yet reads as "coming soon" rather than handing over a 404.
+  // A button is dead until proven live: the href is only attached once the
+  // server has confirmed the file is really there. Everything below either
+  // enables a control or leaves it in the disabled state it was served in.
+  function enable(el, href){
+    if (!el) return;
+    el.href = href;
+    el.classList.remove('off');
+    el.removeAttribute('aria-disabled');
+  }
+
+  function blockClick(id, msg){
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('click', function(e){
+      if (el.classList.contains('off')) { e.preventDefault(); say(msg); }
+    });
+  }
+  ['dl-primary', 'dl-secondary'].forEach(function(id){
+    blockClick(id, NAME[slot[id]] + " is coming soon.");
+  });
+
+  // The footer links are plain anchors, so they need the same gate - otherwise
+  // they hand out the 404 the buttons above were just stopped from handing out.
+  var FOOT = { win: document.getElementById('f-win'),
+               mac: document.getElementById('f-mac') };
+  ['win', 'mac'].forEach(function(os){
+    var el = FOOT[os];
+    if (!el) return;
+    el.classList.add('off');
+    el.addEventListener('click', function(e){
+      if (el.classList.contains('off')) { e.preventDefault(); say(NAME[os] + " is coming soon."); }
+    });
+  });
+
+  // Ask what actually exists before offering it. /api/downloads verifies that
+  // the installer is genuinely reachable - a configured URL is not proof of a
+  // file - so "available" here means a visitor will really get bytes.
   fetch("/api/downloads")
     .then(function(r){ return r.ok ? r.json() : null; })
     .then(function(j){
-      if (!j) return;
+      if (!j) throw new Error("no answer");
       if (j.version) document.getElementById('ver').textContent = j.version;
       var p = j.platforms || {};
       ['dl-primary', 'dl-secondary'].forEach(function(id){
-        var info = p[KEY[slot[id]]];
-        if (!info || !info.available){
-          disable(id, (slot[id] === 'mac' ? "The macOS build" : "The Windows build")
-                      + " is coming soon.");
-        }
+        var os = slot[id];
+        var info = p[KEY[os]];
+        if (info && info.available) enable(document.getElementById(id), info.url || ("/download/" + KEY[os]));
+      });
+      ['win', 'mac'].forEach(function(os){
+        var info = p[KEY[os]];
+        if (info && info.available) enable(FOOT[os], info.url || ("/download/" + KEY[os]));
       });
     })
-    .catch(function(){});
+    .catch(function(){
+      // We could not find out what exists. Staying dark is the honest failure:
+      // the alternative is offering a download we cannot vouch for.
+      say("Could not check which downloads are available — please reload.");
+    });
 </script>
 </body>
 </html>

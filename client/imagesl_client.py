@@ -5,7 +5,10 @@ This program deliberately contains NO analysis logic and NO API keys. It:
   1. asks the user for their ImageSL license key (once, stored locally),
   2. opens a native window (Edge WebView2 on Windows) pointed at the hosted
      ImageSL web app, passing the license key,
-  3. lets the backend on Railway do all the work.
+  3. lets the hosted backend do all the work.
+
+Note this is NOT the offline desktop app. That one is desktop/launcher.py, which
+bundles the engine and analyses locally; this shell needs a network and a server.
 
 Because nothing proprietary ships in the executable, there is nothing to
 decompile out of it. The build is small and unobfuscated, which also keeps
@@ -23,9 +26,9 @@ from pathlib import Path
 import webview  # pywebview
 
 APP_NAME = "ImageSL"
-# Set this to your deployed Railway URL at build time (env wins, then bundled
-# config.json, then this default). Example: https://imagesl.up.railway.app
-DEFAULT_BACKEND = "https://imagesl.up.railway.app"
+# Where this shell points (env wins, then bundled config.json, then this
+# default). Override for a self-hosted deploy.
+DEFAULT_BACKEND = "https://imagesl.online"
 
 
 def _config_dir() -> Path:

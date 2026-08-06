@@ -584,7 +584,7 @@ _DOWNLOADS = {
 def _external_url(env_key: str) -> str:
     """An off-box home for the installer, if one is configured.
 
-    A build is ~80 MB and the repository cannot carry it, so on a hosted deploy
+    A build is ~86 MB and the repository cannot carry it, so on a hosted deploy
     the file usually lives in object storage rather than on the application
     disk. Set the platform's env var to that URL and this app stops serving
     bytes and just redirects, which also keeps large downloads off the app's
@@ -594,8 +594,64 @@ def _external_url(env_key: str) -> str:
     return (os.environ.get(env_key) or "").strip()
 
 
+# A configured URL is not the same thing as a file that exists. A typo, a failed
+# upload, a bucket policy change or a deleted object all leave the variable set
+# and the object gone -- and then /api/downloads reports the platform available,
+# the landing page lights the button up, and the visitor is handed whatever S3
+# feels like saying. That is precisely the 404 this whole download path exists to
+# avoid, so the URL is probed before it is advertised.
+#
+# The probe is cached because it sits behind a landing-page fetch: a popular page
+# must not turn into one HEAD per visitor. A positive result is trusted for
+# longer than a negative one, so a publish becomes visible quickly while a
+# healthy state costs almost nothing.
+_PROBE_TTL_OK = 300.0
+_PROBE_TTL_BAD = 60.0
+_probe_cache: dict[str, tuple[float, bool, int]] = {}
+_probe_lock = threading.Lock()
+
+
+def _probe_external(url: str) -> tuple[bool, int]:
+    """Is this URL actually serving a file right now? Returns (ok, bytes).
+
+    Falls back to the last known answer when the check itself fails, so a blip
+    between us and object storage does not black out the download buttons.
+    """
+    now = time.time()
+    with _probe_lock:
+        cached = _probe_cache.get(url)
+        if cached is not None:
+            checked_at, ok, size = cached
+            if now - checked_at < (_PROBE_TTL_OK if ok else _PROBE_TTL_BAD):
+                return ok, size
+
+    import urllib.request
+    import urllib.error
+    ok, size = False, 0
+    try:
+        req = urllib.request.Request(url, method="HEAD")
+        with urllib.request.urlopen(req, timeout=4) as r:
+            ok = 200 <= getattr(r, "status", 200) < 300
+            size = int(r.headers.get("Content-Length") or 0)
+    except urllib.error.HTTPError:
+        # A real answer: the object is not there (404), or is not public (403).
+        ok, size = False, 0
+    except Exception:
+        # Timeout, DNS, TLS, no route. We do not know, so do not overwrite a
+        # previous answer with a guess - keep serving the last one we trusted.
+        with _probe_lock:
+            cached = _probe_cache.get(url)
+        if cached is not None:
+            return cached[1], cached[2]
+        return False, 0
+
+    with _probe_lock:
+        _probe_cache[url] = (now, ok, size)
+    return ok, size
+
+
 @app.get("/api/downloads")
-def api_downloads() -> JSONResponse:
+async def api_downloads() -> JSONResponse:
     """What can actually be downloaded right now.
 
     The landing page asks this before enabling its buttons, so a platform with
@@ -606,13 +662,24 @@ def api_downloads() -> JSONResponse:
         external = _external_url(env_key)
         path = DOWNLOAD_DIR / name
         on_disk = path.is_file()
+
+        if external:
+            # urllib is blocking; keep it off the event loop.
+            ok, size = await run_in_threadpool(_probe_external, external)
+        else:
+            ok, size = on_disk, (path.stat().st_size if on_disk else 0)
+
         platforms[key] = {
-            "available": bool(external) or on_disk,
+            "available": ok,
             "filename": name,
-            "bytes": path.stat().st_size if on_disk else 0,
-            "url": f"/download/{key}" if (external or on_disk) else None,
+            "bytes": size,
+            "url": f"/download/{key}" if ok else None,
         }
-    return JSONResponse({"version": APP_VERSION, "platforms": platforms})
+    # Never cached. This endpoint is ~200 bytes and its whole job is to be
+    # current: an intermediary holding yesterday's "available: false" would keep
+    # the site advertising "coming soon" for a build that shipped hours ago.
+    return JSONResponse({"version": APP_VERSION, "platforms": platforms},
+                        headers={"Cache-Control": "no-store"})
 
 
 @app.api_route("/download/{platform}", methods=["GET", "HEAD"])
@@ -626,6 +693,12 @@ def download(platform: str):
 
     external = _external_url(env_key)
     if external:
+        # Deliberately NOT gated on _probe_external: the probe decides what the
+        # landing page advertises, not whether a download may proceed. Object
+        # storage is the authority on its own contents, and a stale or
+        # network-blipped negative must never be able to block a link that
+        # actually works - including one someone bookmarked or scripted.
+        #
         # 302, not 301: where the file is hosted is an operational detail and
         # must stay changeable. A permanent redirect gets cached by browsers
         # and would outlive the decision.

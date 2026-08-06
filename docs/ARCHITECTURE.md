@@ -2,13 +2,6 @@
 
 ## Overview
 
-> **This section was rewritten.** It previously showed a thin-shell `ImageSL.exe`
-> uploading slides and a license key to a hosted backend, alongside an
-> `ai/claude_client.py` and an `ANTHROPIC_API_KEY`. Neither is the current
-> design: the desktop app bundles the engine and runs offline, and the AI
-> integration is not present in this repository at all (see the note in the
-> README). Sections below this one describe the engine and still apply.
-
 One engine, `server/`, runs in two places:
 
 ```
@@ -48,7 +41,7 @@ The pixel-level work, in order:
 1. **Load** (`load_rgb`) — decodes `.tif/.tiff/.png/.jpg`. For pyramidal or
    multi-page histology TIFFs it uses `tifffile`, picks a pyramid level, and
    downsamples to a bounded long edge (default 2048 px) so multi-gigabyte
-   slides stay within Railway RAM and analyze in well under a second.
+   slides stay within the container's RAM and analyze in well under a second.
 2. **Optical density** (`rgb_to_od`) — Beer–Lambert transform, the physically
    correct space for stain math.
 3. **White point** (`estimate_white_point`, `white_is_glass`) — the brightest
@@ -130,30 +123,29 @@ shipped — currently `{"dab"}`. Disabled entries stay defined and vetted;
 an old or hand-written request for a non-shipped stain degrades instead of
 failing.
 
-### ~~`server/ai/claude_client.py`~~ — not in this repository
-
-An earlier design had a Claude vision + chat layer (`vision_stain_report()`,
-`chat_stream()`, `POST /api/chat`, `ANTHROPIC_API_KEY`). **That module is not
-present in this codebase** and nothing in the current app calls the Anthropic
-API. References to it below and in `DEPLOY.md` / `GETTING_STARTED.md` are stale.
-
 ### `server/app.py` — the API
 
 | Route | Purpose |
 | --- | --- |
-| `GET /` | Premium marketing landing page |
+| `GET /` | Landing page (the analyzer itself when `IMAGESL_DESKTOP=1`) |
 | `GET /app` | In-browser analyzer console |
-| `GET /download/windows` | Serves the built desktop client |
-| `POST /api/analyze` | Upload → full analysis + overlay + AI vision report; returns an `analysis_id` |
-| `POST /api/variant` | Re-render with target/counterstain gain + background color (uses the cached analysis, so slider tweaks are instant) |
-| `POST /api/set-target` | Re-quantify treating the other separated stain as the target |
-| `POST /api/chat` | SSE token stream from the assistant |
-| `GET /api/health` | Status, AI-configured flag, client-available flag |
+| `GET /privacy`, `GET /terms` | Policy pages |
+| `GET /api/downloads` | What installers exist right now, so the landing page can grey out what it cannot offer |
+| `GET,HEAD /download/{platform}` | Sends the installer, or 302s to object storage — see `IMAGESL_DOWNLOAD_*` |
+| `POST /api/analyze` | Upload → full analysis + overlay; returns an `analysis_id` |
+| `POST /api/appearance` | Re-measure at a new sensitivity / region set from the cached maps |
+| `POST /api/rehydrate` | Restore an analysis the cache has dropped |
+| `GET,POST /api/download_tif` | One panel at full analysis resolution |
+| `POST /api/export_csv`, `POST /api/export_zip` | Batch measurements and images |
+| `POST /api/keepalive` | Page heartbeat, so an open batch is not aged out mid-review |
+| `GET /api/stains` | The enabled stain list |
+| `GET /api/health` | Status and version |
 
 An in-process TTL/LRU cache holds each upload's concentration maps keyed by
-`analysis_id`, so the render sliders don't re-upload or recompute deconvolution.
-(Per-instance memory; fine for a single Railway service. Scale-out would move
-this to Redis or object storage.)
+`analysis_id`, so the sliders don't re-upload or recompute deconvolution. It is
+per-instance memory, which is why the Lightsail service must stay at `SCALE=1`:
+with two nodes a slide analysed on one is invisible to the other and every
+second export comes back half empty.
 
 **Access control:** if `IMAGESL_ACCESS_TOKENS` is set, every `/api/*` call must
 carry a matching `X-ImageSL-Key` header. The desktop client passes the user's
@@ -168,13 +160,13 @@ Built to a single `.exe` with `scripts/build_client.ps1`.
 
 ## Data flow for one analysis
 
-1. Client/browser `POST /api/analyze` with the slide.
-2. Backend decodes + downsamples, optionally calls Claude vision on a thumbnail.
+1. Browser `POST /api/analyze` with the slide.
+2. Backend decodes + downsamples to the working resolution.
 3. `engine.analyze()` runs deconvolution + Otsu, caches the maps, returns
-   metrics + overlay + original + vision report + `analysis_id`.
-4. User moves sliders → `POST /api/variant` with the `analysis_id` → instant
-   re-render from cached maps.
-5. User chats → `POST /api/chat` streams the assistant, primed with the metrics.
+   metrics + overlay + original + `analysis_id`.
+4. User moves the sensitivity slider or draws a region → the browser re-measures
+   from the level map immediately, and `POST /api/appearance` recomputes the
+   authoritative numbers behind it from the same cached maps.
 
 ## Scaling notes / future work
 

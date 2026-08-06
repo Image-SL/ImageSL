@@ -1,14 +1,20 @@
 name: Build desktop apps
 
 # Builds the offline ImageSL desktop app for Windows and macOS.
-#   * push a tag like v2.0.1  -> builds, smoke-tests, and publishes a GitHub Release
-#   * manual run (workflow_dispatch) -> builds + smoke-tests, uploads artifacts only
+#   * push a tag like v2.0.1  -> builds, smoke-tests, publishes to S3, and cuts
+#                                a GitHub Release
+#   * manual run (workflow_dispatch) -> builds, smoke-tests, publishes to S3
 #
-# The published asset names must stay exactly in step with server/web/landing.html:
+# The asset names must stay exactly in step with server/app.py's _DOWNLOADS map:
 #   ImageSL-Setup-Windows.exe   (Inno Setup installer)
 #   ImageSL-macOS.dmg           (drag-to-Applications disk image)
-# The landing page links to /releases/latest/download/<name>, which 404s on any
-# mismatch.
+#
+# The site does NOT link to GitHub Releases. This repository is private, so
+# release URLs 404 for every anonymous visitor - and they 404 as an HTML page,
+# which navigates the visitor away instead of downloading. The landing page hits
+# /download/<platform> on the app itself, which redirects to the S3 objects the
+# `publish` job below uploads. The GitHub Release is kept only as an archive for
+# people who can see the repo; nothing user-facing depends on it.
 #
 # Code signing is intentionally NOT wired in yet: it needs real certificates
 # (a Windows Authenticode cert; an Apple Developer ID + notarization). See
@@ -92,16 +98,10 @@ jobs:
         shell: bash
         run: pyinstaller --noconfirm --distpath dist --workpath build desktop/ImageSL.spec
 
-      - name: Smoke-test the frozen app (headless)
+      - name: Smoke-test the frozen app (Windows, headless)
+        if: runner.os == 'Windows'
         shell: bash
-        run: |
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            ./dist/ImageSL/ImageSL.exe --selftest
-          elif [ -x "dist/ImageSL/ImageSL" ]; then
-            ./dist/ImageSL/ImageSL --selftest
-          else
-            ./dist/ImageSL.app/Contents/MacOS/ImageSL --selftest
-          fi
+        run: ./dist/ImageSL/ImageSL.exe --selftest
 
       # ---- package -------------------------------------------------------- #
       - name: Package (Windows -> Inno Setup installer)
@@ -146,16 +146,43 @@ jobs:
           codesign --force --deep --sign - dist/ImageSL.app
           codesign --verify --verbose dist/ImageSL.app
 
+      # Runs AFTER signing and tests the .app, not dist/ImageSL/. Both exist on
+      # macOS - COLLECT writes the plain directory and BUNDLE wraps it - so an
+      # `-x dist/ImageSL/ImageSL` test silently exercises the tree that is NOT
+      # shipped, leaving the bundle in the dmg completely unverified. Testing
+      # something adjacent to what ships is how a crash that killed every real
+      # launch passed every smoke test before; see the note in launcher.py.
+      - name: Smoke-test the signed .app (macOS, headless)
+        if: runner.os == 'macOS'
+        run: ./dist/ImageSL.app/Contents/MacOS/ImageSL --selftest
+
       - name: Package (macOS -> dmg)
         if: runner.os == 'macOS'
         run: |
           test -d "dist/ImageSL.app" || { echo "ImageSL.app was not built"; exit 1; }
           rm -rf dmgroot && mkdir dmgroot
-          cp -R "dist/ImageSL.app" "dmgroot/ImageSL.app"
+          # ditto, not cp -R: it is the tool that reliably preserves the code
+          # signature and extended attributes of a bundle. A copy that quietly
+          # strips them produces a dmg whose app will not launch.
+          ditto "dist/ImageSL.app" "dmgroot/ImageSL.app"
           # The drag-to-install target users expect inside the disk image.
           ln -s /Applications "dmgroot/Applications"
           hdiutil create -volname "ImageSL" -srcfolder dmgroot -ov -format UDZO "${{ matrix.asset }}.dmg"
           ls -lh "${{ matrix.asset }}.dmg"
+
+      # The dmg is the artifact a user actually double-clicks, and nothing so far
+      # has opened it. Mount it and check the bundle survived the round trip.
+      - name: Verify the dmg mounts and carries a valid app
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          MNT=$(mktemp -d)
+          hdiutil attach "${{ matrix.asset }}.dmg" -mountpoint "$MNT" -nobrowse -readonly
+          trap 'hdiutil detach "$MNT" -quiet || true' EXIT
+          test -d "$MNT/ImageSL.app" || { echo "dmg has no ImageSL.app"; exit 1; }
+          test -L "$MNT/Applications" || { echo "dmg has no /Applications drop target"; exit 1; }
+          codesign --verify --verbose "$MNT/ImageSL.app"
+          echo "dmg contents verified."
 
       # ---- SIGNING (disabled until certs exist) --------------------------- #
       # Windows Authenticode — sign dist\ImageSL\ImageSL.exe BEFORE running ISCC,
@@ -172,6 +199,103 @@ jobs:
           name: ${{ matrix.asset }}
           path: ${{ matrix.asset }}.${{ matrix.ext }}
           if-no-files-found: error
+
+  # Puts the installers where the live site can actually reach them. This is the
+  # step that makes the download buttons work; without it the routes exist, the
+  # env vars point nowhere, and every button reads "coming soon".
+  #
+  # A single ubuntu job rather than an upload per matrix leg: one place to hold
+  # AWS credentials, and the two runners cannot race on the same keys.
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write     # OIDC federation into AWS; no stored keys
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Check the bucket is configured
+        id: cfg
+        env:
+          BUCKET: ${{ vars.IMAGESL_DOWNLOAD_BUCKET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${BUCKET:-}" ]; then
+            echo "::warning::Repository variable IMAGESL_DOWNLOAD_BUCKET is not set - skipping publish."
+            echo "::warning::The build artifacts are still attached to this run, but the live site will not see them."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure AWS credentials (OIDC)
+        if: steps.cfg.outputs.go == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::581586866061:role/imagesl-github-deploy
+          aws-region: us-east-2
+
+      - name: Upload installers to S3
+        if: steps.cfg.outputs.go == 'true'
+        env:
+          BUCKET: ${{ vars.IMAGESL_DOWNLOAD_BUCKET }}
+        run: |
+          set -euo pipefail
+
+          # Version for the immutable copy. A tag is the only real version; a
+          # manual run archives under the commit so it cannot overwrite a release.
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            VER="${GITHUB_REF_NAME#v}"
+          else
+            VER="dev-${GITHUB_SHA::12}"
+          fi
+          echo "Publishing as $VER"
+
+          upload() {
+            local src="$1" name="$2" ctype="$3"
+            if [ ! -f "$src" ]; then
+              echo "::warning::$name was not built by this run - skipping."
+              return 0
+            fi
+            echo "--- $name ($(stat -c%s "$src") bytes)"
+
+            # Immutable, versioned copy first: if anything below fails, the
+            # provenance copy still exists and nothing user-facing has moved yet.
+            aws s3 cp "$src" "s3://${BUCKET}/v/${VER}/${name}" \
+              --content-type "$ctype" \
+              --content-disposition "attachment; filename=\"${name}\"" \
+              --cache-control "public, max-age=31536000, immutable"
+
+            # Then the stable key the app redirects to. Short max-age on purpose:
+            # this key is overwritten by every release, so a long one would leave
+            # browsers and intermediaries handing out a previous 86MB installer
+            # after a new one shipped. 5 minutes costs nothing and bounds the lie.
+            aws s3 cp "$src" "s3://${BUCKET}/latest/${name}" \
+              --content-type "$ctype" \
+              --content-disposition "attachment; filename=\"${name}\"" \
+              --cache-control "public, max-age=300"
+          }
+
+          # Content-Disposition is set on the OBJECT because /download/<platform>
+          # answers with a 302 - we hand off the response and never get to set a
+          # header on the bytes. Without it a browser may render rather than save.
+          upload "artifacts/ImageSL-Setup-Windows/ImageSL-Setup-Windows.exe" \
+                 "ImageSL-Setup-Windows.exe" "application/octet-stream"
+          upload "artifacts/ImageSL-macOS/ImageSL-macOS.dmg" \
+                 "ImageSL-macOS.dmg" "application/x-apple-diskimage"
+
+      - name: Confirm the live site can see them
+        if: steps.cfg.outputs.go == 'true'
+        run: |
+          set -euo pipefail
+          # The app probes the object before advertising it, so this is the same
+          # question a visitor's browser asks. Reported, not failed on: the site
+          # may legitimately not be redeployed with the URLs set yet.
+          echo "https://imagesl.online/api/downloads says:"
+          curl -fsS https://imagesl.online/api/downloads || echo "(site unreachable)"
 
   # A single release job, rather than each matrix leg publishing, so the two
   # runners cannot race to create the same release.

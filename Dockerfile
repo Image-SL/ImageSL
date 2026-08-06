@@ -1,4 +1,5 @@
-# ImageSL backend — deployed on Railway.
+# ImageSL backend — deployed to an AWS Lightsail container service by
+# .github/workflows/deploy.yml on every push to main.
 # Slim Python base + the few system libs scikit-image / imagecodecs need.
 FROM python:3.12-slim
 
@@ -22,7 +23,7 @@ RUN pip install --upgrade pip && pip install -r requirements.txt
 
 COPY server/ ./
 
-# Railway provides $PORT. Bind to it; default to 8000 for local runs.
+# Bind to $PORT where the platform injects one; default to 8000 otherwise.
 ENV PORT=8000
 EXPOSE 8000
 

@@ -55,8 +55,36 @@ jobs:
           echo "IMAGE_TAG=$TAG" >> "$GITHUB_ENV"
 
       - name: Deploy to Lightsail
+        env:
+          # Where build-desktop.yml publishes the installers. Set as repository
+          # variables (Settings -> Secrets and variables -> Actions -> Variables).
+          # BASE_URL wins if set, so a CDN can be put in front of the bucket
+          # later without touching this file.
+          DL_BUCKET: ${{ vars.IMAGESL_DOWNLOAD_BUCKET }}
+          DL_BASE_URL: ${{ vars.IMAGESL_DOWNLOAD_BASE_URL }}
         run: |
           set -euo pipefail
+
+          # Unset means "no installer hosted yet". The app treats an empty value
+          # as unconfigured and the landing page greys the button out and says
+          # "coming soon" - which is the honest state, and strictly better than
+          # pointing a live button at a URL that 404s.
+          BASE=""
+          if [ -n "${DL_BASE_URL:-}" ]; then
+            BASE="${DL_BASE_URL%/}"
+          elif [ -n "${DL_BUCKET:-}" ]; then
+            BASE="https://${DL_BUCKET}.s3.${AWS_REGION}.amazonaws.com"
+          fi
+          if [ -n "$BASE" ]; then
+            DL_WIN="${BASE}/latest/ImageSL-Setup-Windows.exe"
+            DL_MAC="${BASE}/latest/ImageSL-macOS.dmg"
+            echo "Installer base: $BASE"
+          else
+            DL_WIN=""
+            DL_MAC=""
+            echo "::warning::No IMAGESL_DOWNLOAD_BUCKET / _BASE_URL set - the desktop download buttons will stay greyed out."
+          fi
+
           cat > deploy.json <<EOF
           {
             "serviceName": "${SERVICE}",
@@ -68,7 +96,9 @@ jobs:
                   "IMAGESL_MAX_CONCURRENCY": "2",
                   "IMAGESL_CACHE_MAX": "400",
                   "IMAGESL_CACHE_MB": "6144",
-                  "IMAGESL_CACHE_TTL": "28800"
+                  "IMAGESL_CACHE_TTL": "28800",
+                  "IMAGESL_DOWNLOAD_URL_WINDOWS": "${DL_WIN}",
+                  "IMAGESL_DOWNLOAD_URL_MACOS": "${DL_MAC}"
                 },
                 "ports": { "8000": "HTTP" }
               }

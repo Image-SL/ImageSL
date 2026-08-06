@@ -20,7 +20,10 @@
 #define MyAppName    "ImageSL"
 #define MyAppExeName "ImageSL.exe"
 #define MyAppPublisher "ImageSL"
-#define MyAppURL     "https://github.com/solvergent/ImageSL"
+; The site, NOT the GitHub repository. The repo is private, so a repo URL is a
+; 404 for every user who has this installed - and these three end up in Add or
+; Remove Programs as the publisher, support and updates links.
+#define MyAppURL     "https://imagesl.online"
 
 [Setup]
 ; Stable AppId — never change it, or upgrades install alongside instead of over.
@@ -31,7 +34,7 @@ VersionInfoVersion={#MyAppVersionNum}
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
-AppUpdatesURL={#MyAppURL}/releases
+AppUpdatesURL={#MyAppURL}
 
 ; Paths below are relative to the repo root, not to desktop\.
 SourceDir=..
