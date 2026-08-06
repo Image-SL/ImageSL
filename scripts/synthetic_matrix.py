@@ -75,12 +75,19 @@ def _rgb_from_od(od: np.ndarray) -> np.ndarray:
 # can only ever be evidence about DAB. The default is DAB, so every existing
 # condition builds the identical scene it did before.
 CHROMOGENS: dict[str, list[float]] = {
-    "H-DAB":   [0.270, 0.570, 0.780],   # brown  — the shipped default
-    "H-Red":   [0.210, 0.760, 0.615],   # red chromogen (AEC / Fast Red)
-    "H-AP":    [0.190, 0.760, 0.620],   # alkaline-phosphatase red
-    "H-GREEN": [0.400, 0.610, 0.680],   # green chromogen (Vina Green)
-    "H&E":     [0.070, 0.990, 0.110],   # eosin
+    "H-DAB":   [0.270, 0.570, 0.780],   # brown  — the shipped default   (hue  17°)
+    "H-Red":   [0.210, 0.760, 0.615],   # red chromogen (AEC / Fast Red) (hue 351°)
+    "H-AP":    [0.190, 0.760, 0.620],   # alkaline-phosphatase red       (hue 352°)
+    "H-GREEN": [0.800, 0.327, 0.503],   # green chromogen (Vina Green)   (hue 150°)
+    "H&E":     [0.070, 0.990, 0.110],   # eosin                          (hue 306°)
 }
+# The hue in each comment is the colour the vector actually renders, computed
+# rather than assumed. H-GREEN's used to be engine._REF_BASES' [0.400, 0.610,
+# 0.680], which renders at 11.6° — an orange-brown, inside the DAB band. A grid
+# run against it was therefore measuring a second brown stain and reporting it as
+# evidence about green; it scored close to DAB because it very nearly was DAB.
+# If a vector is added here, check what colour it is before trusting a result
+# taken with it.
 DEFAULT_CHROMOGEN = "H-DAB"
 
 

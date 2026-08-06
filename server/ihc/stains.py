@@ -172,13 +172,24 @@ STAINS: list[dict] = [
 # that is not enabled falls back to auto-detect rather than failing.
 #
 # THE EDIT IS ONE LINE; THE VALIDATION IS NOT. An entry in this registry means
-# "we know this chromogen's OD vector", which is necessary and nowhere near
-# sufficient — `ihc/detect.py` separates stain from debris with tests written in
-# DAB's terms (a brownness axis on which DAB reads +0.51 and a red chromogen
-# +0.03, indistinguishable from neutral debris at 0.00; a debris rule that
-# refuses hues above 30 deg, which is most of a green chromogen). Adding a key
-# here without checking those transfer ships a picker entry that measures
-# confidently and wrongly, which is worse than the honest "not yet" it replaces.
+# "we know this chromogen's OD vector", which is necessary and not sufficient.
+#
+# The good news, measured rather than assumed: this path — an explicit pick —
+# hands the chosen basis straight to the detector, so it does not depend on
+# auto-detect identifying the chromogen. On the synthetic grid a red scene picked
+# as AEC reaches 98.3% recall against DAB's own 98.6%. The engine can measure a
+# red chromogen properly today; only the picker is closed.
+#
+# What still has to be checked per stain, because these are written in DAB's
+# terms and do not all transfer: the brownness axis in detect.py (DAB +0.51, a
+# red chromogen +0.03 — the same place neutral debris sits at 0.00), and the
+# washed-out-and-olive debris rule at DEBRIS_HUE_MIN = 30 deg, which is most of a
+# green chromogen. Those decide false positives, not recall, so a stain can score
+# well on the grid above and still admit debris on a real section.
+#
+# Do NOT assume enabling here also lets auto-detect find it — that needs
+# engine.ENABLED_FAMILIES, which is currently blocked on _detect_family being
+# uncalibrated. See the note there.
 #
 # The evidence to gather first, which stains the grid with that family and scores
 # it against exact ground truth:

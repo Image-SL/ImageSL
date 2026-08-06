@@ -13,6 +13,13 @@ re-render the image.
 > finds the background and the brown chromogen for you, *Select stain* lets you
 > name it — they just resolve to DAB. Further stains are added by enabling them
 > in two lists; see [Adding a stain](#adding-a-stain).
+>
+> **A slide carrying a different chromogen does not read as empty.** Handed a red
+> section, this build still finds the structures and reports an ordinary-looking
+> percentage — measured, 0.407% where the same scene in DAB reads 0.420%. The
+> number is a real measurement of *something*, but it is not a DAB result, and
+> the result notes say so on any slide whose absorbing material lacks DAB's
+> signature. Read that note before quoting the figure.
 
 It runs two ways from the same engine and the same code:
 
@@ -266,35 +273,47 @@ deleted. To bring one online:
 2. if auto-detect should also be able to find it unaided, add its family to
    `ENABLED_FAMILIES` in `server/ihc/engine.py`.
 
-Nothing else needs to change *mechanically*. A request naming a stain that is not
-enabled falls back to auto-detect rather than failing.
+A request naming a stain that is not enabled falls back to auto-detect rather
+than failing.
 
-**But the switch is not the work.** Flipping either list is one line; earning the
-right to flip it is not, because the detector's discrimination gates are written
-in DAB's terms and do not transfer to another colour by themselves:
+**The two steps are not equally ready, and they are not the same mechanism.**
 
-- the background field and the excess are projected onto `DAB_OD`
-  (`detect.py`, `_background_field`);
-- the test that rescues the densest staining reads *brownness*, `(od_B − od_R)`,
-  where DAB sits at **+0.51** and haematoxylin at **−0.36** — but a red chromogen
-  sits at **+0.03**, which is where neutral debris (0.00) sits too, so on a red
-  stain that test vouches for nothing;
-- the intraluminal-debris rule refuses material that is washed-out **and** olive,
-  `DEBRIS_HUE_MIN = 30°`, drawn around DAB's measured 15.7-28.9°. A green
-  chromogen at ~140° is olive by that definition.
+**Step 1 — the picker — works.** Choosing a stain explicitly hands its basis
+straight to the detector, so it never depends on the engine guessing the
+chromogen. Measured on the synthetic grid, a red-chromogen scene analysed as AEC
+reaches **98.3%** recall against DAB's own **98.6%** on DAB. The engine can
+already measure a red chromogen at parity; only the list is closed.
 
-So the honest order is: run the grid for the candidate family, read what it
-actually scores, and only then decide whether the work is a switch or an engine
-change:
+**Step 2 — auto-detect — does not.** `_detect_family()` is uncalibrated: it reads
+the hue of *blended* pixels (chromogen over counterstain) and lands tens of
+degrees off the stain actually present.
+
+| Scene | Pure chromogen | What the engine measures | Lands in |
+| --- | --- | --- | --- |
+| DAB | 16.7° | 356.7° | H-Red's band |
+| Red chromogen | 350.7° | 326.1° | H&E's band |
+| Green chromogen | 150.0° | 187.1° | no band → falls back to DAB |
+
+None of that is reachable today, because with `H-DAB` the only enabled family
+every branch falls back to it — **the fallback is load-bearing, and adding a
+second family removes it.** With `H-Red` enabled, a DAB slide would classify as
+red. Calibrating this needs real sections (`scripts/backtest.py`); the blend that
+skews the reading depends on counterstain density, which a synthetic scene fixes
+by construction, so tuning the bands against the numbers above would just be
+fitting the generator.
+
+Either way, measure the family first:
 
 ```bash
 python scripts/synthetic_matrix.py --chromogen H-Red
 ```
 
 The suite stains its scenes with the family you name and scores recall and
-precision against exact ground truth, the same way it does for DAB. A family that
-cannot pass it is not ready to be offered in the picker, however complete its
-entry in the registry looks.
+precision against exact ground truth, the same way it does for DAB. Note what it
+does **not** cover: recall is only half the question, and the gates that reject
+debris — the brownness axis (DAB +0.51, a red chromogen +0.03, neutral debris
+0.00) and the washed-out-and-olive rule at 30° — are still written in DAB's
+terms. A stain can score well above and still admit debris on a real section.
 
 ## Run it — see GETTING_STARTED
 

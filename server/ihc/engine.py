@@ -138,8 +138,19 @@ _REF_BASES = {
                "od": [[0.650, 0.700, 0.290], [0.210, 0.760, 0.615]]},
     "H-AP":   {"label": "Alk-phos (red)", "hue": 350.0, "band": (325.0, 12.0),
                "od": [[0.650, 0.700, 0.290], [0.190, 0.760, 0.620]]},
+    # The target vector here was [0.400, 0.610, 0.680], which is not a green
+    # stain: rendered, it is an orange-brown at 11.6 deg, inside H-DAB's own
+    # (10, 78) band and 128 deg from the 140 this entry declares. A green
+    # chromogen absorbs LEAST in green, so its OD must be high in R and B and low
+    # in G -- the opposite arrangement. Taken from the registry's own Vina Green
+    # entry (stains.py, _od((40, 120, 80))), it renders at 150 deg, inside the
+    # (95, 180) band this entry always claimed.
+    #
+    # Nothing shipped read this: H-GREEN is not in ENABLED_FAMILIES. It was a
+    # trap for whoever enabled it first, who would have found auto-detect routing
+    # green slides to a brown basis and never understood why.
     "H-GREEN":{"label": "Green chromogen","hue": 140.0, "band": (95.0, 180.0),
-               "od": [[0.650, 0.700, 0.290], [0.400, 0.610, 0.680]]},
+               "od": [[0.650, 0.700, 0.290], [0.800, 0.327, 0.503]]},
     "H&E":    {"label": "H&E (eosin)",    "hue": 330.0, "band": (300.0, 355.0),
                "od": [[0.650, 0.700, 0.290], [0.070, 0.990, 0.110]]},
 }
@@ -157,10 +168,21 @@ _REF_BASES = {
 #
 # Nothing else in the engine or the UI needs to change — but "signed off" is
 # doing the load-bearing work in that sentence, and it is not a formality.
-# `detect.py` projects the background field and the excess onto DAB_OD, and its
-# two discriminators (the brownness axis, the washed-out-and-olive debris rule)
-# are drawn around DAB's measured colour. Neither transfers to a red or green
-# chromogen by being listed here. Measure first:
+#
+# STEP 1 DOES NOT CURRENTLY WORK, and adding a key here is not safe until it
+# does. `_detect_family` is uncalibrated (see the long note on it): it misreads
+# the chromogen hue by tens of degrees, and with H-Red enabled a *DAB* slide
+# classifies as red. Today every branch falls back to H-DAB because H-DAB is the
+# only entry in this tuple, which is the only reason none of it is reachable.
+#
+# Step 2 (stains.ENABLED_KEYS, the "Select stain" picker) is a different path and
+# does work: it passes the chosen basis to the detector explicitly, bypassing
+# detection of the family entirely. Measured on the synthetic grid, a red scene
+# analysed with an explicit AEC choice reaches 98.3% recall against 98.6% for DAB
+# on DAB — parity — while the same scene on auto-detect gets 88.7%.
+#
+# So the picker can be opened for a chromogen before auto-detect can find it.
+# Measure the family first either way:
 #
 #   python scripts/synthetic_matrix.py --chromogen H-Red
 ENABLED_FAMILIES: tuple[str, ...] = ("H-DAB",)
@@ -851,6 +873,35 @@ def _detect_family(total_od, sat, hue, tissue):
     found here" rather than quietly measuring a colour we don't ship yet.
 
     Returns (family_key, chromogen_hue, has_counterstain, in_band).
+
+    ---------------------------------------------------------------------------
+    THIS FUNCTION IS NOT CALIBRATED, AND IT IS THE BLOCKER ON ENABLING A SECOND
+    FAMILY. Read this before adding anything to ENABLED_FAMILIES.
+
+    The hue it measures is tens of degrees away from the chromogen actually on
+    the slide, because it reads *blended* pixels — chromogen over haematoxylin —
+    and excludes only a fixed 200-300 deg counterstain band, which does not
+    remove haematoxylin's pull on everything else. Measured on the synthetic
+    grid (scripts/synthetic_matrix.py, one chromogen per scene, hue of the pure
+    vector against what arrives here):
+
+        scene      pure chromogen      measured      lands in
+        H-DAB          16.7 deg        356.7 deg     H-Red's band
+        H-Red         350.7 deg        326.1 deg     H&E's band
+        H-GREEN       150.0 deg        187.1 deg     no band -> else: H-DAB
+
+    Every one of those is wrong, and the first is the dangerous one: with H-Red
+    enabled, a *DAB* slide classifies as H-Red and would be measured on a red
+    basis. None of it is reachable today only because H-DAB is the sole enabled
+    family, so every branch falls back to it — the fallback is load-bearing, and
+    adding a second family removes it.
+
+    Fixing this needs real sections, not these scenes. The blend that skews the
+    reading depends on how heavily a section is counterstained, which is exactly
+    what a synthetic scene fixes by construction; tuning the bands against these
+    numbers would be fitting the generator. scripts/backtest.py and its slide
+    corpus are the right instrument.
+    ---------------------------------------------------------------------------
     """
     default = ENABLED_FAMILIES[0]
     if not tissue.any():
@@ -1042,6 +1093,16 @@ def analyze(
     # here for the numbers — and the two can never disagree.
     # ------------------------------------------------------------------ #
     min_px = int(stain_choice.get("min_px", 0)) if stain_choice else 0
+
+    # Does the detector need to be told which chromogen to ask about?
+    #
+    # Only when it is not the one it already assumes. `method` carries the family
+    # key chosen above ("H-DAB", "H-Red", ...) or "hdab-reference" on the forced
+    # path; both of those mean the detector's own DAB_OD / HEMA_OD defaults are
+    # already the right vectors, and its DAB-specific code paths are the ones
+    # validated on real sections. See the note on target_od below.
+    _basis_override = bool(stain_choice or stain_override_od) or \
+        method not in ("H-DAB", "hdab-reference")
     # No HSV hue window is applied to pixels. Hue is unusable on dense chromogen
     # — it shifts red as a pixel darkens, so real DAB lands just outside a window
     # drawn around DAB — and the detector answers "is this that chromogen?" by
@@ -1054,11 +1115,35 @@ def analyze(
         level=level,
         min_area_px=(min_px or None),
         hue_band_mask=band_mask,
-        target_od=(stain_matrix[tgt_idx] if (stain_choice or stain_override_od) else None),
+        # The basis this slide is being measured on — on auto-detect too, unless
+        # that basis IS the DAB reference.
+        #
+        # These used to be passed only when the user had named a stain, so an
+        # auto-detected slide fell back to detect.DAB_OD no matter which family
+        # _estimate_basis had just chosen. That made ENABLED_FAMILIES a label:
+        # auto-detect could *select* a family and then measure it with DAB's
+        # colour question anyway. Measured on the synthetic grid, adding H-Red to
+        # ENABLED_FAMILIES changed not one condition — every recall and every
+        # area identical to leaving it out — while the same red scene analysed
+        # with an explicit AEC choice went from 88.7% recall to 98.3%, level with
+        # DAB on DAB. The whole gap was this argument.
+        #
+        # Why the DAB reference is still passed as None rather than as its own
+        # vectors, which are numerically the same ones: `target_od is not None`
+        # is not only a value, it selects a code path. detect.excess_colour reads
+        # brownness as the exact (B − R) split when it is None and as a generic
+        # projection off the neutral axis when it is not, and BLUE_OVER_GREEN_MIN
+        # switches from a measured constant to one derived from the vector. Both
+        # are deliberately close for DAB and neither is identical: routing DAB
+        # through the generic path moved the tonal-gradient case from 1.076% to
+        # 1.026%. Small, and comfortably inside its bound — but it is a change to
+        # the one configuration that ships, bought for a family that does not,
+        # and the DAB path is the one with 46 real sections behind it.
+        target_od=(stain_matrix[tgt_idx] if _basis_override else None),
         # The counterstain's own absorbance direction, so the object colour test
         # can factor it out rather than being dragged toward it on a heavily
         # counterstained section — see detect.CHROMO_FRAC_MIN.
-        counter_od=(stain_matrix[counter_idx] if (stain_choice or stain_override_od) else None),
+        counter_od=(stain_matrix[counter_idx] if _basis_override else None),
         # Raw saturation: whether the material carries any colour AT ALL. An
         # absolute property, deliberately — relative to a blue counterstain a
         # grey blob looks warm. (The colour readings that decide what the
@@ -1074,11 +1159,30 @@ def analyze(
     # direction of its absorbance, which is readable at any density.
     if det.chromogen_share < detect.CHROMOGEN_SHARE_MIN and not stain_choice:
         chromogen_in_band = False
+        # Say what the figure IS, not what it was assumed to be.
+        #
+        # This note used to end "so the positive area reads at or near zero",
+        # which is only true when the absorbing material is neutral — ink, dust,
+        # a fold — and the colour tests refuse all of it. It is not true of a
+        # slide carrying a *different chromogen*, which is the case the rest of
+        # the sentence is about: measured on the synthetic grid, a red-chromogen
+        # section reads 0.407% and a green one 0.416% against the same scene in
+        # DAB at 0.420%. The structures are found, and the number that comes back
+        # looks entirely ordinary.
+        #
+        # So the reading a pathologist needs is not "this came back empty" but
+        # "this number is not a DAB measurement" — a plausible figure carrying a
+        # note that says it read as zero is worse than no note at all, because
+        # the contradiction invites the reader to discount the warning rather
+        # than the number.
         notes.append(
             "No brown (DAB) chromogen found — the strongly absorbing material on "
-            "this slide does not have DAB's absorbance signature, so the positive "
-            "area reads at or near zero. If this slide carries a different "
-            "chromogen, this build measures DAB only.")
+            "this slide does not have DAB's absorbance signature. Any positive "
+            "area reported here is therefore NOT a DAB measurement: if the slide "
+            "is neutral material (ink, dust, a fold) it will read at or near "
+            "zero, but if it carries a different chromogen the structures are "
+            "still measured and the percentage will look ordinary. This build "
+            "measures DAB only — do not read this figure as a DAB result.")
 
     built = regions_mod.build(regions, h, w, detect.N_LEVELS)
     # The tissue mask segmentation found is the denominator, always — manual
