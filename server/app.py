@@ -28,8 +28,9 @@ import zipfile
 import re
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi import Response
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
-                               RedirectResponse, StreamingResponse)
+                               StreamingResponse)
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 import io
@@ -775,14 +776,61 @@ async def api_downloads() -> JSONResponse:
                         headers={"Cache-Control": "no-store"})
 
 
+def _open_external(url: str):
+    """Open the hosted installer for reading. Returns (response, bytes) or None.
+
+    Blocking on purpose: `download` below is a sync endpoint, so FastAPI already
+    runs it in a threadpool and the event loop is never held.
+    """
+    import urllib.request
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "ImageSL"})
+        r = urllib.request.urlopen(req, timeout=20)
+    except Exception:
+        return None
+    if not (200 <= getattr(r, "status", 200) < 300):
+        try:
+            r.close()
+        except Exception:
+            pass
+        return None
+    try:
+        size = int(r.headers.get("Content-Length") or 0)
+    except (TypeError, ValueError):
+        size = 0
+    return r, size
+
+
+def _iter_external(remote, chunk: int = 256 * 1024):
+    """Hand the installer over in chunks.
+
+    Never read whole: this is an ~86 MB file and buffering it would put all of
+    it in the container's memory per concurrent download, on a box sized for
+    analysing slides. Starlette iterates a sync generator in a threadpool, so
+    the blocking reads here do not stall other requests.
+    """
+    try:
+        while True:
+            block = remote.read(chunk)
+            if not block:
+                break
+            yield block
+    finally:
+        try:
+            remote.close()
+        except Exception:
+            pass
+
+
 @app.api_route("/download/{platform}", methods=["GET", "HEAD"])
-def download(platform: str):
+def download(platform: str, request: Request):
     # HEAD is registered alongside GET: proxies, download managers and link
     # checkers probe a download URL that way, and a bare @app.get answers 405.
     entry = _DOWNLOADS.get(platform.lower())
     if entry is None:
         raise HTTPException(status_code=404, detail="Unknown platform.")
     name, content_type, env_key = entry
+    request_is_head = request.method == "HEAD"
 
     external = _external_url(env_key)
     if external:
@@ -792,10 +840,29 @@ def download(platform: str):
         # network-blipped negative must never be able to block a link that
         # actually works - including one someone bookmarked or scripted.
         #
-        # 302, not 301: where the file is hosted is an operational detail and
-        # must stay changeable. A permanent redirect gets cached by browsers
-        # and would outlive the decision.
-        return RedirectResponse(external, status_code=302)
+        # The bytes are streamed THROUGH this app rather than handed over as a
+        # redirect. A 302 does download correctly, but it makes the download the
+        # visitor's browser's problem the moment it leaves us: the URL it lands
+        # on is an implementation detail we then cannot control, an intermediary
+        # or extension that blocks cross-origin navigation silently drops it, and
+        # what the visitor sees on failure is object storage's XML rather than
+        # anything of ours. Proxying keeps the whole transfer on one origin,
+        # under this app's own Content-Disposition, and costs only bandwidth.
+        upstream = _open_external(external)
+        if upstream is None:
+            raise HTTPException(status_code=502,
+                                detail="The installer host did not answer. Try again shortly.")
+        remote, size = upstream
+        headers = {"Content-Disposition": f'attachment; filename="{name}"'}
+        if size:
+            # Give the browser a real progress bar rather than a spinner that
+            # never resolves on an 86 MB file.
+            headers["Content-Length"] = str(size)
+        if request_is_head:
+            remote.close()
+            return Response(status_code=200, media_type=content_type, headers=headers)
+        return StreamingResponse(_iter_external(remote), media_type=content_type,
+                                 headers=headers)
 
     path = DOWNLOAD_DIR / name
     if not path.is_file():
