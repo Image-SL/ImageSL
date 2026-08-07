@@ -242,6 +242,23 @@ def main() -> int:
     if "--selftest" in sys.argv:
         return _selftest()
 
+    if "--check-update" in sys.argv:
+        # Ask once, on demand, and say what came back — including "offline",
+        # which the launch-time check deliberately keeps silent about. An
+        # offline install otherwise has no way to distinguish "up to date" from
+        # "has not been able to ask since it was installed".
+        try:
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from updater import check_for_update, describe
+        except Exception as exc:
+            _emit(f"Update check unavailable: {exc}\n", err=True)
+            return 20
+        info = check_for_update(_read_version(), SITE)
+        _emit(f"ImageSL {_read_version()}\n{describe(info)}\n")
+        return (10 if info.get("available")
+                else 20 if info.get("status") in ("offline", "unreadable")
+                else 0)
+
     port = _free_port()
     _configure_env(port)
     _start_server(port)
