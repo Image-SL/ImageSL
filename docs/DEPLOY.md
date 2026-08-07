@@ -68,6 +68,37 @@ job, and the one-time bootstrap of an already-built installer — is in
 **[../desktop/BUILD.md](../desktop/BUILD.md)**, which owns the whole build and
 publish path.
 
+### The bucket
+
+`imagesl-downloads-581586866061`, in `us-east-2`. Deliberately **not** the
+existing `imagesl-build-581586866061`, which holds `imagesl-source.zip`: a bucket
+that serves anonymous downloads should not also hold the source, and one
+mis-scoped policy would be the whole difference.
+
+Public read is granted by bucket policy to `latest/*` and `v/*` only — not to the
+bucket. ACL-based public access stays blocked (`BlockPublicAcls`,
+`IgnorePublicAcls`); only `BlockPublicPolicy` / `RestrictPublicBuckets` are off,
+which is the minimum that lets that policy apply.
+
+```
+latest/ImageSL-Setup-Windows.exe   overwritten every release, max-age=300
+latest/VERSION                     the version those bytes are, max-age=60
+v/<version>/...                    immutable archive copy, max-age=31536000
+```
+
+> **`IMAGESL_DOWNLOAD_BUCKET` must be set as a repository variable**
+> (Settings → Secrets and variables → Actions → Variables) to
+> `imagesl-downloads-581586866061`. Until it is, `deploy.yml` resolves no
+> installer URLs, omits them from the deployment, and the download buttons go
+> back to "coming soon" on the next successful deploy — silently, because that is
+> the honest state as far as the app can tell. The workflow prints a warning when
+> the variable is missing; it is not an error, so it does not fail the run.
+
+The Windows installer was uploaded by hand on 2026-08-07 to get the button
+working while the CI pipeline was broken, so the objects above exist but nothing
+in CI has ever written them. The first tagged release will overwrite `latest/`
+normally.
+
 ## Verify a deploy
 
 ```bash
