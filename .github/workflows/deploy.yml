@@ -78,15 +78,32 @@ jobs:
           fi
           echo "Deploying version $VERSION"
 
-          # Unset means "no installer hosted yet". The app treats an empty value
-          # as unconfigured and the landing page greys the button out and says
-          # "coming soon" - which is the honest state, and strictly better than
-          # pointing a live button at a URL that 404s.
+          # The bucket the installers actually live in, as a default.
+          #
+          # This used to be repository-variable-only, and unset meant "no
+          # installer hosted yet" -> buttons greyed, "coming soon". That was
+          # right when nothing was hosted. It is wrong now that something is:
+          # the bucket below exists and holds the Windows installer, so an unset
+          # variable stopped meaning "nothing to offer" and started meaning
+          # "forgot to tell the workflow where it is" - and the failure looked
+          # identical, a greyed button reading "coming soon" on a release that
+          # had shipped. It cost a working download twice.
+          #
+          # The repository variables still win, so a CDN or a moved bucket needs
+          # no change here. Hardcoding the fallback is consistent with this file
+          # already hardcoding the account's ECR registry and role ARN: the
+          # deployment target is not a secret and not a per-environment knob.
+          DL_BUCKET_DEFAULT="imagesl-downloads-581586866061"
+
           BASE=""
           if [ -n "${DL_BASE_URL:-}" ]; then
             BASE="${DL_BASE_URL%/}"
-          elif [ -n "${DL_BUCKET:-}" ]; then
-            BASE="https://${DL_BUCKET}.s3.${AWS_REGION}.amazonaws.com"
+          else
+            BUCKET="${DL_BUCKET:-$DL_BUCKET_DEFAULT}"
+            BASE="https://${BUCKET}.s3.${AWS_REGION}.amazonaws.com"
+            if [ -z "${DL_BUCKET:-}" ]; then
+              echo "IMAGESL_DOWNLOAD_BUCKET is not set; using the default bucket ${BUCKET}."
+            fi
           fi
           if [ -n "$BASE" ]; then
             DL_WIN="${BASE}/latest/ImageSL-Setup-Windows.exe"
