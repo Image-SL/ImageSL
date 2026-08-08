@@ -6,7 +6,7 @@
 <title>ImageSL — a tool for staining quantification</title>
 <meta name="description" content="ImageSL is a tool for staining quantification. Automatic background removal, colour deconvolution and positive-area measurement. Free desktop app for Windows and macOS; runs offline.">
 <meta name="theme-color" content="#ffffff">
-
+
 <link rel="icon" type="image/png" sizes="32x32" href="/assets/favicon-32.png">
 <link rel="apple-touch-icon" href="/assets/logo-192.png">
 <link rel="canonical" href="https://imagesl.online/">
@@ -24,23 +24,28 @@
 <style>
   /* Page-specific only. Header, footer, buttons and prose live in site.css. */
 
-  /* -- hero -------------------------------------------------------------- */
-  .hero{text-align:center;padding:104px 0 88px}
-  h1{margin:0;font-size:clamp(30px,5vw,48px);font-weight:var(--w-thin);
-     letter-spacing:-.022em;line-height:1.16;max-width:15ch;margin-inline:auto}
-  .sub{margin:20px auto 0;max-width:44ch;font-size:16px;color:var(--ink-2);line-height:1.6}
+  /* -- hero --------------------------------------------------------------
+     One statement, one action. The page is mostly space on purpose: the mark
+     above the headline gives the column an axis, and nothing competes with the
+     two buttons. */
+  .hero{text-align:center;padding:var(--s16) 0 var(--s12)}
+  .hero-mark{width:56px;height:56px;display:block;margin:0 auto var(--s8)}
+  h1{margin:0;font-size:clamp(32px,5vw,52px);font-weight:var(--w-thin);
+     letter-spacing:-.03em;line-height:1.14;max-width:15ch;margin-inline:auto}
+  .sub{margin:var(--s5) auto 0;max-width:40ch;font-size:var(--t-lead);
+       color:var(--ink-3);line-height:1.55;font-weight:var(--w-light)}
 
-  .dl{display:flex;gap:12px;margin-top:38px;flex-wrap:wrap;justify-content:center}
+  .dl{display:flex;gap:var(--s3);margin-top:var(--s10);flex-wrap:wrap;justify-content:center}
 
-  .hint{margin:16px 0 0;font-size:13px;color:var(--ink-3);min-height:1.2em}
-  .meta{margin:8px 0 0;font-size:13px;color:var(--ink-3)}
-  .meta a{color:var(--ink-2);text-decoration:none;border-bottom:1px solid var(--line-2)}
+  .hint{margin:var(--s4) 0 0;font-size:var(--t-body);color:var(--ink-3);min-height:1.2em}
+  .meta{margin:var(--s2) 0 0;font-size:var(--t-small);color:var(--ink-3)}
+  .meta a{color:var(--ink-3);text-decoration:none;border-bottom:1px solid var(--line)}
   .meta a:hover{color:var(--ink)}
 
   /* -- spec line --------------------------------------------------------- */
   .spec{border-top:1px solid var(--line);background:var(--bg)}
-  .spec .wrap{display:flex;flex-wrap:wrap;gap:10px 30px;padding-block:26px;
-              font-size:13px;color:var(--ink-3);justify-content:center;text-align:center}
+  .spec .wrap{display:flex;flex-wrap:wrap;gap:var(--s2) var(--s8);padding-block:var(--s6);
+              font-size:var(--t-small);color:var(--ink-3);justify-content:center;text-align:center}
   .spec b{font-weight:var(--w-normal);color:var(--ink-2)}
 
 </style>
@@ -63,6 +68,7 @@
 <main>
   <section class="hero">
     <div class="wrap">
+      <img class="hero-mark" src="/assets/logo-192.png" alt="" width="56" height="56">
       <h1>A tool for staining quantification</h1>
       <p class="sub">Measures stained area. Runs on your computer, offline.</p>
 

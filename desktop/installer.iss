@@ -52,6 +52,15 @@ AllowNoIcons=yes
 
 SetupIconFile=client\ImageSL.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
+
+; Setup's own artwork. Without these Inno shows its stock graphics, so the
+; installer - the first thing anyone sees of the product - looked like a generic
+; setup wizard rather than like ImageSL. The extra files are the higher-DPI
+; variants Inno picks on a scaled display; supplying only the 1x makes Setup
+; upscale it and look soft.
+WizardImageFile=desktop\wizard-large.bmp,desktop\wizard-large@2x.bmp,desktop\wizard-large@4x.bmp
+WizardSmallImageFile=desktop\wizard-small.bmp,desktop\wizard-small@2x.bmp,desktop\wizard-small@3x.bmp
+WizardImageStretch=no
 UninstallDisplayName={#MyAppName}
 WizardStyle=modern
 Compression=lzma2/max
