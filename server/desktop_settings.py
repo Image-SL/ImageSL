@@ -41,8 +41,13 @@ TIMEOUT = 5.0
 DEFAULTS: Dict[str, Any] = {
     "check_updates_on_launch": True,
     "auto_download_updates": False,
-    "prefer_online_engine": True,
 }
+
+# Deliberately absent: any option to "use the online engine when online".
+# Analysis always runs locally. Routing slides to a server when a connection
+# happens to exist would silently break the one guarantee this app makes - that
+# a slide never leaves the machine - and it would do so invisibly, varying with
+# the network. Online/offline affects updates and nothing else.
 
 
 # --------------------------------------------------------------------------- #
@@ -225,7 +230,6 @@ def start_download(version: str) -> Dict[str, Any]:
 class SettingsBody(BaseModel):
     check_updates_on_launch: bool | None = None
     auto_download_updates: bool | None = None
-    prefer_online_engine: bool | None = None
 
 
 def register(app, app_version: str, cache_dir: Path | None) -> None:
