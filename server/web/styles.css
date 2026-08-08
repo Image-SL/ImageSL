@@ -105,12 +105,21 @@ main{ max-width:1120px; margin:0 auto; padding:44px 22px 90px; }
    decision followed by a single action, so it is composed as one centred
    column rather than a grid of panels - which is what made it read as crowded
    and lopsided. Nothing here has a border except the drop target itself. */
-#uploadView{ max-width:560px; margin:0 auto; padding-top:var(--s16); }
+/* Centred in the viewport, not stacked at the top. The pre-analysis screen is
+   short, so anchoring it to the top left the lower 40% of the window empty and
+   the whole thing looking top-heavy and unfinished. */
+#uploadView{
+  max-width:520px; margin:0 auto; padding-top:0;
+  min-height:calc(100vh - 52px - 134px);   /* viewport - topbar - main padding */
+  display:flex; flex-direction:column; justify-content:center;
+}
 
-.hero{ text-align:center; margin:0 0 var(--s10); padding:0; border:0; }
+.hero{ text-align:center; margin:0 0 var(--s8); padding:0; border:0; }
 .hero h1{
-  font-size:var(--t-hero); line-height:1.2; letter-spacing:-.025em;
-  margin:0; font-weight:var(--w-thin); color:var(--ink);
+  /* Weight 200 at this size reads as wispy, not refined - the thin end of a
+     system face has no authority in a heading. Medium, tighter, smaller. */
+  font-size:var(--t-display); line-height:1.2; letter-spacing:-.025em;
+  margin:0; font-weight:var(--w-med); color:var(--ink);
 }
 .lede{ color:var(--ink-3); max-width:44ch; margin:var(--s3) auto 0; font-size:var(--t-base); line-height:1.6; }
 
@@ -120,13 +129,14 @@ main{ max-width:1120px; margin:0 auto; padding:44px 22px 90px; }
 /* -------- mode: a segmented control --------
    Two mutually exclusive options belong in one control, not two cards competing
    for weight. A segment is smaller, symmetrical, and says "pick one" by shape. */
+/* One pill, no internal divider, the selected segment lifted on white. Equal
+   columns and a fully rounded track are what stop this reading as a two-cell
+   table, which is exactly what it looked like before. */
 .mode-select{
   display:grid; grid-template-columns:1fr 1fr; gap:0;
-  /* Same space below as above (see .hero margin) so the control sits evenly
-     between the heading and the drop target instead of hugging one of them. */
-  margin:0 auto var(--s10); padding:2px;
+  margin:0 auto var(--s8); padding:3px;
   background:var(--surface); border:1px solid var(--line);
-  border-radius:var(--radius-lg); max-width:360px;
+  border-radius:999px; max-width:300px;
 }
 /* The stain picker sits between the control and the drop target in Select mode.
    Defined once, here, including its box - see the note further down about why
@@ -137,14 +147,17 @@ main{ max-width:1120px; margin:0 auto; padding:44px 22px 90px; }
   border-radius:var(--radius); padding:var(--s3);
 }
 .mode-card{
-  display:flex; align-items:center; justify-content:center; gap:var(--s2);
+  display:flex; align-items:center; justify-content:center;
   text-align:center; cursor:pointer; font:inherit;
-  background:transparent; border:0; border-radius:var(--radius);
-  padding:var(--s2) var(--s3); color:var(--ink-2);
+  background:transparent; border:0; border-radius:999px;
+  padding:var(--s2) var(--s4); color:var(--ink-3);
   transition:background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
-.mode-card:hover{ color:var(--ink); }
-.mode-card.active{ background:var(--card); color:var(--ink); box-shadow:var(--shadow-sm); }
+.mode-card:hover{ color:var(--ink-2); }
+.mode-card.active{
+  background:var(--card); color:var(--ink);
+  box-shadow:0 1px 2px rgba(13,15,18,.07), 0 0 0 .5px rgba(13,15,18,.05);
+}
 .mode-ic{ display:none; }                 /* an icon per segment is noise at this size */
 .mode-txt b{ display:block; font-size:var(--t-body); font-weight:var(--w-normal); letter-spacing:-.005em; }
 .mode-txt small{ display:none; }          /* the label alone is unambiguous */
@@ -154,9 +167,11 @@ main{ max-width:1120px; margin:0 auto; padding:44px 22px 90px; }
    without shouting; the filled icon tile it used to have was the loudest thing
    on a screen whose job is to be calm. */
 .dropzone{
-  border:1px dashed var(--line-2); border-radius:var(--radius-lg);
+  border:1px dashed var(--line-2); border-radius:10px;
   background:transparent;
-  padding:var(--s16) var(--s6); text-align:center; cursor:pointer;
+  /* Was 64px top and bottom, which left a large hollow box around a little
+     text. Proportion matters more than sheer size for a target this obvious. */
+  padding:var(--s10) var(--s6); text-align:center; cursor:pointer;
   transition:border-color var(--dur) var(--ease), background var(--dur) var(--ease);
 }
 .dropzone:hover{ border-color:var(--ink-3); background:var(--surface); }
