@@ -30,7 +30,7 @@ import re
 from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi import Response
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
-                               StreamingResponse)
+                               RedirectResponse, StreamingResponse)
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 import io
@@ -80,6 +80,21 @@ APP_VERSION = os.environ.get("IMAGESL_VERSION") or _repo_version()
 # analyzer instead of the public landing page — the download button only makes
 # sense on the web site, not inside an app the user has already installed.
 IMAGESL_DESKTOP = os.environ.get("IMAGESL_DESKTOP") == "1"
+
+# ImageSL is distributed as an application, not as a hosted service. The public
+# site is a download page and nothing else.
+#
+# This is enforced, not merely unlinked. The privacy policy now states that
+# slides are never uploaded; leaving /api/analyze reachable would make that
+# false the moment anyone posted to it directly, and an unadvertised upload
+# endpoint on a medical-imaging site is exactly the kind of thing that is found
+# later by someone who is not friendly. Set IMAGESL_WEB_ANALYZER=1 to run a
+# hosted analyzer deliberately - and change the privacy policy if you do.
+WEB_ANALYZER = os.environ.get("IMAGESL_WEB_ANALYZER") == "1"
+ANALYZER_ENABLED = IMAGESL_DESKTOP or WEB_ANALYZER
+
+# The only API a download page needs.
+_PUBLIC_API = {"/api/health", "/api/downloads"}
 
 # Optional access control. If IMAGESL_ACCESS_TOKENS is set (comma-separated),
 # every /api/* call must carry a matching X-ImageSL-Key header. Unset => open.
@@ -131,6 +146,23 @@ _SECURITY_HEADERS = {
                            "gyroscope=(), magnetometer=(), microphone=(), "
                            "payment=(), usb=()"),
 }
+
+
+@app.middleware("http")
+async def _analyzer_gate(request: Request, call_next):
+    """Refuse analysis traffic on a deployment that does not offer an analyzer.
+
+    Checked here rather than route by route so a new endpoint added later is
+    covered by default instead of being exposed until somebody remembers.
+    """
+    if not ANALYZER_ENABLED:
+        path = request.url.path
+        if path.startswith("/api/") and path not in _PUBLIC_API:
+            return JSONResponse(
+                {"detail": "ImageSL runs as a downloadable application. "
+                           "This site does not analyse slides."},
+                status_code=404)
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -646,10 +678,18 @@ def home() -> HTMLResponse:
     return _serve_html("index.html")
 
 
-@app.get("/app", response_class=HTMLResponse)
-def analyzer() -> HTMLResponse:
-    """The analyzer itself. On the public site it lives under /app so the landing
-    page can own the root; the desktop launcher opens this directly."""
+@app.get("/app")
+def analyzer():
+    """The analyzer.
+
+    Present in the desktop build, where the launcher opens it. On the public
+    site it is gone: ImageSL is distributed as an application, so a hosted copy
+    of the analyzer would be a second, slower product with different privacy
+    consequences. Anyone arriving on an old /app link is sent to the download
+    page rather than shown a dead end.
+    """
+    if not ANALYZER_ENABLED:
+        return RedirectResponse("/", status_code=307)
     return _serve_html("index.html")
 
 

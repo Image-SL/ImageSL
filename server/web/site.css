@@ -8,7 +8,7 @@
 
 body{font-weight:var(--w-light);display:flex;flex-direction:column;min-height:100vh}
 a{color:inherit}
-.wrap{width:100%;max-width:1000px;margin:0 auto;padding:0 28px}
+.wrap{width:100%;max-width:var(--container);margin:0 auto;padding:0 var(--s6)}
 main{flex:1;display:flex;flex-direction:column}
 
 /* -- header -------------------------------------------------------------- */
@@ -24,7 +24,7 @@ main{flex:1;display:flex;flex-direction:column}
 .brand img{width:24px;height:24px;display:block;flex:none}
 .brand span{font-size:13.5px;font-weight:var(--w-normal);letter-spacing:.13em;color:var(--ink-2)}
 .site-nav{display:flex;align-items:center;gap:24px}
-.site-nav a{font-size:13.5px;color:var(--ink-2);text-decoration:none;transition:color var(--dur) var(--ease)}
+.site-nav a{font-size:var(--t-body);min-height:var(--target);display:inline-flex;align-items:center;color:var(--ink-2);text-decoration:none;transition:color var(--dur) var(--ease)}
 .site-nav a:hover{color:var(--ink)}
 @media(max-width:640px){ .site-nav a.opt{display:none} }
 
@@ -71,7 +71,7 @@ main{flex:1;display:flex;flex-direction:column}
       justify-content:space-between;gap:10px 24px;font-size:12.5px;color:var(--ink-3)}
 
 /* -- document prose (privacy, terms) ------------------------------------- */
-.doc{padding:64px 0 88px;max-width:720px}
+.doc{padding:var(--s16) 0 var(--s16);max-width:var(--measure)}
 .doc .eyebrow{font-size:12.5px;color:var(--ink-3);margin:0 0 10px;letter-spacing:.04em}
 .doc h1{margin:0 0 6px;font-size:clamp(26px,4vw,36px);font-weight:var(--w-thin);
         letter-spacing:-.02em;line-height:1.2}
@@ -80,7 +80,7 @@ main{flex:1;display:flex;flex-direction:column}
         padding-top:24px;border-top:1px solid var(--line)}
 .doc h2:first-of-type{border-top:0;padding-top:0;margin-top:32px}
 .doc h3{margin:24px 0 8px;font-size:14.5px;font-weight:var(--w-med)}
-.doc p{margin:0 0 14px;font-size:15px;line-height:1.72;color:var(--ink-2)}
+.doc p{margin:0 0 var(--s4);font-size:var(--t-base);line-height:var(--lh-body);color:var(--ink-2);max-width:var(--measure)}
 .doc ul{margin:0 0 14px;padding-left:20px;display:flex;flex-direction:column;gap:8px}
 .doc li{font-size:15px;line-height:1.7;color:var(--ink-2)}
 .doc strong{font-weight:var(--w-med);color:var(--ink)}

@@ -92,8 +92,23 @@
   /* Weights. Two rules: nothing below 200, nothing above 500. */
   --w-thin:200; --w-light:300; --w-normal:400; --w-med:500;
 
-  /* -- Motion ------------------------------------------------------------- */
-  --dur:.15s; --ease:cubic-bezier(.2,.7,.3,1);
+  /* -- Layout --------------------------------------------------------------
+     See docs/DESIGN.md for where these come from. --measure caps body text at
+     68 characters: every published system states a 60-75 limit, and it is the
+     most common thing "minimal" designs get wrong, because a wide column looks
+     clean and reads badly. */
+  --container:1120px;
+  --measure:68ch;
+  --target:44px;        /* minimum click/touch target, Apple HIG */
+
+  /* -- Line heights --------------------------------------------------------
+     1.5 body, 1.2 headings - unanimous across Carbon, Polaris, Primer and
+     Material. */
+  --lh-body:1.5; --lh-tight:1.2;
+
+  /* -- Motion --------------------------------------------------------------
+     150-250ms, ease-out. Longer than ~300ms feels slow in a tool used all day. */
+  --dur:.15s; --dur-slow:.24s; --ease:cubic-bezier(.2,.7,.3,1);
 }
 
 /* Shared primitives, so both surfaces agree on the basics without copying. */
