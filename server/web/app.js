@@ -703,28 +703,25 @@ function createCard(data) {
     requestAnimationFrame(() => { rafPending = false; redraw(); });
   }
 
-  /* The live readout uses the SAME two counts the server divides — positive
-     pixels over the slide's tissue area — so drawing a correction moves the
-     percentage to exactly the value the server will report and the CSV will
-     carry for those regions.
+  /* The live readout uses the SAME arithmetic the server does — positive pixels
+     over the whole image — so drawing a correction moves the percentage to
+     exactly the value the server will report and the CSV will carry.
 
-     The denominator does not move. Include and Exclude change what is counted
-     as positive and nothing else, so the arithmetic is always the one printed
-     on the tiles: positive pixels / tissue pixels. That is what makes
-     "Exclude the whole slide" read 0.00% instead of the 3.87% the previous
-     region-of-interest behaviour produced from the sliver of tissue left
-     outside the drag. */
+     The denominator never moves. Include and Exclude change what is counted as
+     positive and nothing else, and the image's pixel count is fixed, so
+     "Exclude the whole slide" reads 0.00%. Percentage of TISSUE was removed
+     from both the tiles and the export: that denominator shifts with the
+     segmentation, so the same slide could report two different figures for
+     identical staining. */
   function liveMetrics() {
     if (!st.ld) return;
     recount();                 // the counts must describe the CURRENT setting
     const pos = st.ld.count;
     const measured = st.ld.measured;
     const framePx = st.ld.W * st.ld.H;
-    const pct = measured ? (pos / measured * 100) : 0;
-    q(".mPercent").textContent = pct.toFixed(2) + "%";
-    // Over the WHOLE frame rather than the tissue in it — the denominator here
-    // is fixed by the image, so it does not move with the segmentation and is
-    // the figure to use when comparing sections cut to the same field.
+    // Positive area is reported over the WHOLE frame only. The denominator is
+    // fixed by the image, so it cannot move with the segmentation - which is
+    // what makes two sections cut to the same field comparable.
     q(".mPercentImage").textContent = framePx ? (pos / framePx * 100).toFixed(2) + "%" : "–";
     q(".mPositive").textContent = pos.toLocaleString();
     q(".mTissue").textContent = measured.toLocaleString();
@@ -739,13 +736,13 @@ function createCard(data) {
       if (st.ld.removed) bits.push(`−${st.ld.removed.toLocaleString()} px removed by Exclude`);
       if (bits.length) {
         scope.textContent = "Corrected by hand: " + bits.join(", ")
-          + ` · still measured over this slide's whole tissue area (${measured.toLocaleString()} px)`;
+          + ` · still measured over the whole image (${framePx.toLocaleString()} px)`;
         scope.classList.remove("hidden");
       } else {
         scope.classList.add("hidden");
       }
     }
-    [".mPercent", ".mPositive", ".mTissue"].forEach((s) => { const b = q(s); b.classList.remove("flash"); void b.offsetWidth; b.classList.add("flash"); });
+    [".mPercentImage", ".mPositive", ".mTissue"].forEach((s) => { const b = q(s); if (b) { b.classList.remove("flash"); void b.offsetWidth; b.classList.add("flash"); } });
   }
 
   /* The ladder is a multiplicative scaling of the bar a structure's peak has to
@@ -805,7 +802,6 @@ function createCard(data) {
       q(".mTissue").textContent = (r.tissue_pixels || 0).toLocaleString();
       q(".mObjects").textContent = (r.objects || 0).toLocaleString();
       if (!keepView) { level = currentLevel(d); q(".cThr").value = String(level); }
-      q(".mPercent").textContent = (r.positive_percent || 0).toFixed(2) + "%";
       q(".mPositive").textContent = (r.positive_pixels || 0).toLocaleString();
       const framePx = (r.width || 0) * (r.height || 0);
       q(".mImagePx").textContent = framePx.toLocaleString();

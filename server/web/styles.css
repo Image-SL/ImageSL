@@ -46,7 +46,57 @@ body{
 .wordmark b{ font-weight:var(--w-normal); color:var(--ink-2); }
 .tagline{ font-size:13px; font-weight:var(--w-light); letter-spacing:0; color:var(--ink-3); }
 
+.topbar-right{ display:flex; align-items:center; gap:16px; }
+.icon-btn{
+  display:inline-flex; align-items:center; justify-content:center;
+  width:30px; height:30px; padding:0; cursor:pointer;
+  background:transparent; color:var(--ink-2);
+  border:1px solid transparent; border-radius:var(--radius);
+  transition:color var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+.icon-btn:hover{ color:var(--ink); border-color:var(--line-2); }
+
 main{ max-width:1120px; margin:0 auto; padding:44px 22px 90px; }
+
+/* -------- settings sheet (desktop build) -------- */
+.overlay{
+  position:fixed; inset:0; z-index:900; background:rgba(13,15,18,.32);
+  display:flex; align-items:flex-start; justify-content:center;
+  padding:56px 20px; overflow-y:auto;
+}
+.sheet{
+  width:100%; max-width:520px; background:var(--card);
+  border:1px solid var(--line-2); border-radius:var(--radius);
+  box-shadow:var(--shadow-lg); animation:fadeUp .18s var(--ease) both;
+}
+.sheet-head{
+  display:flex; align-items:center; justify-content:space-between;
+  padding:16px 20px; border-bottom:1px solid var(--line);
+}
+.sheet-head h2{ margin:0; font-size:16px; font-weight:var(--w-med); }
+.sheet-body{ padding:4px 20px 20px; }
+.set-group{ padding:20px 0; border-bottom:1px solid var(--line); }
+.set-group:last-child{ border-bottom:0; padding-bottom:4px; }
+.set-group h3{
+  margin:0 0 12px; font-size:12px; font-weight:var(--w-med);
+  letter-spacing:.06em; color:var(--ink-3);
+}
+.kv{ margin:0; display:grid; grid-template-columns:minmax(110px,auto) 1fr; gap:7px 16px; }
+.kv dt{ font-size:13px; color:var(--ink-3); }
+.kv dd{ margin:0; font-size:13px; color:var(--ink); }
+.kv dd.mono-sm{ font-family:var(--mono); font-size:11.5px; color:var(--ink-2); word-break:break-all; }
+.set-actions{ display:flex; gap:8px; flex-wrap:wrap; margin-top:14px; }
+.set-actions .btn{ font-size:13px; padding:7px 13px; }
+.set-note{ margin:10px 0 0; font-size:12.5px; color:var(--ink-3); line-height:1.55; }
+.set-note.warn{ color:var(--warn); }
+.set-note.err{ color:var(--danger); }
+.set-note.ok{ color:var(--pos); }
+.set-row{ display:flex; gap:11px; align-items:flex-start; padding:9px 0; cursor:pointer; }
+.set-row input{ margin:2px 0 0; flex:none; width:15px; height:15px; accent-color:var(--accent); }
+.set-row b{ display:block; font-size:13.5px; font-weight:var(--w-normal); color:var(--ink); }
+.set-row small{ display:block; font-size:12.5px; color:var(--ink-3); margin-top:2px; line-height:1.5; }
+.progress{ margin-top:12px; height:4px; border-radius:2px; background:var(--line); overflow:hidden; }
+.progress-fill{ height:100%; width:0%; background:var(--accent); transition:width .25s ease; }
 .view{ animation:fadeUp .4s var(--ease) both; }
 .hidden{ display:none !important; }
 

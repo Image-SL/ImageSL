@@ -95,7 +95,18 @@ if ASSETS_DIR.is_dir():
 # Persistent disk analysis cache (survives restarts if /data is mounted)
 # --------------------------------------------------------------------------- #
 
-CACHE_DIR = Path("/data") if Path("/data").exists() else Path(tempfile.gettempdir()) / "imagesl_cache"
+# IMAGESL_CACHE_DIR wins where it is set. The desktop launcher sets it to a
+# folder under the user's own app-data so an installed app does not scatter
+# decoded slides through the system temp directory; it was being set and
+# silently ignored here, which put the desktop cache somewhere the uninstaller
+# does not clean and the settings panel cannot report.
+_cache_env = os.environ.get("IMAGESL_CACHE_DIR")
+if _cache_env:
+    CACHE_DIR = Path(_cache_env)
+elif Path("/data").exists():
+    CACHE_DIR = Path("/data")
+else:
+    CACHE_DIR = Path(tempfile.gettempdir()) / "imagesl_cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 class _DiskCache:
@@ -873,6 +884,18 @@ def download(platform: str, request: Request):
     return FileResponse(str(path), media_type=content_type, filename=name)
 
 
+# Desktop-only settings, update checking and updating. Registered only in the
+# desktop build, so the public deployment never exposes them at all — the
+# analyzer treats a 404 from /api/desktop/info as "not the desktop app" and
+# leaves the settings button hidden.
+if IMAGESL_DESKTOP:
+    try:
+        import desktop_settings
+        desktop_settings.register(app, APP_VERSION, CACHE_DIR)
+    except Exception as _exc:      # never let settings stop the app opening
+        print(f"ImageSL: desktop settings unavailable ({_exc})")
+
+
 @app.get("/privacy", response_class=HTMLResponse)
 def privacy() -> HTMLResponse:
     return _serve_html("privacy.html")
@@ -1293,11 +1316,14 @@ _CSV_COLUMNS = [
     "filename",
     "detected_stain",
     "stain_category",
-    "positive_area_percent_of_tissue",
+    # Positive area is reported against the whole image only. A percentage of
+    # tissue moves with the segmentation, so the same slide can report two
+    # different numbers for the same staining; the image is a fixed denominator
+    # and is what makes sections cut to the same field comparable.
+    "positive_percent_of_image",
     "positive_pixels",
     "tissue_pixels",
     "total_image_pixels",
-    "positive_percent_of_image",
     # --- what was detected, as structures ---------------------------------- #
     "stained_objects",
     "median_object_area_px",
@@ -1369,11 +1395,10 @@ def _csv_row(entry: dict) -> dict:
         "filename": entry.get("filename", "image"),
         "detected_stain": getattr(r, "stain_label", ""),
         "stain_category": getattr(r, "compartment", ""),
-        "positive_area_percent_of_tissue": r.positive_percent,
+        "positive_percent_of_image": pct_of_image,
         "positive_pixels": r.positive_pixels,
         "tissue_pixels": r.tissue_pixels,
         "total_image_pixels": total_px,
-        "positive_percent_of_image": pct_of_image,
         "stained_objects": getattr(r, "objects", 0),
         "median_object_area_px": getattr(r, "median_object_px", 0),
         "mean_object_area_px": getattr(r, "mean_object_px", 0.0),
