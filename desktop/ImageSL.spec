@@ -37,6 +37,45 @@ for pkg in ("skimage", "scipy", "imagecodecs", "tifffile", "numpy", "PIL",
     binaries += b
     hiddenimports += h
 
+
+# --- drop what a user can never execute ------------------------------------- #
+# collect_all takes the whole distribution, which for scipy and numpy means
+# their test suites: ~24 MB of code that exists to be run by their maintainers
+# and cannot be reached from this application. Shipping it costs download size,
+# install time and disk, and widens the set of files an auditor has to account
+# for, for no functional gain.
+#
+# This filters DATA and BINARIES only. Nothing here removes a module the engine
+# imports - see _TEST_MARKERS - and the build is verified afterwards by running
+# a real analysis, not just by starting up.
+_TEST_MARKERS = (
+    os.sep + "tests" + os.sep,
+    os.sep + "test" + os.sep,
+    os.sep + "testing" + os.sep,
+    os.sep + "_pytesttester",
+)
+
+
+def _is_test_payload(dest: str) -> bool:
+    d = os.sep + dest.replace("/", os.sep).strip(os.sep) + os.sep
+    return any(m in d for m in _TEST_MARKERS)
+
+
+def _strip_tests(entries):
+    return [e for e in entries if not _is_test_payload(e[1])]
+
+
+_before = len(datas) + len(binaries)
+datas = _strip_tests(datas)
+binaries = _strip_tests(binaries)
+print(f"ImageSL.spec: dropped {_before - len(datas) - len(binaries)} test payload files")
+
+# The same suites as importable modules, so PyInstaller's analysis does not pull
+# them back in through a stray reference.
+hiddenimports = [h for h in hiddenimports
+                 if not (h.endswith(".tests") or ".tests." in h
+                         or h.endswith("._pytesttester"))]
+
 # FastAPI / Starlette / multipart are imported inside app.py (a data file), so
 # name them explicitly — collect_all is overkill for these but submodules matter.
 for pkg in ("fastapi", "starlette", "anyio", "multipart"):

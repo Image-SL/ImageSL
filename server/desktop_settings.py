@@ -20,6 +20,7 @@ Design decisions worth keeping:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -27,6 +28,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict
@@ -124,7 +126,35 @@ def _platform_key() -> str:
     return "windows" if sys.platform.startswith("win") else "macos"
 
 
+_online_cache: tuple[float, bool] | None = None
+_online_lock = threading.Lock()
+_ONLINE_TTL_OK = 30.0
+_ONLINE_TTL_BAD = 10.0
+
+
 def _online() -> bool:
+    """Is the site reachable? Cached, because this blocks.
+
+    Opening Settings used to pay a fresh TCP connect with a 2.5 s timeout, so
+    on a machine with no network the panel sat empty for two and a half seconds
+    before drawing - which reads as the app hanging. The answer barely changes
+    within a few seconds, so it is cached; a negative result expires sooner so
+    reconnecting is noticed quickly.
+    """
+    global _online_cache
+    now = time.time()
+    with _online_lock:
+        if _online_cache is not None:
+            checked_at, val = _online_cache
+            if now - checked_at < (_ONLINE_TTL_OK if val else _ONLINE_TTL_BAD):
+                return val
+    val = _probe_online()
+    with _online_lock:
+        _online_cache = (time.time(), val)
+    return val
+
+
+def _probe_online() -> bool:
     """Cheap reachability probe: DNS + TCP only, no HTTP round trip.
 
     The port comes from the URL rather than being assumed to be 443, so a site
@@ -170,7 +200,7 @@ def fetch_remote() -> Dict[str, Any]:
 # --------------------------------------------------------------------------- #
 _dl_lock = threading.Lock()
 _dl: Dict[str, Any] = {"state": "idle", "percent": 0, "file": None, "error": None,
-                       "version": None}
+                       "version": None, "sha256": None, "verified": False}
 
 
 def _dl_snapshot() -> Dict[str, Any]:
@@ -183,13 +213,24 @@ def _dl_set(**kw) -> None:
         _dl.update(kw)
 
 
-def _download_worker(version: str) -> None:
+def _download_worker(version: str, expected_sha: str) -> None:
+    """Fetch the installer, then prove it is the one that was published.
+
+    The file this writes is about to be EXECUTED. Downloading an executable and
+    running it without checking it against a digest published by the server
+    turns the update channel into a way to run arbitrary code on this machine -
+    a hostile network, a broken proxy or a compromised bucket is all it takes.
+    So the bytes are hashed as they arrive and the result must match; if it does
+    not, the file is deleted rather than offered.
+    """
     url = f"{_site()}/download/{_platform_key()}"
     suffix = ".exe" if _platform_key() == "windows" else ".dmg"
     target = _updates_dir() / f"ImageSL-{version}{suffix}"
     part = target.with_suffix(target.suffix + ".part")
     try:
-        _dl_set(state="downloading", percent=0, error=None, file=None, version=version)
+        _dl_set(state="downloading", percent=0, error=None, file=None,
+                version=version, sha256=None)
+        digest = hashlib.sha256()
         req = urllib.request.Request(url, headers={"User-Agent": "ImageSL-Desktop"})
         with urllib.request.urlopen(req, timeout=30) as r:
             total = int(r.headers.get("Content-Length") or 0)
@@ -200,13 +241,25 @@ def _download_worker(version: str) -> None:
                     if not chunk:
                         break
                     fh.write(chunk)
+                    digest.update(chunk)
                     done += len(chunk)
                     if total:
                         _dl_set(percent=min(99, int(done * 100 / total)))
-        # Rename only once the bytes are all here, so a half-written installer
-        # can never be presented as ready to run.
+        got = digest.hexdigest()
+
+        if expected_sha and got.lower() != expected_sha.lower():
+            part.unlink(missing_ok=True)
+            _dl_set(state="error", file=None, sha256=got,
+                    error="The downloaded file did not match the published "
+                          "checksum and was discarded. Download it from the "
+                          "website instead.")
+            return
+
+        # Rename only once the bytes are all here AND verified, so a partial or
+        # unverified installer can never be presented as ready to run.
         part.replace(target)
-        _dl_set(state="ready", percent=100, file=str(target))
+        _dl_set(state="ready", percent=100, file=str(target), sha256=got,
+                verified=bool(expected_sha))
     except Exception as exc:
         try:
             part.unlink(missing_ok=True)
@@ -215,11 +268,11 @@ def _download_worker(version: str) -> None:
         _dl_set(state="error", error=str(exc)[:300], file=None)
 
 
-def start_download(version: str) -> Dict[str, Any]:
+def start_download(version: str, expected_sha: str = "") -> Dict[str, Any]:
     snap = _dl_snapshot()
     if snap["state"] == "downloading":
         return snap
-    threading.Thread(target=_download_worker, args=(version,),
+    threading.Thread(target=_download_worker, args=(version, expected_sha),
                      name="imagesl-update-dl", daemon=True).start()
     return _dl_snapshot()
 
@@ -240,25 +293,41 @@ def register(app, app_version: str, cache_dir: Path | None) -> None:
         remote = fetch_remote() if online else {}
         latest = str(remote.get("version") or "") or None
         platforms = remote.get("platforms") or {}
-        can_get = bool((platforms.get(_platform_key()) or {}).get("available"))
+        mine = platforms.get(_platform_key()) or {}
+        can_get = bool(mine.get("available"))
         available = bool(latest and is_newer(latest, app_version) and can_get)
         return {
             "online": online,
             "checked": bool(remote),
             "latest_version": latest,
             "update_available": available,
+            # The digest the server publishes for the build we would fetch. The
+            # downloader checks against this before the file is offered.
+            "sha256": mine.get("sha256") or "",
             "download": _dl_snapshot(),
         }
 
+    _cache_size_cache: Dict[str, Any] = {"at": 0.0, "bytes": 0}
+
     @app.get("/api/desktop/info")
     def desktop_info() -> JSONResponse:
+        # Walking the cache is O(files) and this endpoint is polled while an
+        # update downloads. A batch of slides leaves thousands of entries, and
+        # re-summing them every poll made Settings stutter for a number that
+        # changes slowly. Ten seconds is fresh enough for a size readout.
         cache_bytes = 0
+        now = time.time()
         if cache_dir and Path(cache_dir).is_dir():
-            try:
-                cache_bytes = sum(f.stat().st_size
-                                  for f in Path(cache_dir).rglob("*") if f.is_file())
-            except Exception:
-                cache_bytes = 0
+            if now - _cache_size_cache["at"] < 10.0:
+                cache_bytes = _cache_size_cache["bytes"]
+            else:
+                try:
+                    cache_bytes = sum(f.stat().st_size
+                                      for f in Path(cache_dir).rglob("*") if f.is_file())
+                except Exception:
+                    cache_bytes = 0
+                _cache_size_cache["at"] = now
+                _cache_size_cache["bytes"] = cache_bytes
         return JSONResponse({
             "app": APP_NAME,
             "version": app_version,
@@ -285,7 +354,7 @@ def register(app, app_version: str, cache_dir: Path | None) -> None:
         if (state["update_available"]
                 and load_settings().get("auto_download_updates")
                 and _dl_snapshot()["state"] in ("idle", "error")):
-            start_download(state["latest_version"])
+            start_download(state["latest_version"], state.get("sha256", ""))
             state["download"] = _dl_snapshot()
         return JSONResponse(state)
 
@@ -295,7 +364,8 @@ def register(app, app_version: str, cache_dir: Path | None) -> None:
         if not state["update_available"]:
             raise HTTPException(status_code=409,
                                 detail="There is no update to download.")
-        return JSONResponse(start_download(state["latest_version"]))
+        return JSONResponse(start_download(state["latest_version"],
+                                           state.get("sha256", "")))
 
     @app.get("/api/desktop/download-progress")
     def desktop_download_progress() -> JSONResponse:
@@ -308,6 +378,41 @@ def register(app, app_version: str, cache_dir: Path | None) -> None:
         if snap.get("state") != "ready" or not path or not Path(path).is_file():
             raise HTTPException(status_code=409,
                                 detail="No downloaded update is ready to install.")
+
+        # Refuse to launch anything we could not prove. An update mechanism that
+        # runs an unverified executable is a way to execute arbitrary code on
+        # this machine, so "we could not check" is treated as "no", not as "go
+        # ahead" - the safe default is the one that stops.
+        if not snap.get("verified"):
+            raise HTTPException(
+                status_code=409,
+                detail="This download could not be verified against a published "
+                       "checksum, so it will not be run. Download the installer "
+                       "from the website instead.")
+
+        # Re-hash immediately before running it. The check at download time
+        # proves what arrived; this proves what is about to execute, and the two
+        # are not the same claim if anything touched the file in between.
+        expected = (snap.get("sha256") or "").lower()
+        actual = hashlib.sha256()
+        try:
+            with open(path, "rb") as fh:
+                for block in iter(lambda: fh.read(1024 * 1024), b""):
+                    actual.update(block)
+        except OSError as exc:
+            raise HTTPException(status_code=500,
+                                detail=f"Could not read the installer: {exc}")
+        if actual.hexdigest() != expected:
+            try:
+                Path(path).unlink(missing_ok=True)
+            except Exception:
+                pass
+            _dl_set(state="error", file=None,
+                    error="The installer changed after it was downloaded and "
+                          "has been deleted.")
+            raise HTTPException(status_code=409,
+                                detail="The installer changed after it was "
+                                       "downloaded. It has been deleted.")
         try:
             if sys.platform.startswith("win"):
                 # Hand off to the installer and let this process exit; it cannot

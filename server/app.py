@@ -92,6 +92,65 @@ if ASSETS_DIR.is_dir():
 
 
 # --------------------------------------------------------------------------- #
+# Security headers
+# --------------------------------------------------------------------------- #
+# The application served nothing: no CSP, no nosniff, no framing policy. These
+# are the cheap controls that any review of a site handling medical imagery will
+# ask for, and their absence is the kind of finding that stalls an approval.
+#
+# The policy is deliberately derived from what the app actually does rather than
+# copied from a template. Every asset is same-origin - verified: no CDN, no web
+# font, no analytics - so 'self' is not a guess. 'unsafe-inline' is required and
+# honestly labelled: the pages carry inline <script> blocks and style attributes,
+# and pretending otherwise would mean shipping a policy that silently breaks the
+# analyzer. Removing it needs nonces, which is a separate change.
+_CSP = "; ".join([
+    "default-src 'self'",
+    "script-src 'self' 'unsafe-inline'",
+    "style-src 'self' 'unsafe-inline'",
+    # data: and blob: are how the analyzer shows rendered overlays and exports.
+    "img-src 'self' data: blob:",
+    "font-src 'self'",
+    "connect-src 'self'",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+])
+
+_SECURITY_HEADERS = {
+    "Content-Security-Policy": _CSP,
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Cross-Origin-Opener-Policy": "same-origin",
+    "Cross-Origin-Resource-Policy": "same-origin",
+    "X-Permitted-Cross-Domain-Policies": "none",
+    # Nothing here uses any of these; say so rather than leave them available.
+    "Permissions-Policy": ("accelerometer=(), camera=(), geolocation=(), "
+                           "gyroscope=(), magnetometer=(), microphone=(), "
+                           "payment=(), usb=()"),
+}
+
+
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    response = await call_next(request)
+    for key, value in _SECURITY_HEADERS.items():
+        response.headers.setdefault(key, value)
+
+    # HSTS only on a genuine HTTPS request. The desktop build serves the same
+    # app over plain HTTP on 127.0.0.1; sending HSTS there tells the browser to
+    # force https:// on localhost, which would break the app on next launch and
+    # be invisible to whoever had to debug it.
+    proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+    if proto == "https":
+        response.headers.setdefault(
+            "Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return response
+
+
+# --------------------------------------------------------------------------- #
 # Persistent disk analysis cache (survives restarts if /data is mounted)
 # --------------------------------------------------------------------------- #
 
@@ -748,12 +807,79 @@ def _published_version() -> str:
     return val
 
 
+# --------------------------------------------------------------------------- #
+# Installer integrity
+# --------------------------------------------------------------------------- #
+# The desktop app downloads an installer and offers to RUN it. Without a digest
+# to check against, anything that can sit between the user and the bytes -- a
+# hostile network, a misconfigured proxy, a compromised bucket -- can substitute
+# an executable and the app will launch it. Publishing the digest here lets the
+# updater refuse anything that does not match, which is the difference between
+# an update channel and an arbitrary-code-execution channel.
+#
+# Hashing an ~86 MB file is far too slow to do per request, so the result is
+# cached against (size, mtime): a republished file changes at least one of them,
+# and nothing else needs to invalidate it. For an externally hosted build we do
+# not have the bytes, so we read a `<url>.sha256` sidecar if one was published.
+_sha_cache: dict[str, tuple[tuple, str]] = {}
+_sha_lock = threading.Lock()
+
+
+def _sha256_local(path: Path) -> str:
+    try:
+        st = path.stat()
+    except OSError:
+        return ""
+    key, stamp = str(path), (st.st_size, int(st.st_mtime))
+    with _sha_lock:
+        hit = _sha_cache.get(key)
+        if hit and hit[0] == stamp:
+            return hit[1]
+    h = hashlib.sha256()
+    try:
+        with open(path, "rb") as fh:
+            for block in iter(lambda: fh.read(1024 * 1024), b""):
+                h.update(block)
+    except OSError:
+        return ""
+    digest = h.hexdigest()
+    with _sha_lock:
+        _sha_cache[key] = (stamp, digest)
+    return digest
+
+
+def _sha256_external(url: str) -> str:
+    """Read a published `<url>.sha256` sidecar, if there is one."""
+    key = url + ".sha256"
+    with _sha_lock:
+        hit = _sha_cache.get(key)
+        if hit and (time.time() - hit[0][0]) < _PROBE_TTL_OK:
+            return hit[1]
+    import urllib.request
+    digest = ""
+    try:
+        req = urllib.request.Request(key, headers={"User-Agent": "ImageSL"})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            if 200 <= getattr(r, "status", 200) < 300:
+                token = r.read(200).decode("utf-8", "ignore").split()
+                if token and len(token[0]) == 64 and all(
+                        c in "0123456789abcdefABCDEF" for c in token[0]):
+                    digest = token[0].lower()
+    except Exception:
+        digest = ""
+    with _sha_lock:
+        _sha_cache[key] = ((time.time(),), digest)
+    return digest
+
+
 @app.get("/api/downloads")
 async def api_downloads() -> JSONResponse:
     """What can actually be downloaded right now.
 
     The landing page asks this before enabling its buttons, so a platform with
-    no build greys out and says so, instead of handing the visitor a 404.
+    no build greys out and says so, instead of handing the visitor a 404. The
+    desktop updater asks the same question, and uses `sha256` to verify what it
+    downloaded before it will run it.
     """
     platforms = {}
     for key, (name, _ct, env_key) in _DOWNLOADS.items():
@@ -764,13 +890,16 @@ async def api_downloads() -> JSONResponse:
         if external:
             # urllib is blocking; keep it off the event loop.
             ok, size = await run_in_threadpool(_probe_external, external)
+            digest = await run_in_threadpool(_sha256_external, external) if ok else ""
         else:
             ok, size = on_disk, (path.stat().st_size if on_disk else 0)
+            digest = await run_in_threadpool(_sha256_local, path) if ok else ""
 
         platforms[key] = {
             "available": ok,
             "filename": name,
             "bytes": size,
+            "sha256": digest or None,
             "url": f"/download/{key}" if ok else None,
         }
     # `version` is what a user can INSTALL, which is what desktop/updater.py is
