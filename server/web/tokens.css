@@ -46,6 +46,21 @@
   /* -- Geometry ----------------------------------------------------------- */
   --radius:3px; --radius-sm:2px; --radius-lg:4px;
 
+  /* -- Spacing -------------------------------------------------------------
+     A 4px scale. Every margin and padding in the product comes from here, so
+     vertical rhythm is consistent instead of being chosen per component - which
+     is the single thing that most makes an interface look assembled rather than
+     designed. */
+  --s1:4px;  --s2:8px;  --s3:12px; --s4:16px; --s5:20px;
+  --s6:24px; --s8:32px; --s10:40px; --s12:48px; --s16:64px;
+
+  /* -- Type scale ----------------------------------------------------------
+     Fixed steps rather than arbitrary sizes. Numbers use --font-num so figures
+     line up in columns and a changing value does not shift the ones beside it. */
+  --t-micro:11.5px; --t-small:12.5px; --t-body:13.5px;
+  --t-base:15px;    --t-lead:17px;    --t-title:20px;
+  --t-display:28px; --t-hero:34px;
+
   /* -- Elevation ---------------------------------------------------------- */
   /* Almost nothing. Depth comes from hairlines and whitespace, not shadow. */
   --shadow-sm:0 1px 2px rgba(13,15,18,.04);
@@ -55,6 +70,11 @@
   /* -- Type --------------------------------------------------------------- */
   --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;
   --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+  /* Measurements are read in columns and compared between slides, so they are
+     set in tabular figures: every digit occupies the same width and a value
+     changing from 9 to 10 does not reflow the row beside it. */
+  --font-num:var(--font);
+  --num:tabular-nums lining-nums;
 
   /* Weights. Two rules: nothing below 200, nothing above 500. */
   --w-thin:200; --w-light:300; --w-normal:400; --w-med:500;

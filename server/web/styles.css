@@ -100,15 +100,35 @@ main{ max-width:1120px; margin:0 auto; padding:44px 22px 90px; }
 .view{ animation:fadeUp .4s var(--ease) both; }
 .hidden{ display:none !important; }
 
-/* -------- hero + dropzone -------- */
-.hero{ text-align:center; margin-bottom:30px; }
-.hero h1{ font-size:32px; line-height:1.18; letter-spacing:-.022em; margin:0 0 10px; font-weight:var(--w-thin); }
-.lede{ color:var(--ink-2); max-width:620px; margin:0 auto; font-size:15.5px; line-height:1.6; }
+/* -------- page header --------
+   Left-aligned, with a rule under it. A centred headline over a centred box is
+   a landing page; this is a workspace, and work starts at the left margin. */
+.hero{
+  text-align:left; margin:0 0 var(--s6);
+  padding-bottom:var(--s4); border-bottom:1px solid var(--line);
+}
+.hero h1{
+  font-size:var(--t-title); line-height:1.25; letter-spacing:-.01em;
+  margin:0; font-weight:var(--w-med); color:var(--ink);
+}
+.lede{ color:var(--ink-2); max-width:620px; margin:var(--s2) 0 0; font-size:var(--t-body); line-height:1.6; }
+
+/* Section labels above each control group, so the view reads as ordered steps
+   rather than a stack of boxes. */
+.sec-label{
+  display:block; margin:0 0 var(--s2);
+  font-size:var(--t-small); font-weight:var(--w-med); color:var(--ink-3);
+  letter-spacing:.04em;
+}
+.sec-label .n{
+  display:inline-block; min-width:15px; margin-right:var(--s2);
+  color:var(--ink-3); font-variant-numeric:var(--num);
+}
 
 .dropzone{
   border:1px dashed var(--line-2); border-radius:var(--radius);
   background:var(--surface);
-  padding:56px 24px; text-align:center; cursor:pointer;
+  padding:var(--s12) var(--s6); text-align:center; cursor:pointer;
   transition:border-color var(--dur) var(--ease), background var(--dur) var(--ease);
 }
 .dropzone:hover{ border-color:var(--ink-3); background:var(--bg); }
@@ -220,9 +240,14 @@ main{ max-width:1120px; margin:0 auto; padding:44px 22px 90px; }
 .loader-dots span{ width:6px; height:6px; border-radius:50%; background:var(--ink-3); animation:bounce 1.2s infinite ease-in-out; }
 .loader-dots span:nth-child(2){ animation-delay:.15s; } .loader-dots span:nth-child(3){ animation-delay:.3s; }
 
-/* -------- results bar -------- */
-.results-bar{ display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:22px; flex-wrap:wrap; }
-.results-count{ font-size:16px; font-weight:var(--w-med); letter-spacing:-.005em; }
+/* -------- results bar --------
+   A toolbar: ruled off from the results it governs, actions to the right. */
+.results-bar{
+  display:flex; align-items:center; justify-content:space-between;
+  gap:var(--s4); margin-bottom:var(--s6); flex-wrap:wrap;
+  padding-bottom:var(--s3); border-bottom:1px solid var(--line);
+}
+.results-count{ font-size:var(--t-base); font-weight:var(--w-med); letter-spacing:-.005em; font-variant-numeric:var(--num); }
 .results-count .sub{ color:var(--ink-3); font-weight:var(--w-light); }
 .results-tools{ display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
 .results-actions{ display:flex; gap:9px; flex-wrap:wrap; }
@@ -253,15 +278,27 @@ main{ max-width:1120px; margin:0 auto; padding:44px 22px 90px; }
 .skipped li.failed b::before{ content:"⚠ "; color:var(--danger); }
 .skipped li.failed .why{ color:var(--danger); }
 
-/* -------- card -------- */
-#resultsContainer{ display:flex; flex-direction:column; gap:22px; }
+/* -------- card --------
+   The card header is a real title bar: ruled off, filename set in the mono face
+   because it is a filename and will be compared against a file list. */
+#resultsContainer{ display:flex; flex-direction:column; gap:var(--s6); }
 .card{
   background:var(--card); border:1px solid var(--line); border-radius:var(--radius);
-  padding:20px; animation:cardIn .4s var(--ease) both;
+  padding:0; overflow:hidden; animation:cardIn .4s var(--ease) both;
 }
-.card-head{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:16px; }
-.card-title{ display:flex; align-items:center; gap:10px; min-width:0; }
-.fname{ font-size:16px; font-weight:var(--w-med); letter-spacing:-.005em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.card > *:not(.card-head){ margin-inline:var(--s5); }
+.card > .metrics{ margin-inline:var(--s5); }
+.card-head{
+  display:flex; align-items:center; justify-content:space-between; gap:var(--s3);
+  margin:0 0 var(--s5); padding:var(--s3) var(--s5);
+  border-bottom:1px solid var(--line); background:var(--surface);
+}
+.card-title{ display:flex; align-items:center; gap:var(--s3); min-width:0; }
+.fname{
+  font-family:var(--mono); font-size:var(--t-body); font-weight:var(--w-normal);
+  letter-spacing:0; color:var(--ink);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
 .badge{ font-size:11.5px; font-weight:var(--w-normal); letter-spacing:.01em; color:var(--ink-2); background:var(--fill-subtle); padding:3px 9px; border-radius:var(--radius-sm); white-space:nowrap; }
 
 /* -------- comparison slider (natural aspect ratio, fills fully) -------- */
@@ -280,16 +317,40 @@ main{ max-width:1120px; margin:0 auto; padding:44px 22px 90px; }
 .cmp-grip{ position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); width:32px; height:32px; border-radius:50%; background:#fff; color:var(--ink); display:flex; align-items:center; justify-content:center; box-shadow:var(--shadow); border:1px solid var(--line-2); }
 .cmp-grip svg{ margin:0 -3px; }
 
-/* -------- metrics -------- */
-.metrics{ display:grid; grid-template-columns:repeat(6,1fr); gap:10px; margin-bottom:18px; }
-@media (max-width:1100px){ .metrics{ grid-template-columns:repeat(3,1fr); } }
-@media (max-width:640px){ .metrics{ grid-template-columns:repeat(2,1fr); } }
-.metric{ background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); padding:13px 15px; }
-.metric b{ display:block; font-size:22px; font-weight:var(--w-thin); letter-spacing:-.02em; line-height:1.15; color:var(--ink); font-variant-numeric:tabular-nums; }
-.metric span{ display:block; font-size:11.5px; color:var(--ink-3); margin-top:4px; font-weight:var(--w-light); }
-.hero-metric{ background:var(--ink); border-color:var(--ink); }
-.hero-metric b{ color:#fff; font-size:24px; }
-.hero-metric span{ color:rgba(255,255,255,.72); }
+/* -------- metrics --------
+   One bordered strip of cells rather than five floating cards. Measurements
+   belong together and are read across, so they share a frame and are separated
+   by hairlines - the way a results table is set, not a dashboard of tiles.
+   Labels sit ABOVE values: the eye scans the numbers down a column without
+   stepping over caption text. */
+.metrics{
+  display:grid; grid-template-columns:repeat(5,1fr);
+  border:1px solid var(--line); border-radius:var(--radius);
+  overflow:hidden; margin-bottom:var(--s5); background:var(--card);
+}
+@media (max-width:900px){ .metrics{ grid-template-columns:repeat(3,1fr); } }
+@media (max-width:560px){ .metrics{ grid-template-columns:repeat(2,1fr); } }
+.metric{
+  padding:var(--s3) var(--s4);
+  border-right:1px solid var(--line);
+  display:flex; flex-direction:column; gap:var(--s1);
+}
+.metric:last-child{ border-right:0; }
+.metric span{
+  order:-1; font-size:var(--t-micro); color:var(--ink-3);
+  font-weight:var(--w-normal); letter-spacing:.03em;
+}
+.metric b{
+  font-size:var(--t-title); font-weight:var(--w-normal); letter-spacing:-.015em;
+  line-height:1.2; color:var(--ink);
+  font-variant-numeric:var(--num); font-feature-settings:"tnum" 1;
+}
+/* The headline figure is set apart by weight and a rule, not by inverting a
+   whole tile - a black block in the middle of a results row draws the eye away
+   from the comparison the row exists to support. */
+.hero-metric{ background:var(--surface); box-shadow:inset 2px 0 0 var(--accent); }
+.hero-metric b{ font-size:var(--t-display); font-weight:var(--w-light); color:var(--ink); }
+.hero-metric span{ color:var(--ink-2); font-weight:var(--w-med); }
 
 /* -------- variants (natural aspect ratio; no crop, no empty space) -------- */
 .variants{ display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }

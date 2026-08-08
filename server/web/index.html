@@ -132,6 +132,7 @@
       <h1>DAB staining quantification</h1>
     </div>
 
+    <span class="sec-label"><span class="n">1</span>Analysis mode</span>
     <!-- mode selector (before upload) -->
     <div class="mode-select" role="tablist" aria-label="Analysis mode">
       <button type="button" class="mode-card active" data-mode="auto" role="tab" aria-selected="true">
@@ -159,6 +160,7 @@
       <div id="stainResults" class="sp-results" role="listbox"></div>
     </div>
 
+    <span class="sec-label" style="margin-top:var(--s6)"><span class="n">2</span>Slides</span>
     <div id="dropzone" class="dropzone">
       <div class="dz-icon" aria-hidden="true">
         <svg width="46" height="46" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
@@ -294,11 +296,11 @@
 
     <!-- metrics -->
     <div class="metrics">
-      <div class="metric hero-metric"><b class="mPercentImage">–</b><span>Positive area (of image)</span></div>
-      <div class="metric"><b class="mPositive">–</b><span>Positive pixels</span></div>
-      <div class="metric"><b class="mObjects">–</b><span>Stained structures</span></div>
-      <div class="metric"><b class="mTissue">–</b><span>Tissue pixels</span></div>
-      <div class="metric"><b class="mImagePx">–</b><span>Total image pixels</span></div>
+      <div class="metric hero-metric"><b class="mPercentImage">–</b><span>Positive area</span></div>
+      <div class="metric"><b class="mPositive">–</b><span>Positive px</span></div>
+      <div class="metric"><b class="mObjects">–</b><span>Structures</span></div>
+      <div class="metric"><b class="mTissue">–</b><span>Tissue px</span></div>
+      <div class="metric"><b class="mImagePx">–</b><span>Image px</span></div>
     </div>
     <!-- Shown only when a region is restricting the measurement, because that is
          when the denominator stops being the whole slide and the percentage can
