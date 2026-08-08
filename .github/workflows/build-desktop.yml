@@ -282,7 +282,9 @@ jobs:
               echo "::warning::$name was not built by this run - skipping."
               return 0
             fi
-            echo "--- $name ($(stat -c%s "$src") bytes)"
+            local sum
+            sum="$(sha256sum "$src" | cut -d' ' -f1)"
+            echo "--- $name ($(stat -c%s "$src") bytes) sha256=$sum"
 
             # Immutable, versioned copy first: if anything below fails, the
             # provenance copy still exists and nothing user-facing has moved yet.
@@ -298,6 +300,23 @@ jobs:
             aws s3 cp "$src" "s3://${BUCKET}/latest/${name}" \
               --content-type "$ctype" \
               --content-disposition "attachment; filename=\"${name}\"" \
+              --cache-control "public, max-age=300"
+
+            # The digest, published AFTER the bytes it describes.
+            #
+            # /api/downloads republishes this and the desktop updater refuses to
+            # run a download that does not match it. Publishing the installer
+            # without the sidecar does not fail loudly - it returns sha256:null,
+            # leaves the updater with nothing to check, and in-app updates stop
+            # working while the bucket looks perfectly healthy. Order matters for
+            # the same reason: a digest visible before its bytes would describe
+            # a file nobody can fetch yet.
+            printf '%s  %s\n' "$sum" "$name" > "${src}.sha256"
+            aws s3 cp "${src}.sha256" "s3://${BUCKET}/v/${VER}/${name}.sha256" \
+              --content-type "text/plain; charset=utf-8" \
+              --cache-control "public, max-age=31536000, immutable"
+            aws s3 cp "${src}.sha256" "s3://${BUCKET}/latest/${name}.sha256" \
+              --content-type "text/plain; charset=utf-8" \
               --cache-control "public, max-age=300"
           }
 
