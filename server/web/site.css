@@ -70,26 +70,40 @@ main{flex:1;display:flex;flex-direction:column}
 .fbot{border-top:1px solid var(--line);padding:20px 0 30px;display:flex;flex-wrap:wrap;
       justify-content:space-between;gap:10px 24px;font-size:12.5px;color:var(--ink-3)}
 
-/* -- document prose (privacy, terms) ------------------------------------- */
-.doc{padding:var(--s16) 0 var(--s16);max-width:var(--measure)}
-.doc .eyebrow{font-size:12.5px;color:var(--ink-3);margin:0 0 10px;letter-spacing:.04em}
-.doc h1{margin:0 0 6px;font-size:clamp(26px,4vw,36px);font-weight:var(--w-thin);
-        letter-spacing:-.02em;line-height:1.2}
-.doc .updated{margin:0 0 40px;font-size:13px;color:var(--ink-3)}
-.doc h2{margin:40px 0 12px;font-size:16px;font-weight:var(--w-med);letter-spacing:-.005em;
-        padding-top:24px;border-top:1px solid var(--line)}
-.doc h2:first-of-type{border-top:0;padding-top:0;margin-top:32px}
-.doc h3{margin:24px 0 8px;font-size:14.5px;font-weight:var(--w-med)}
+/* -- document prose (privacy, terms) --------------------------------------
+   Centred on the canvas and set on a white panel. Capping the measure is right,
+   but capping it and then leaving it pinned to the left of a 1120px container
+   left 450px of empty canvas beside every paragraph - the measure rule and the
+   centring rule have to be applied together or the page looks abandoned. */
+.doc{
+  max-width:calc(var(--measure) + var(--s16));
+  margin:var(--s12) auto;
+  padding:var(--s12) var(--s10) var(--s16);
+  background:var(--card); border-radius:var(--radius-lg);
+  box-shadow:var(--shadow);
+}
+@media(max-width:720px){
+  .doc{margin:var(--s6) auto;padding:var(--s8) var(--s5) var(--s10);border-radius:var(--radius)}
+}
+.doc .eyebrow{font-size:var(--t-small);color:var(--ink-3);margin:0 0 var(--s2);letter-spacing:.04em}
+.doc h1{margin:0 0 var(--s2);font-size:clamp(26px,4vw,34px);font-weight:var(--w-med);
+        letter-spacing:-.02em;line-height:var(--lh-tight)}
+.doc .updated{margin:0 0 var(--s10);font-size:var(--t-body);color:var(--ink-3)}
+.doc h2{margin:var(--s10) 0 var(--s3);font-size:var(--t-lead);font-weight:var(--w-med);
+        letter-spacing:-.01em;padding-top:var(--s6);border-top:1px solid var(--line)}
+.doc h2:first-of-type{border-top:0;padding-top:0;margin-top:var(--s8)}
+.doc h3{margin:var(--s6) 0 var(--s2);font-size:var(--t-base);font-weight:var(--w-med)}
 .doc p{margin:0 0 var(--s4);font-size:var(--t-base);line-height:var(--lh-body);color:var(--ink-2);max-width:var(--measure)}
-.doc ul{margin:0 0 14px;padding-left:20px;display:flex;flex-direction:column;gap:8px}
-.doc li{font-size:15px;line-height:1.7;color:var(--ink-2)}
+.doc li{font-size:var(--t-base);line-height:var(--lh-body);color:var(--ink-2)}
 .doc strong{font-weight:var(--w-med);color:var(--ink)}
 .doc a{color:var(--ink);text-decoration:none;border-bottom:1px solid var(--line-2)}
 .doc a:hover{border-bottom-color:var(--ink)}
-.doc .callout{border:1px solid var(--line-2);border-left:2px solid var(--accent);
-              border-radius:0;padding:16px 18px;margin:0 0 20px;background:var(--surface)}
-.doc .callout p{margin:0;font-size:14.5px;color:var(--ink-2)}
-.doc .callout p + p{margin-top:10px}
-.doc dl{margin:0 0 14px}
-.doc dt{font-size:14.5px;font-weight:var(--w-med);color:var(--ink);margin-top:14px}
-.doc dd{margin:4px 0 0;font-size:14.5px;line-height:1.7;color:var(--ink-2)}
+.doc .callout{border:0;border-left:3px solid var(--accent);
+              border-radius:var(--radius-sm);padding:var(--s4) var(--s5);
+              margin:0 0 var(--s6);background:var(--surface)}
+.doc .callout p{margin:0;font-size:var(--t-base);color:var(--ink-2)}
+.doc .callout p + p{margin-top:var(--s3)}
+.doc ul{margin:0 0 var(--s4);padding-left:var(--s5);display:flex;flex-direction:column;gap:var(--s2)}
+.doc dl{margin:0 0 var(--s4)}
+.doc dt{font-size:var(--t-base);font-weight:var(--w-med);color:var(--ink);margin-top:var(--s4)}
+.doc dd{margin:var(--s1) 0 0;font-size:var(--t-base);line-height:var(--lh-body);color:var(--ink-2)}
