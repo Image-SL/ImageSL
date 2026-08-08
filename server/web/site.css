@@ -15,7 +15,7 @@ main{flex:1}
 .site-header{border-bottom:1px solid var(--line)}
 .site-header .wrap{display:flex;align-items:center;justify-content:space-between;gap:20px;height:62px}
 .brand{display:flex;align-items:center;gap:9px;text-decoration:none}
-.brand svg{width:24px;height:24px;display:block;flex:none}
+.brand img{width:24px;height:24px;display:block;flex:none}
 .brand span{font-size:13.5px;font-weight:var(--w-normal);letter-spacing:.13em;color:var(--ink-2)}
 .site-nav{display:flex;align-items:center;gap:24px}
 .site-nav a{font-size:13.5px;color:var(--ink-2);text-decoration:none;transition:color var(--dur) var(--ease)}
