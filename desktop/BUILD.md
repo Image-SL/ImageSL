@@ -166,6 +166,30 @@ aws s3 cp downloads/ImageSL-Setup-Windows.exe s3://imagesl-downloads/latest/Imag
 302 — it hands off the response and never gets to set a header on the bytes.
 Without it a browser may render the file rather than save it.
 
+**Upload the checksum sidecar too, in the same step:**
+
+```bash
+aws s3 cp downloads/ImageSL-Setup-Windows.exe.sha256 s3://imagesl-downloads/latest/ImageSL-Setup-Windows.exe.sha256 --content-type text/plain --cache-control 'public, max-age=300'
+```
+
+`/api/downloads` reads `<url>.sha256` and republishes it, and the desktop
+updater refuses to run a download that does not match. **Uploading the installer
+without the sidecar silently disables that check** — `sha256` comes back `null`,
+the updater cannot verify, and it will decline to install rather than run
+something unproven. Always publish the pair, and publish the sidecar *after* the
+installer so a reader can never see a digest for bytes that are not there yet.
+
+A quick way to tell whether the live site has the build you think it has, without
+downloading 72 MB:
+
+```bash
+curl -s https://imagesl.online/api/downloads
+```
+
+`bytes` and `sha256` there must match the local file — `Get-FileHash
+downloads/ImageSL-Setup-Windows.exe -Algorithm SHA256`. If `bytes` differs, the
+bucket still holds an older installer and every visitor is getting it.
+
 Then set `IMAGESL_DOWNLOAD_BUCKET` and push (or re-run the deploy workflow) so
 the container picks up the URLs. Verify:
 
