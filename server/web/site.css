@@ -15,9 +15,7 @@ main{flex:1}
 .site-header{border-bottom:1px solid var(--line)}
 .site-header .wrap{display:flex;align-items:center;justify-content:space-between;gap:20px;height:62px}
 .brand{display:flex;align-items:center;gap:9px;text-decoration:none}
-/* The mark is the PNG artwork, not a redrawn SVG. The two disagreed on stroke
-   weight and fill opacity, so the header and the taskbar icon looked different. */
-.brand img{width:24px;height:24px;display:block;flex:none}
+.brand svg{width:24px;height:24px;display:block;flex:none}
 .brand span{font-size:13.5px;font-weight:var(--w-normal);letter-spacing:.13em;color:var(--ink-2)}
 .site-nav{display:flex;align-items:center;gap:24px}
 .site-nav a{font-size:13.5px;color:var(--ink-2);text-decoration:none;transition:color var(--dur) var(--ease)}
@@ -30,6 +28,10 @@ main{flex:1}
      border:1px solid var(--line-2);background:var(--card);color:var(--ink);white-space:nowrap;
      transition:border-color var(--dur) var(--ease),background var(--dur) var(--ease)}
 .btn svg{width:15px;height:15px;flex:none;opacity:.8}
+/* The platform glyph follows data-os, the same attribute that sets the label,
+   so a button can never show one platform's logo above another's name. */
+.btn[data-os="win"] .g-mac,
+.btn[data-os="mac"] .g-win{display:none}
 .btn:hover{border-color:var(--ink)}
 .btn.primary{background:var(--ink);border-color:var(--ink);color:#fff}
 .btn.primary svg{opacity:.95}

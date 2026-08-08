@@ -7,8 +7,8 @@
 <meta name="description" content="ImageSL is a tool for staining quantification. Automatic background removal, colour deconvolution and positive-area measurement. Free desktop app for Windows and macOS; runs offline.">
 <meta name="theme-color" content="#ffffff">
 
+<link rel="icon" type="image/svg+xml" href="/assets/logo.svg">
 <link rel="icon" type="image/png" sizes="32x32" href="/assets/favicon-32.png">
-<link rel="icon" type="image/png" sizes="192x192" href="/assets/logo-192.png">
 <link rel="apple-touch-icon" href="/assets/logo-192.png">
 <link rel="canonical" href="https://imagesl.online/">
 
@@ -51,7 +51,15 @@
 <header class="site-header">
   <div class="wrap">
     <a class="brand" href="/">
-      <img src="/assets/logo-192.png" alt="" width="24" height="24">
+      <svg viewBox="0 0 64 64" role="img" aria-label="ImageSL" xmlns="http://www.w3.org/2000/svg">
+        <defs><linearGradient id="isl-a" x1="8" y1="6" x2="56" y2="58" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#8b5cf6"/><stop offset="1" stop-color="#6d28d9"/></linearGradient></defs>
+        <rect x="2" y="2" width="60" height="60" rx="17" fill="url(#isl-a)"/>
+        <g stroke="#ffffff" stroke-width="2.4">
+          <circle cx="26" cy="30" r="13.5" fill="#ffffff" fill-opacity="0.42"/>
+          <circle cx="39" cy="35.5" r="13.5" fill="#ffffff" fill-opacity="0.42"/>
+        </g>
+      </svg>
       <span>ImageSL</span>
     </a>
     <nav class="site-nav">
@@ -73,12 +81,19 @@
              every visitor got a live link during the fetch, and on a platform
              with no build that link is a 404 - the exact thing this page is
              built to avoid. Failing dark is the honest direction. -->
-        <a class="btn primary off" id="dl-primary" href="#" rel="noopener" aria-disabled="true">
-          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.5 10.2 4.5v6.9H3V5.5Zm0 13 7.2 1v-6.8H3v5.8Zm8.3 1.1L21 21v-9.6h-9.7v8.2Zm0-15.2v8.1H21V3l-9.7 1.4Z"/></svg>
+        <!-- Each button carries BOTH glyphs; CSS shows the one matching its
+             data-os. The buttons swap places on a Mac (own platform first), and
+             when only the label moved the primary button read "Download for
+             macOS" above a Windows logo. Tying the glyph to the same attribute
+             that drives the label makes them impossible to separate. -->
+        <a class="btn primary off" id="dl-primary" href="#" rel="noopener" aria-disabled="true" data-os="win">
+          <svg class="g-win" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.5 10.2 4.5v6.9H3V5.5Zm0 13 7.2 1v-6.8H3v5.8Zm8.3 1.1L21 21v-9.6h-9.7v8.2Zm0-15.2v8.1H21V3l-9.7 1.4Z"/></svg>
+          <svg class="g-mac" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16.4 12.6c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.1-2.8.9-3.5.9s-1.8-.9-3-.8c-1.5 0-2.9.9-3.7 2.3-1.6 2.7-.4 6.8 1.1 9 .7 1.1 1.6 2.3 2.8 2.2 1.1 0 1.5-.7 2.9-.7s1.7.7 2.9.7 2-1.1 2.7-2.1c.8-1.2 1.2-2.4 1.2-2.5-.1 0-2.3-.9-2.3-3.4ZM14.2 5.8c.6-.8 1-1.9.9-3-.9 0-2 .6-2.6 1.4-.6.7-1.1 1.8-.9 2.9 1 0 2-.5 2.6-1.3Z"/></svg>
           <span id="dl-primary-label">Download for Windows</span>
         </a>
-        <a class="btn off" id="dl-secondary" href="#" rel="noopener" aria-disabled="true">
-          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16.4 12.6c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.1-2.8.9-3.5.9s-1.8-.9-3-.8c-1.5 0-2.9.9-3.7 2.3-1.6 2.7-.4 6.8 1.1 9 .7 1.1 1.6 2.3 2.8 2.2 1.1 0 1.5-.7 2.9-.7s1.7.7 2.9.7 2-1.1 2.7-2.1c.8-1.2 1.2-2.4 1.2-2.5-.1 0-2.3-.9-2.3-3.4ZM14.2 5.8c.6-.8 1-1.9.9-3-.9 0-2 .6-2.6 1.4-.6.7-1.1 1.8-.9 2.9 1 0 2-.5 2.6-1.3Z"/></svg>
+        <a class="btn off" id="dl-secondary" href="#" rel="noopener" aria-disabled="true" data-os="mac">
+          <svg class="g-win" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.5 10.2 4.5v6.9H3V5.5Zm0 13 7.2 1v-6.8H3v5.8Zm8.3 1.1L21 21v-9.6h-9.7v8.2Zm0-15.2v8.1H21V3l-9.7 1.4Z"/></svg>
+          <svg class="g-mac" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16.4 12.6c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.1-2.8.9-3.5.9s-1.8-.9-3-.8c-1.5 0-2.9.9-3.7 2.3-1.6 2.7-.4 6.8 1.1 9 .7 1.1 1.6 2.3 2.8 2.2 1.1 0 1.5-.7 2.9-.7s1.7.7 2.9.7 2-1.1 2.7-2.1c.8-1.2 1.2-2.4 1.2-2.5-.1 0-2.3-.9-2.3-3.4ZM14.2 5.8c.6-.8 1-1.9.9-3-.9 0-2 .6-2.6 1.4-.6.7-1.1 1.8-.9 2.9 1 0 2-.5 2.6-1.3Z"/></svg>
           <span id="dl-secondary-label">Download for macOS</span>
         </a>
       </div>
@@ -103,7 +118,13 @@
     <div class="fgrid">
       <div class="fbrand" style="grid-column:span 2">
         <a class="brand" href="/">
-          <img src="/assets/logo-192.png" alt="" width="24" height="24">
+          <svg viewBox="0 0 64 64" role="img" aria-label="ImageSL" xmlns="http://www.w3.org/2000/svg">
+            <rect x="2" y="2" width="60" height="60" rx="17" fill="url(#isl-a)"/>
+            <g stroke="#ffffff" stroke-width="2.4">
+              <circle cx="26" cy="30" r="13.5" fill="#ffffff" fill-opacity="0.42"/>
+              <circle cx="39" cy="35.5" r="13.5" fill="#ffffff" fill-opacity="0.42"/>
+            </g>
+          </svg>
           <span>ImageSL</span>
         </a>
         <p>A tool for staining quantification. Analysis runs on your own machine; slides are
