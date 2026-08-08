@@ -41,7 +41,9 @@ body{
 }
 .brand{ display:flex; align-items:center; gap:10px; }
 .brand-logo{ display:flex; }
-.brand-logo svg{ width:24px; height:24px; display:block; }
+/* The PNG artwork, so this matches the taskbar icon exactly — logo.svg draws a
+   heavier outline and a brighter overlap than the mark actually has. */
+.brand-logo img{ width:24px; height:24px; display:block; }
 .wordmark{ font-size:13.5px; font-weight:var(--w-normal); letter-spacing:.13em; color:var(--ink-2); }
 .wordmark b{ font-weight:var(--w-normal); color:var(--ink-2); }
 .tagline{ font-size:13px; font-weight:var(--w-light); letter-spacing:0; color:var(--ink-3); }
