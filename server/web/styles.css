@@ -34,10 +34,15 @@ body{
 }
 
 /* -------- top bar -------- */
+/* Translucent and blurred over the canvas, the way a system toolbar behaves:
+   content scrolls under it and stays faintly visible instead of vanishing at a
+   hard edge. */
 .topbar{
   display:flex; align-items:center; justify-content:space-between;
   padding:0 var(--s6); height:52px; border-bottom:1px solid var(--line);
-  background:var(--bg); position:sticky; top:0; z-index:50;
+  background:rgba(255,255,255,.72); position:sticky; top:0; z-index:50;
+  backdrop-filter:saturate(180%) blur(20px);
+  -webkit-backdrop-filter:saturate(180%) blur(20px);
 }
 .brand{ display:flex; align-items:center; gap:var(--s2); }
 .brand-logo{ display:flex; }
@@ -105,13 +110,21 @@ main{ max-width:1120px; margin:0 auto; padding:44px 22px 90px; }
    decision followed by a single action, so it is composed as one centred
    column rather than a grid of panels - which is what made it read as crowded
    and lopsided. Nothing here has a border except the drop target itself. */
-/* Centred in the viewport, not stacked at the top. The pre-analysis screen is
-   short, so anchoring it to the top left the lower 40% of the window empty and
-   the whole thing looking top-heavy and unfinished. */
+/* Centred in the viewport, on a bright white panel. The panel is what makes the
+   screen read as an object rather than as text floating on a page, and it is
+   symmetrical by construction: one centred container, everything inside it
+   centred to the same axis. */
 #uploadView{
-  max-width:520px; margin:0 auto; padding-top:0;
-  min-height:calc(100vh - 52px - 134px);   /* viewport - topbar - main padding */
+  max-width:520px; margin:0 auto; padding:var(--s12) var(--s10) var(--s10);
+  min-height:auto;
+  background:var(--card); border-radius:var(--radius-lg);
+  box-shadow:var(--shadow);
   display:flex; flex-direction:column; justify-content:center;
+}
+/* The canvas centres the panel vertically. */
+main:has(#uploadView.view:not(.hidden)){
+  min-height:calc(100vh - 52px);
+  display:flex; align-items:center; justify-content:center;
 }
 
 .hero{ text-align:center; margin:0 0 var(--s8); padding:0; border:0; }
@@ -135,8 +148,10 @@ main{ max-width:1120px; margin:0 auto; padding:44px 22px 90px; }
 .mode-select{
   display:grid; grid-template-columns:1fr 1fr; gap:0;
   margin:0 auto var(--s8); padding:3px;
-  background:var(--surface); border:1px solid var(--line);
-  border-radius:999px; max-width:300px;
+  /* Tinted track on the white panel, so the control is legible without an
+     outline. On a white-on-white page it needed a border to exist at all. */
+  background:var(--bg); border:0;
+  border-radius:var(--radius-pill); max-width:300px;
 }
 /* The stain picker sits between the control and the drop target in Select mode.
    Defined once, here, including its box - see the note further down about why
@@ -149,7 +164,7 @@ main{ max-width:1120px; margin:0 auto; padding:44px 22px 90px; }
 .mode-card{
   display:flex; align-items:center; justify-content:center;
   text-align:center; cursor:pointer; font:inherit;
-  background:transparent; border:0; border-radius:999px;
+  background:transparent; border:0; border-radius:var(--radius-pill);
   padding:var(--s2) var(--s4); color:var(--ink-3);
   transition:background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
@@ -166,15 +181,16 @@ main{ max-width:1120px; margin:0 auto; padding:44px 22px 90px; }
    Large, quiet, symmetrical. A dashed hairline reads as "put something here"
    without shouting; the filled icon tile it used to have was the loudest thing
    on a screen whose job is to be calm. */
+/* A recessed well inside the panel: tinted, rounded, dashed. Reading as a
+   slightly sunken area is what says "put something in here" without a border
+   heavy enough to compete with the panel's own edge. */
 .dropzone{
-  border:1px dashed var(--line-2); border-radius:10px;
-  background:transparent;
-  /* Was 64px top and bottom, which left a large hollow box around a little
-     text. Proportion matters more than sheer size for a target this obvious. */
+  border:1.5px dashed var(--line-2); border-radius:var(--radius);
+  background:var(--surface);
   padding:var(--s10) var(--s6); text-align:center; cursor:pointer;
   transition:border-color var(--dur) var(--ease), background var(--dur) var(--ease);
 }
-.dropzone:hover{ border-color:var(--ink-3); background:var(--surface); }
+.dropzone:hover{ border-color:var(--ink-3); background:var(--bg); }
 .dropzone.dragover{ border-color:var(--accent); background:var(--accent-weak); }
 .dz-icon{
   width:28px; height:28px; margin:0 auto var(--s4);

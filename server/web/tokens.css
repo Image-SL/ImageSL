@@ -17,16 +17,21 @@
 
 :root{
   /* -- Ink ---------------------------------------------------------------- */
-  --ink:#0d0f12;        /* primary text            18.9:1 on white */
-  --ink-2:#4d535c;      /* secondary text           7.8:1 */
-  --ink-3:#6b7280;      /* tertiary / meta          4.8:1  <- the floor */
+  --ink:#1d1d1f;        /* primary text            15.9:1 on white */
+  --ink-2:#515154;      /* secondary text           7.6:1 */
+  --ink-3:#6e6e73;      /* tertiary / meta          5.3:1  <- the floor */
 
-  /* -- Rules and surfaces ------------------------------------------------- */
-  --line:#e6e8ec;       /* default hairline */
-  --line-2:#d3d7dd;     /* emphasised border, control outlines */
-  --bg:#ffffff;
-  --surface:#fafbfc;    /* faintly raised panel */
-  --card:#ffffff;
+  /* -- Rules and surfaces --------------------------------------------------
+     The canvas is a soft tinted grey and the content sits on WHITE panels
+     above it. That inversion is the whole look: pure white edge-to-edge has
+     nothing to separate content from chrome, so everything has to be drawn with
+     lines, and a page drawn with lines reads as a form. Give the panels a
+     brighter surface than the page and they separate themselves. */
+  --line:#e8e8ed;       /* default hairline */
+  --line-2:#d2d2d7;     /* emphasised border, control outlines */
+  --bg:#f5f5f7;         /* the canvas */
+  --surface:#fbfbfd;    /* faintly recessed area inside a panel */
+  --card:#ffffff;       /* the bright white panels */
 
   /* -- Brand -------------------------------------------------------------- */
   /* The violet of the logo mark. Used for the mark, focus rings and the one
@@ -43,8 +48,14 @@
   --danger:#b91c1c; --danger-weak:#fef2f2;
   --warn:#a16207;  --warn-weak:#fffbeb;
 
-  /* -- Geometry ----------------------------------------------------------- */
-  --radius:3px; --radius-sm:2px; --radius-lg:4px;
+  /* -- Geometry ------------------------------------------------------------
+     Generously rounded. 3px corners read as a form field; these read as
+     objects, which is what a panel on a canvas needs to be. --radius-pill is
+     for segmented controls and buttons that should look pressable. */
+  --radius:12px;        /* panels, cards, images */
+  --radius-sm:8px;      /* inputs, small controls, chips */
+  --radius-lg:18px;     /* large containers */
+  --radius-pill:980px;
 
   /* -- Spacing -------------------------------------------------------------
      A 4px scale. Every margin and padding in the product comes from here, so
@@ -61,11 +72,13 @@
   --t-base:15px;    --t-lead:17px;    --t-title:20px;
   --t-display:28px; --t-hero:34px;
 
-  /* -- Elevation ---------------------------------------------------------- */
-  /* Almost nothing. Depth comes from hairlines and whitespace, not shadow. */
-  --shadow-sm:0 1px 2px rgba(13,15,18,.04);
-  --shadow:0 1px 3px rgba(13,15,18,.06), 0 1px 2px rgba(13,15,18,.04);
-  --shadow-lg:0 8px 28px rgba(13,15,18,.10), 0 2px 8px rgba(13,15,18,.05);
+  /* -- Elevation -----------------------------------------------------------
+     Soft and wide rather than dark and tight. A panel should look like it is
+     resting on the canvas, not stamped onto it - the giveaway of a cheap
+     interface is a hard drop shadow at high opacity. */
+  --shadow-sm:0 1px 2px rgba(0,0,0,.04);
+  --shadow:0 1px 2px rgba(0,0,0,.04), 0 6px 20px rgba(0,0,0,.05);
+  --shadow-lg:0 4px 12px rgba(0,0,0,.06), 0 20px 48px rgba(0,0,0,.09);
 
   /* -- Type --------------------------------------------------------------- */
   --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;

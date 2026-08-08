@@ -28,9 +28,13 @@
      One statement, one action. The page is mostly space on purpose: the mark
      above the headline gives the column an axis, and nothing competes with the
      two buttons. */
-  .hero{text-align:center;padding:var(--s16) 0 var(--s12)}
+  /* Bright white band on the tinted canvas — the page is built from alternating
+     bands rather than one flat colour, which is what gives it structure without
+     a single border. */
+  .hero{text-align:center;padding:var(--s16) 0 var(--s12);background:var(--card);
+        border-bottom:1px solid var(--line)}
   .hero-mark{width:56px;height:56px;display:block;margin:0 auto var(--s8)}
-  h1{margin:0;font-size:clamp(32px,5vw,52px);font-weight:var(--w-thin);
+  h1{margin:0;font-size:clamp(32px,5vw,50px);font-weight:var(--w-med);
      letter-spacing:-.03em;line-height:1.14;max-width:15ch;margin-inline:auto}
   .sub{margin:var(--s5) auto 0;max-width:40ch;font-size:var(--t-lead);
        color:var(--ink-3);line-height:1.55;font-weight:var(--w-light)}
@@ -42,9 +46,12 @@
   .meta a{color:var(--ink-3);text-decoration:none;border-bottom:1px solid var(--line)}
   .meta a:hover{color:var(--ink)}
 
-  /* -- spec line --------------------------------------------------------- */
-  .spec{border-top:1px solid var(--line);background:var(--bg)}
-  .spec .wrap{display:flex;flex-wrap:wrap;gap:var(--s2) var(--s8);padding-block:var(--s6);
+  /* -- spec line ---------------------------------------------------------
+     Takes the remaining height of the canvas and centres its text inside it, so
+     on a tall window the grey band reads as a deliberate area rather than as
+     content sitting at the top of an accidental gap. */
+  .spec{border-top:0;background:var(--bg);flex:1;display:flex;align-items:center}
+  .spec .wrap{display:flex;flex-wrap:wrap;gap:var(--s2) var(--s8);padding-block:var(--s8);
               font-size:var(--t-small);color:var(--ink-3);justify-content:center;text-align:center}
   .spec b{font-weight:var(--w-normal);color:var(--ink-2)}
 

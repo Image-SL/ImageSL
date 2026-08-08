@@ -9,10 +9,16 @@
 body{font-weight:var(--w-light);display:flex;flex-direction:column;min-height:100vh}
 a{color:inherit}
 .wrap{width:100%;max-width:1000px;margin:0 auto;padding:0 28px}
-main{flex:1}
+main{flex:1;display:flex;flex-direction:column}
 
 /* -- header -------------------------------------------------------------- */
-.site-header{border-bottom:1px solid var(--line)}
+.site-header{
+  border-bottom:1px solid var(--line);
+  background:rgba(255,255,255,.72);
+  backdrop-filter:saturate(180%) blur(20px);
+  -webkit-backdrop-filter:saturate(180%) blur(20px);
+  position:sticky; top:0; z-index:50;
+}
 .site-header .wrap{display:flex;align-items:center;justify-content:space-between;gap:20px;height:62px}
 .brand{display:flex;align-items:center;gap:9px;text-decoration:none}
 .brand img{width:24px;height:24px;display:block;flex:none}
@@ -22,26 +28,34 @@ main{flex:1}
 .site-nav a:hover{color:var(--ink)}
 @media(max-width:640px){ .site-nav a.opt{display:none} }
 
-/* -- buttons ------------------------------------------------------------- */
-.btn{display:inline-flex;align-items:center;gap:9px;font-family:inherit;font-size:14.5px;
-     font-weight:var(--w-normal);text-decoration:none;padding:12px 22px;border-radius:var(--radius);
+/* -- buttons --------------------------------------------------------------
+   Pills. The primary carries the brand colour rather than being black: on a
+   page whose only other colour is the mark, a black slab is the heaviest thing
+   on screen and reads as a form submit, not as the thing you came for. */
+.btn{display:inline-flex;align-items:center;gap:9px;font-family:inherit;font-size:var(--t-base);
+     font-weight:var(--w-normal);text-decoration:none;padding:13px 26px;border-radius:var(--radius-pill);
      border:1px solid var(--line-2);background:var(--card);color:var(--ink);white-space:nowrap;
-     transition:border-color var(--dur) var(--ease),background var(--dur) var(--ease)}
+     box-shadow:var(--shadow-sm);
+     transition:border-color var(--dur) var(--ease),background var(--dur) var(--ease),
+                box-shadow var(--dur) var(--ease),transform var(--dur) var(--ease)}
+.btn:active{transform:scale(.985)}
 .btn svg{width:15px;height:15px;flex:none;opacity:.8}
 /* The platform glyph follows data-os, the same attribute that sets the label,
    so a button can never show one platform's logo above another's name. */
 .btn[data-os="win"] .g-mac,
 .btn[data-os="mac"] .g-win{display:none}
-.btn:hover{border-color:var(--ink)}
-.btn.primary{background:var(--ink);border-color:var(--ink);color:#fff}
+.btn:hover{border-color:var(--line-2);box-shadow:var(--shadow)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;
+             box-shadow:0 1px 2px rgba(109,40,217,.20),0 6px 18px rgba(109,40,217,.22)}
 .btn.primary svg{opacity:.95}
-.btn.primary:hover{background:#000;border-color:#000}
+.btn.primary:hover{background:var(--accent-2);border-color:var(--accent-2);
+                   box-shadow:0 2px 4px rgba(109,40,217,.24),0 10px 26px rgba(109,40,217,.26)}
 .btn.off{opacity:.4;cursor:not-allowed}
 .btn.off:hover{border-color:var(--line-2)}
 .btn.primary.off:hover{background:var(--ink);border-color:var(--ink)}
 
 /* -- footer -------------------------------------------------------------- */
-.site-footer{border-top:1px solid var(--line);background:var(--bg)}
+.site-footer{border-top:1px solid var(--line);background:var(--card)}
 .fgrid{display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:36px;padding:52px 0 40px}
 @media(max-width:760px){.fgrid{grid-template-columns:1fr 1fr;gap:32px 24px;padding-top:42px}}
 @media(max-width:420px){.fgrid{grid-template-columns:1fr}}
