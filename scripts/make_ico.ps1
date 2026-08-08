@@ -1,7 +1,11 @@
 # Build a multi-resolution Windows .ico (PNG-compressed entries) from a PNG.
 # Usage: powershell -File scripts/make_ico.ps1 -Source <png> -Out <ico>
+# Default source is the canonical mark: every raster asset is rendered from
+# server/web/assets/logo.svg into logo.png, so anything derived from it agrees
+# with the site and the app. (It used to default to client/logo-source.png,
+# which still held the retired "SL" shield.)
 param(
-  [string]$Source = "$PSScriptRoot\..\client\logo-source.png",
+  [string]$Source = "$PSScriptRoot\..\server\web\assets\logo.png",
   [string]$Out    = "$PSScriptRoot\..\client\ImageSL.ico"
 )
 
