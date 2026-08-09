@@ -1047,10 +1047,23 @@ def download(platform: str, request: Request):
             raise HTTPException(status_code=502,
                                 detail="The installer host did not answer. Try again shortly.")
         remote, size = upstream
-        headers = {"Content-Disposition": f'attachment; filename="{name}"'}
+        headers = {
+            "Content-Disposition": f'attachment; filename="{name}"',
+            # Let a CDN in front of this hold the installer at the edge.
+            # application/octet-stream is not cached by default, so without a
+            # header every single download would stream the full ~72 MB from
+            # object storage through this container - which is the one cost a
+            # CDN exists to remove.
+            #
+            # 300s, not a year: this URL is stable and its CONTENT changes on
+            # every release, so a long max-age would keep handing out the
+            # previous installer after a new one shipped. Five minutes matches
+            # the object's own policy and bounds how long that can be wrong.
+            "Cache-Control": "public, max-age=300",
+        }
         if size:
             # Give the browser a real progress bar rather than a spinner that
-            # never resolves on an 86 MB file.
+            # never resolves on a 72 MB file.
             headers["Content-Length"] = str(size)
         if request_is_head:
             remote.close()
@@ -1064,7 +1077,8 @@ def download(platform: str, request: Request):
                             detail="That build has not been published yet.")
     # filename= sets Content-Disposition: attachment, so a click downloads the
     # file and leaves the page where it is.
-    return FileResponse(str(path), media_type=content_type, filename=name)
+    return FileResponse(str(path), media_type=content_type, filename=name,
+                        headers={"Cache-Control": "public, max-age=300"})
 
 
 # Desktop-only settings, update checking and updating. Registered only in the
