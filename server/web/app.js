@@ -544,7 +544,19 @@ dropzone.addEventListener("click", () => fileInput.click());
 dropzone.addEventListener("keydown", (e) => {
   if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fileInput.click(); }
 });
-fileInput.addEventListener("change", (e) => { const f = e.target.files; e.target.value = ""; if (f.length) stage(f); });
+/* Snapshot the FileList BEFORE clearing the input. `input.files` is LIVE: on
+   Chromium - which is WebView2, so every Windows install - `value = ""` empties
+   the very list just captured, `f.length` then reads 0, and the slide the user
+   picked is dropped without a word. Dragging kept working because
+   `dataTransfer.files` is a separate object, which is what made this look like a
+   broken Browse button rather than a bug in the shared staging path.
+   The reset has to stay: without it, choosing the same file twice in a row fires
+   no `change` event at all. It just has to happen after the copy, not before. */
+fileInput.addEventListener("change", (e) => {
+  const files = Array.from(e.target.files);
+  e.target.value = "";
+  if (files.length) stage(files);
+});
 ["dragover", "dragenter"].forEach((ev) => dropzone.addEventListener(ev, (e) => { e.preventDefault(); dropzone.classList.add("dragover"); }));
 ["dragleave", "dragend"].forEach((ev) => dropzone.addEventListener(ev, (e) => { e.preventDefault(); dropzone.classList.remove("dragover"); }));
 dropzone.addEventListener("drop", (e) => { e.preventDefault(); dropzone.classList.remove("dragover"); const f = e.dataTransfer.files; if (f && f.length) stage(f); });
@@ -561,7 +573,11 @@ $("btnAnalyze").addEventListener("click", () => {
 // "Add files" from the results view stays immediate. That button is already an
 // explicit action on an existing batch, so staging it would add a second click
 // to confirm something the user just asked for.
-$("fileAdd").addEventListener("change", (e) => { const f = e.target.files; e.target.value = ""; if (f.length) runBatch(f, true); });
+$("fileAdd").addEventListener("change", (e) => {
+  const files = Array.from(e.target.files);   // copy first - see the note above
+  e.target.value = "";
+  if (files.length) runBatch(files, true);
+});
 $("btnAddMore").addEventListener("click", () => $("fileAdd").click());
 
 /* ============================== batch analyze ============================== */
