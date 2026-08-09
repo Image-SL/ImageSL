@@ -446,11 +446,121 @@ function currentStainKey() { return (mode === "select" && selectedStain) ? selec
 /* ============================== upload ============================== */
 const dropzone = $("dropzone");
 const fileInput = $("file");
+
+/* Chosen files are STAGED, not analysed. Dropping a folder used to start
+   measuring on the spot: no chance to check what was picked up, no chance to
+   choose the stain first, and no way out but to wait for it to finish. The
+   selection now sits here until Analyse is pressed.
+
+   Files accumulate rather than replace, because dragging a second folder in
+   almost always means "and these too". Duplicates are dropped on name+size+
+   mtime, which is what stops a double-drop quietly measuring everything twice
+   and reporting each slide two times in the CSV. */
+let staged = [];
+const MAX_LISTED = 12;
+
+const fileKey = (f) => `${f.name} ${f.size} ${f.lastModified}`;
+
+function humanSize(n) {
+  if (!n) return "";
+  const u = ["B", "KB", "MB", "GB"];
+  let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return (i === 0 ? n : n.toFixed(1)) + " " + u[i];
+}
+
+function renderSelection() {
+  const panel = $("selection"), list = $("selList"), more = $("selMore");
+  if (!panel) return;
+  panel.classList.toggle("hidden", staged.length === 0);
+  if (!staged.length) { list.innerHTML = ""; more.classList.add("hidden"); return; }
+
+  $("selCount").textContent =
+    staged.length === 1 ? "1 file selected" : `${staged.length} files selected`;
+
+  // Only the first dozen are drawn. A folder can hold hundreds, and building a
+  // row for every one of them costs more than it tells the reader.
+  list.innerHTML = "";
+  staged.slice(0, MAX_LISTED).forEach((f, i) => {
+    const li = document.createElement("li");
+    li.className = "sel-item";
+    const name = document.createElement("span");
+    name.className = "sel-name";
+    name.textContent = f.name;              // textContent, never innerHTML: a
+    name.title = f.name;                    // filename is untrusted input
+    const size = document.createElement("span");
+    size.className = "sel-size";
+    size.textContent = humanSize(f.size);
+    const drop = document.createElement("button");
+    drop.type = "button";
+    drop.className = "sel-drop";
+    drop.textContent = "×";
+    drop.title = "Remove";
+    drop.setAttribute("aria-label", `Remove ${f.name}`);
+    drop.addEventListener("click", () => { staged.splice(i, 1); renderSelection(); });
+    li.append(name, size, drop);
+    list.appendChild(li);
+  });
+
+  const hidden = staged.length - MAX_LISTED;
+  more.textContent = hidden > 0
+    ? `and ${hidden} more file${hidden === 1 ? "" : "s"}` : "";
+  more.classList.toggle("hidden", hidden <= 0);
+}
+
+function stage(fileList) {
+  const seen = new Set(staged.map(fileKey));
+  let added = 0, dupes = 0;
+  Array.from(fileList).forEach((f) => {
+    const k = fileKey(f);
+    if (seen.has(k)) { dupes++; return; }
+    seen.add(k);
+    staged.push(f);
+    added++;
+  });
+  renderSelection();
+  const err = $("uploadError");
+  if (err) {
+    if (dupes && !added) {
+      err.textContent = dupes === 1
+        ? "That file is already selected."
+        : "Those files are already selected.";
+      err.classList.remove("hidden");
+    } else {
+      err.classList.add("hidden");
+    }
+  }
+  if (added) $("btnAnalyze").focus({ preventScroll: true });
+}
+
+function clearSelection() {
+  staged = [];
+  renderSelection();
+  const err = $("uploadError");
+  if (err) err.classList.add("hidden");
+}
+
 dropzone.addEventListener("click", () => fileInput.click());
-fileInput.addEventListener("change", (e) => { const f = e.target.files; e.target.value = ""; if (f.length) runBatch(f, false); });
+dropzone.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fileInput.click(); }
+});
+fileInput.addEventListener("change", (e) => { const f = e.target.files; e.target.value = ""; if (f.length) stage(f); });
 ["dragover", "dragenter"].forEach((ev) => dropzone.addEventListener(ev, (e) => { e.preventDefault(); dropzone.classList.add("dragover"); }));
 ["dragleave", "dragend"].forEach((ev) => dropzone.addEventListener(ev, (e) => { e.preventDefault(); dropzone.classList.remove("dragover"); }));
-dropzone.addEventListener("drop", (e) => { e.preventDefault(); dropzone.classList.remove("dragover"); const f = e.dataTransfer.files; if (f && f.length) runBatch(f, false); });
+dropzone.addEventListener("drop", (e) => { e.preventDefault(); dropzone.classList.remove("dragover"); const f = e.dataTransfer.files; if (f && f.length) stage(f); });
+
+$("selClear").addEventListener("click", clearSelection);
+$("btnSelAdd").addEventListener("click", () => fileInput.click());
+$("btnAnalyze").addEventListener("click", () => {
+  if (!staged.length) return;
+  const batch = staged;
+  clearSelection();               // clear first: the run owns the list now, and
+  runBatch(batch, false);         // a second click cannot start it twice
+});
+
+// "Add files" from the results view stays immediate. That button is already an
+// explicit action on an existing batch, so staging it would add a second click
+// to confirm something the user just asked for.
 $("fileAdd").addEventListener("change", (e) => { const f = e.target.files; e.target.value = ""; if (f.length) runBatch(f, true); });
 $("btnAddMore").addEventListener("click", () => $("fileAdd").click());
 

@@ -151,7 +151,8 @@
       <div id="stainChosen" class="sp-chosen hidden"></div>
       <div id="stainResults" class="sp-results" role="listbox"></div>
     </div>
-    <div id="dropzone" class="dropzone">
+    <div id="dropzone" class="dropzone" role="button" tabindex="0"
+         aria-label="Choose slides, or drop them here">
       <div class="dz-icon" aria-hidden="true">
         <svg width="46" height="46" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
           <path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><path d="M20 16.5V19a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-2.5"/>
@@ -161,6 +162,23 @@
       <p>or <span class="link-inline">click to browse</span> · TIFF, PNG, JPG</p>
       <input type="file" id="file" multiple accept=".tif,.tiff,.png,.jpg,.jpeg" hidden>
     </div>
+
+    <!-- Chosen files wait here until Analyse is pressed. Dropping a folder used
+         to start measuring immediately, which gave no chance to check the
+         selection or set the stain first, and no way back except waiting. -->
+    <section id="selection" class="selection hidden" aria-labelledby="selCount">
+      <div class="sel-head">
+        <span id="selCount" class="sel-count">No files selected</span>
+        <button type="button" id="selClear" class="btn subtle tiny">Clear</button>
+      </div>
+      <ul id="selList" class="sel-list"></ul>
+      <p id="selMore" class="sel-more hidden"></p>
+      <div class="sel-actions">
+        <button type="button" id="btnAnalyze" class="btn primary">Analyse</button>
+        <button type="button" id="btnSelAdd" class="btn ghost">Add more</button>
+      </div>
+    </section>
+
     <div class="upload-foot">
       <p id="uploadError" class="err hidden"></p>
     </div>
