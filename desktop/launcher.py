@@ -26,7 +26,7 @@ APP_NAME = "ImageSL"
 # Site the auto-updater asks what the current build is, and where the download
 # lives. Not a GitHub repo: the repository is private, so the releases API 404s
 # for everyone and the check never fires.
-SITE = os.environ.get("IMAGESL_SITE", "https://imagesl.online")
+SITE = os.environ.get("IMAGESL_SITE", "https://imagesl.com")
 
 
 # --------------------------------------------------------------------------- #

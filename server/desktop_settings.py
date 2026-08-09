@@ -119,7 +119,7 @@ def is_newer(candidate: str, current: str) -> bool:
 # Talking to the site
 # --------------------------------------------------------------------------- #
 def _site() -> str:
-    return (os.environ.get("IMAGESL_SITE") or "https://imagesl.online").rstrip("/")
+    return (os.environ.get("IMAGESL_SITE") or "https://imagesl.com").rstrip("/")
 
 
 def _platform_key() -> str:

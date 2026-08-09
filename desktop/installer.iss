@@ -23,7 +23,7 @@
 ; The site, NOT the GitHub repository. The repo is private, so a repo URL is a
 ; 404 for every user who has this installed - and these three end up in Add or
 ; Remove Programs as the publisher, support and updates links.
-#define MyAppURL     "https://imagesl.online"
+#define MyAppURL     "https://imagesl.com"
 
 [Setup]
 ; Stable AppId — never change it, or upgrades install alongside instead of over.

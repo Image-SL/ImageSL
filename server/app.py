@@ -102,7 +102,27 @@ ANALYZER_ENABLED = IMAGESL_DESKTOP or WEB_ANALYZER
 # somewhere else. After a move to a new domain, hardcoded tags would keep
 # pointing at the old one and hand it all the credit - the exact opposite of
 # what a move is for.
-SITE_URL = (os.environ.get("IMAGESL_SITE_URL") or "https://imagesl.online").rstrip("/")
+SITE_URL = (os.environ.get("IMAGESL_SITE_URL") or "https://imagesl.com").rstrip("/")
+
+# Domains we used to live on. Every request arriving on one is answered with a
+# permanent redirect to the same path on SITE_URL.
+#
+# This is done in the application, not by retiring the domain, because the old
+# name cannot simply be switched off: every copy of ImageSL already installed
+# has it compiled in as its update endpoint. Deleting it would leave those
+# installs polling a dead host forever - no update notifications, no way to tell
+# anyone a new version exists, and no way to reach them afterwards, because the
+# update channel WAS the way to reach them. urllib follows redirects, so a 301
+# keeps them working while they migrate themselves.
+#
+# 301 rather than 302 on purpose: this is a permanent move, and only a permanent
+# redirect transfers accumulated search ranking to the new domain.
+LEGACY_HOSTS = {
+    h.strip().lower()
+    for h in (os.environ.get("IMAGESL_LEGACY_HOSTS")
+              or "imagesl.online,www.imagesl.online").split(",")
+    if h.strip()
+}
 
 # The only API a download page needs.
 _PUBLIC_API = {"/api/health", "/api/downloads"}
@@ -157,6 +177,28 @@ _SECURITY_HEADERS = {
                            "gyroscope=(), magnetometer=(), microphone=(), "
                            "payment=(), usb=()"),
 }
+
+
+@app.middleware("http")
+async def _legacy_domain_redirect(request: Request, call_next):
+    """Send a retired domain to the current one, permanently.
+
+    Registered before everything else so a legacy host never reaches a route:
+    it should get one answer, the new address, whatever it asked for.
+
+    Only an exact Host match redirects. The health check and the desktop build
+    both arrive with a loopback or container-internal Host, so neither is
+    touched - and a loop is impossible because SITE_URL's own host is never in
+    the legacy set.
+    """
+    if LEGACY_HOSTS:
+        host = (request.headers.get("host") or "").split(":")[0].lower()
+        if host in LEGACY_HOSTS:
+            target = f"{SITE_URL}{request.url.path}"
+            if request.url.query:
+                target = f"{target}?{request.url.query}"
+            return RedirectResponse(target, status_code=301)
+    return await call_next(request)
 
 
 @app.middleware("http")
