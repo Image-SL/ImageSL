@@ -30,7 +30,8 @@ import re
 from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi import Response
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
-                               RedirectResponse, StreamingResponse)
+                               PlainTextResponse, RedirectResponse,
+                               StreamingResponse)
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 import io
@@ -92,6 +93,16 @@ IMAGESL_DESKTOP = os.environ.get("IMAGESL_DESKTOP") == "1"
 # hosted analyzer deliberately - and change the privacy policy if you do.
 WEB_ANALYZER = os.environ.get("IMAGESL_WEB_ANALYZER") == "1"
 ANALYZER_ENABLED = IMAGESL_DESKTOP or WEB_ANALYZER
+
+# The site's own address, used for canonical URLs, Open Graph, the sitemap and
+# robots.txt. Set IMAGESL_SITE_URL to move domains.
+#
+# This is one setting rather than a string in four HTML files because a stale
+# canonical is not a cosmetic error: it tells search engines the real page lives
+# somewhere else. After a move to a new domain, hardcoded tags would keep
+# pointing at the old one and hand it all the credit - the exact opposite of
+# what a move is for.
+SITE_URL = (os.environ.get("IMAGESL_SITE_URL") or "https://imagesl.online").rstrip("/")
 
 # The only API a download page needs.
 _PUBLIC_API = {"/api/health", "/api/downloads"}
@@ -657,7 +668,10 @@ def _serve_html(name: str) -> HTMLResponse:
     path = WEB_DIR / name
     if not path.is_file():
         return HTMLResponse(f"<h1>ImageSL</h1><p>Missing {name}.</p>", status_code=500)
-    html = path.read_text(encoding="utf-8").replace("__ASSET_V__", _asset_version())
+    html = (path.read_text(encoding="utf-8")
+            .replace("__ASSET_V__", _asset_version())
+            .replace("__SITE_URL__", SITE_URL)
+            .replace("__APP_VERSION__", APP_VERSION))
     # NEVER let the browser (or the desktop client's WebView) hold on to the HTML.
     # It is the only unversioned file we serve, so a stale copy pins the whole app
     # to an old build: it keeps requesting the old `?v=` CSS/JS and a deploy looks
@@ -1063,6 +1077,50 @@ if IMAGESL_DESKTOP:
         desktop_settings.register(app, APP_VERSION, CACHE_DIR)
     except Exception as _exc:      # never let settings stop the app opening
         print(f"ImageSL: desktop settings unavailable ({_exc})")
+
+
+# --------------------------------------------------------------------------- #
+# Search engines
+# --------------------------------------------------------------------------- #
+# Generated rather than served as files, so a domain move is one environment
+# variable and not a hunt through static assets for the old hostname.
+#
+# These are the inputs a search engine needs before it will show a site's own
+# sub-pages beneath its result. That presentation cannot be requested - it is
+# built from a crawlable structure, one clear name, and internal links that
+# agree with each other. Nothing here guarantees it; without it there is
+# nothing to build from.
+_PUBLIC_PAGES = [("/", "1.0"), ("/privacy", "0.4"), ("/terms", "0.4")]
+
+
+@app.get("/robots.txt")
+def robots_txt():
+    lines = ["User-agent: *", "Allow: /"]
+    # The installer is ~72 MB. Crawling it wastes their bandwidth and ours, and
+    # a binary has nothing to index.
+    lines += ["Disallow: /download/", "Disallow: /api/"]
+    if not ANALYZER_ENABLED:
+        # /app 307s to "/" on the public site; letting a crawler follow it just
+        # produces a duplicate of the home page under a second URL.
+        lines.append("Disallow: /app")
+    lines += ["", f"Sitemap: {SITE_URL}/sitemap.xml", ""]
+    return PlainTextResponse("\n".join(lines),
+                             headers={"Cache-Control": "public, max-age=3600"})
+
+
+@app.get("/sitemap.xml")
+def sitemap_xml():
+    today = time.strftime("%Y-%m-%d", time.gmtime())
+    urls = "".join(
+        f"<url><loc>{SITE_URL}{path}</loc><lastmod>{today}</lastmod>"
+        f"<changefreq>weekly</changefreq><priority>{pri}</priority></url>"
+        for path, pri in _PUBLIC_PAGES
+    )
+    xml = ('<?xml version="1.0" encoding="UTF-8"?>'
+           '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+           f'{urls}</urlset>')
+    return Response(content=xml, media_type="application/xml",
+                    headers={"Cache-Control": "public, max-age=3600"})
 
 
 @app.get("/privacy", response_class=HTMLResponse)

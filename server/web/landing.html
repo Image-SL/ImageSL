@@ -9,15 +9,57 @@
 
 <link rel="icon" type="image/png" sizes="32x32" href="/assets/favicon-32.png">
 <link rel="apple-touch-icon" href="/assets/logo-192.png">
-<link rel="canonical" href="https://imagesl.online/">
+<link rel="canonical" href="__SITE_URL__/">
 
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="ImageSL">
 <meta property="og:title" content="ImageSL — a tool for staining quantification">
 <meta property="og:description" content="Automatic background removal and positive-area quantification. Runs offline on your own machine.">
-<meta property="og:url" content="https://imagesl.online/">
-<meta property="og:image" content="https://imagesl.online/assets/og-image.png">
+<meta property="og:url" content="__SITE_URL__/">
+<meta property="og:image" content="__SITE_URL__/assets/og-image.png">
 <meta name="twitter:card" content="summary_large_image">
+
+<!-- Structured data. Search engines read this to work out what the site IS and
+     what its parts are; it is the input to the sub-links shown beneath a result.
+     Those links cannot be requested or configured - they are generated from a
+     crawlable structure that agrees with itself. This states the name once, so
+     there is no ambiguity about what to label the site. -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "WebSite",
+      "@id": "__SITE_URL__/#website",
+      "url": "__SITE_URL__/",
+      "name": "ImageSL",
+      "description": "A tool for staining quantification.",
+      "publisher": { "@id": "__SITE_URL__/#org" },
+      "inLanguage": "en"
+    },
+    {
+      "@type": "Organization",
+      "@id": "__SITE_URL__/#org",
+      "name": "ImageSL",
+      "url": "__SITE_URL__/",
+      "logo": "__SITE_URL__/assets/logo-192.png"
+    },
+    {
+      "@type": "SoftwareApplication",
+      "name": "ImageSL",
+      "url": "__SITE_URL__/",
+      "applicationCategory": "MedicalApplication",
+      "applicationSubCategory": "Image analysis",
+      "operatingSystem": "Windows 10, macOS 12",
+      "softwareVersion": "__APP_VERSION__",
+      "description": "Measures stained area on a slide. Runs on your own computer, offline.",
+      "downloadUrl": "__SITE_URL__/download/windows",
+      "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+      "publisher": { "@id": "__SITE_URL__/#org" }
+    }
+  ]
+}
+</script>
 
 <link rel="stylesheet" href="/tokens.css?v=__ASSET_V__">
 <link rel="stylesheet" href="/site.css?v=__ASSET_V__">
