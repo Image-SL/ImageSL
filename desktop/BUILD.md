@@ -83,7 +83,7 @@ repository variables drive it (Settings → Secrets and variables → Actions �
 
 | Variable | Used by | Meaning |
 | --- | --- | --- |
-| `IMAGESL_DOWNLOAD_BUCKET` | both workflows | the bucket name, e.g. `imagesl-downloads` |
+| `IMAGESL_DOWNLOAD_BUCKET` | both workflows | the bucket name — `imagesl-downloads-581586866061` |
 | `IMAGESL_DOWNLOAD_BASE_URL` | `deploy.yml` | optional; overrides the derived S3 URL so a CDN can be put in front later |
 
 With neither set, everything still works — `build-desktop.yml` skips its publish
@@ -97,7 +97,7 @@ Needs the AWS CLI (`winget install Amazon.AWSCLI`) and credentials for account
 `581586866061`.
 
 ```bash
-aws s3api create-bucket --bucket imagesl-downloads --region us-east-2 \
+aws s3api create-bucket --bucket imagesl-downloads-581586866061 --region us-east-2 \
   --create-bucket-configuration LocationConstraint=us-east-2
 ```
 
@@ -105,18 +105,18 @@ The objects must be anonymously readable — visitors are redirected straight to
 them — so allow public reads on the download prefixes only:
 
 ```bash
-aws s3api put-public-access-block --bucket imagesl-downloads \
+aws s3api put-public-access-block --bucket imagesl-downloads-581586866061 \
   --public-access-block-configuration "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=false,RestrictPublicBuckets=false"
 
-aws s3api put-bucket-policy --bucket imagesl-downloads --policy '{
+aws s3api put-bucket-policy --bucket imagesl-downloads-581586866061 --policy '{
   "Version": "2012-10-17",
   "Statement": [{
     "Sid": "PublicReadInstallers",
     "Effect": "Allow",
     "Principal": "*",
     "Action": "s3:GetObject",
-    "Resource": ["arn:aws:s3:::imagesl-downloads/latest/*",
-                 "arn:aws:s3:::imagesl-downloads/v/*"]
+    "Resource": ["arn:aws:s3:::imagesl-downloads-581586866061/latest/*",
+                 "arn:aws:s3:::imagesl-downloads-581586866061/v/*"]
   }]
 }'
 ```
@@ -137,7 +137,7 @@ aws iam put-role-policy --role-name imagesl-github-deploy \
   "Statement": [{
     "Effect": "Allow",
     "Action": ["s3:PutObject", "s3:PutObjectAcl", "s3:AbortMultipartUpload"],
-    "Resource": "arn:aws:s3:::imagesl-downloads/*"
+    "Resource": "arn:aws:s3:::imagesl-downloads-581586866061/*"
   }]
 }'
 ```
@@ -159,7 +159,7 @@ The `token.actions.githubusercontent.com:sub` condition should be
 To make Windows downloads work immediately, without waiting for a CI run:
 
 ```bash
-aws s3 cp downloads/ImageSL-Setup-Windows.exe s3://imagesl-downloads/latest/ImageSL-Setup-Windows.exe --content-type application/octet-stream --content-disposition 'attachment; filename="ImageSL-Setup-Windows.exe"' --cache-control 'public, max-age=300'
+aws s3 cp downloads/ImageSL-Setup-Windows.exe s3://imagesl-downloads-581586866061/latest/ImageSL-Setup-Windows.exe --content-type application/octet-stream --content-disposition 'attachment; filename="ImageSL-Setup-Windows.exe"' --cache-control 'public, max-age=300'
 ```
 
 `Content-Disposition` is set on the **object** because the app answers with a
@@ -169,7 +169,7 @@ Without it a browser may render the file rather than save it.
 **Upload the checksum sidecar too, in the same step:**
 
 ```bash
-aws s3 cp downloads/ImageSL-Setup-Windows.exe.sha256 s3://imagesl-downloads/latest/ImageSL-Setup-Windows.exe.sha256 --content-type text/plain --cache-control 'public, max-age=300'
+aws s3 cp downloads/ImageSL-Setup-Windows.exe.sha256 s3://imagesl-downloads-581586866061/latest/ImageSL-Setup-Windows.exe.sha256 --content-type text/plain --cache-control 'public, max-age=300'
 ```
 
 `/api/downloads` reads `<url>.sha256` and republishes it, and the desktop
