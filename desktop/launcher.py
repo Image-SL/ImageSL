@@ -185,11 +185,11 @@ def _show_update_banner(window, info: dict) -> None:
         'display:flex;align-items:center;gap:14px;justify-content:center;'+
         'box-shadow:0 -6px 24px rgba(76,42,140,.35)';
       b.innerHTML='A new version of ImageSL ('+%r+') is available. '+
-        '<a href=\"'+%r+'\" target=\"_blank\" style=\"color:#fff;font-weight:700;text-decoration:underline\">Download</a>'+
+        '<a href=\"javascript:void(0)\" onclick=\"if(window.pywebview && window.pywebview.api) window.pywebview.api.open_external('+%r+'); else window.open('+%r+', \\'_blank\\')\" style=\"color:#fff;font-weight:700;text-decoration:underline\">Download</a>'+
         '<span onclick=\"this.parentNode.remove()\" style=\"cursor:pointer;opacity:.8;margin-left:6px\">✕</span>';
       document.body.appendChild(b);
     })();
-    """ % (ver, url)
+    """ % (ver, url, url)
     try:
         window.evaluate_js(js)
     except Exception:
@@ -216,6 +216,7 @@ def _enable_downloads() -> None:
     try:
         import webview
         webview.settings["ALLOW_DOWNLOADS"] = True
+        webview.settings["OPEN_EXTERNAL_LINKS_IN_BROWSER"] = False
     except Exception:
         pass
 
@@ -330,8 +331,15 @@ def main() -> int:
     _start_diagnostics_log()
     import webview  # pywebview
     _enable_downloads()          # read at start-up, so it must precede start()
+    
+    class Api:
+        def open_external(self, link: str) -> None:
+            import webbrowser
+            webbrowser.open(link)
+
     window = webview.create_window(
         APP_NAME, url,
+        js_api=Api(),
         width=1400, height=900, min_size=(1024, 720),
         background_color="#faf9fd",
     )
