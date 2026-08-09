@@ -197,6 +197,62 @@ def _show_update_banner(window, info: dict) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Native file dialogs and saving
+# --------------------------------------------------------------------------- #
+def _enable_downloads() -> None:
+    """Let the page save a file.
+
+    pywebview ships with downloads DISABLED (`ALLOW_DOWNLOADS: False`), and both
+    backends enforce it: the macOS delegate never promotes the navigation to a
+    download, and the Windows one sets `args.Cancel = True` outright. Every
+    export in the analyzer - the CSV, the per-slide TIFFs, the ZIP - is an
+    `<a download>` pointed at a blob, so with the default the buttons do
+    nothing at all. No error, no dialog, no file: the click is simply dropped,
+    which reads as a broken app rather than a disabled feature.
+
+    This is a desktop application whose entire purpose is to measure slides and
+    hand back the numbers, so saving them is not an optional extra.
+    """
+    try:
+        import webview
+        webview.settings["ALLOW_DOWNLOADS"] = True
+    except Exception:
+        pass
+
+
+def _start_diagnostics_log() -> None:
+    """Send the GUI layer's own errors to a file.
+
+    A windowed build has no stdout and no stderr, so anything the web view host
+    reports - a failed file dialog, a refused download, an exception inside an
+    Objective-C or WebView2 callback - is written to a stream that goes
+    nowhere. The app keeps running and the user sees a button that does
+    nothing, with no way to find out why and nothing to send us. That is what
+    made the export and file-picker reports so hard to pin down.
+
+    `_record_crash` already catches a launcher-level crash; this covers the far
+    more common case where the app survives and only one interaction fails.
+    Best-effort, and never fatal: logging must not be the thing that stops the
+    app from starting.
+    """
+    try:
+        import logging
+        path = _crash_log().with_name("imagesl.log")
+        handler = logging.FileHandler(path, mode="w", encoding="utf-8")
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        root = logging.getLogger()
+        root.addHandler(handler)
+        root.setLevel(logging.INFO)
+        # pywebview logs its delegate failures here and nowhere else.
+        logging.getLogger("pywebview").setLevel(logging.DEBUG)
+        logging.info("ImageSL %s starting (frozen=%s, platform=%s)",
+                     _read_version(), getattr(sys, "frozen", False), sys.platform)
+    except Exception:
+        pass
+
+
+# --------------------------------------------------------------------------- #
 # Entry point
 # --------------------------------------------------------------------------- #
 def _selftest() -> int:
@@ -271,7 +327,9 @@ def main() -> int:
     url = f"http://127.0.0.1:{port}/"
     icon = _server_dir().parent / "ImageSL.ico"
 
+    _start_diagnostics_log()
     import webview  # pywebview
+    _enable_downloads()          # read at start-up, so it must precede start()
     window = webview.create_window(
         APP_NAME, url,
         width=1400, height=900, min_size=(1024, 720),
