@@ -62,6 +62,9 @@ jobs:
           # later without touching this file.
           DL_BUCKET: ${{ vars.IMAGESL_DOWNLOAD_BUCKET }}
           DL_BASE_URL: ${{ vars.IMAGESL_DOWNLOAD_BASE_URL }}
+          # Optional override, so a future domain move needs no code change.
+          # Unset is the normal case and falls back to the default below.
+          IMAGESL_SITE_URL_VAR: ${{ vars.IMAGESL_SITE_URL }}
         run: |
           set -euo pipefail
 
@@ -94,6 +97,17 @@ jobs:
           # already hardcoding the account's ECR registry and role ARN: the
           # deployment target is not a secret and not a per-environment knob.
           DL_BUCKET_DEFAULT="imagesl-downloads-581586866061"
+
+          # The site's canonical address. Every canonical tag, og:url, the
+          # sitemap and robots.txt are built from it, so it has to be the domain
+          # visitors are actually meant to be on - not merely one that resolves.
+          #
+          # Set here rather than in the Lightsail console: this file is the
+          # source of truth and the next push overwrites anything set by hand,
+          # which for this variable would silently point every canonical tag
+          # back at the old domain and hand it the search ranking.
+          SITE_URL="${IMAGESL_SITE_URL_VAR:-https://imagesl.com}"
+          echo "Canonical site URL: $SITE_URL"
 
           BASE=""
           if [ -n "${DL_BASE_URL:-}" ]; then
@@ -153,6 +167,7 @@ jobs:
                 "image": "${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}",
                 "environment": {
                   "IMAGESL_VERSION": "${VERSION}",
+                  "IMAGESL_SITE_URL": "${SITE_URL}",
                   "IMAGESL_MAX_CONCURRENCY": "2",
                   "IMAGESL_CACHE_MAX": "400",
                   "IMAGESL_CACHE_MB": "6144",
