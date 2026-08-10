@@ -134,6 +134,8 @@ BOOTSTRAP_HTML = """
 
 def main() -> None:
     bridge = Bridge()
+    webview.settings["ALLOW_DOWNLOADS"] = True
+    webview.settings["OPEN_EXTERNAL_LINKS_IN_BROWSER"] = False
     webview.create_window(
         APP_NAME,
         html=BOOTSTRAP_HTML,

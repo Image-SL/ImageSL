@@ -540,9 +540,9 @@ function clearSelection() {
   if (err) err.classList.add("hidden");
 }
 
-dropzone.addEventListener("click", () => fileInput.click());
+dropzone.addEventListener("click", () => { fileInput.value = ""; fileInput.click(); });
 dropzone.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fileInput.click(); }
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fileInput.value = ""; fileInput.click(); }
 });
 /* Snapshot the FileList BEFORE clearing the input. `input.files` is LIVE: on
    Chromium - which is WebView2, so every Windows install - `value = ""` empties
@@ -551,10 +551,9 @@ dropzone.addEventListener("keydown", (e) => {
    `dataTransfer.files` is a separate object, which is what made this look like a
    broken Browse button rather than a bug in the shared staging path.
    The reset has to stay: without it, choosing the same file twice in a row fires
-   no `change` event at all. It just has to happen after the copy, not before. */
+   no `change` event at all. We now clear the value before the next click. */
 fileInput.addEventListener("change", (e) => {
   const files = Array.from(e.target.files);
-  e.target.value = "";
   if (files.length) stage(files);
 });
 ["dragover", "dragenter"].forEach((ev) => dropzone.addEventListener(ev, (e) => { e.preventDefault(); dropzone.classList.add("dragover"); }));
@@ -562,7 +561,7 @@ fileInput.addEventListener("change", (e) => {
 dropzone.addEventListener("drop", (e) => { e.preventDefault(); dropzone.classList.remove("dragover"); const f = e.dataTransfer.files; if (f && f.length) stage(f); });
 
 $("selClear").addEventListener("click", clearSelection);
-$("btnSelAdd").addEventListener("click", () => fileInput.click());
+$("btnSelAdd").addEventListener("click", () => { fileInput.value = ""; fileInput.click(); });
 $("btnAnalyze").addEventListener("click", () => {
   if (!staged.length) return;
   const batch = staged;
@@ -575,10 +574,9 @@ $("btnAnalyze").addEventListener("click", () => {
 // to confirm something the user just asked for.
 $("fileAdd").addEventListener("change", (e) => {
   const files = Array.from(e.target.files);   // copy first - see the note above
-  e.target.value = "";
   if (files.length) runBatch(files, true);
 });
-$("btnAddMore").addEventListener("click", () => $("fileAdd").click());
+$("btnAddMore").addEventListener("click", () => { $("fileAdd").value = ""; $("fileAdd").click(); });
 
 /* ============================== batch analyze ============================== */
 function setRing(fraction) {
