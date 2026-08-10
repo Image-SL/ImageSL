@@ -4,7 +4,7 @@
      which is what a clean, trustworthy app should request. Per-monitor DPI
      awareness gives a crisp UI on high-DPI displays. -->
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
-  <assemblyIdentity version="1.0.0.0" processorArchitecture="*" name="ImageSL.Client" type="win32"/>
+  <assemblyIdentity version="1.0.1.0" processorArchitecture="*" name="ImageSL.Client" type="win32"/>
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
       <requestedPrivileges>

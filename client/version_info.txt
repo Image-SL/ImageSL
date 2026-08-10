@@ -3,8 +3,8 @@
 # what it is — a legitimate published app — which modestly helps reputation.
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 0, 0, 0),
-    prodvers=(1, 0, 0, 0),
+    filevers=(1, 0, 1, 0),
+    prodvers=(1, 0, 1, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -20,11 +20,11 @@ VSVersionInfo(
           [
             StringStruct(u'CompanyName', u'ImageSL'),
             StringStruct(u'FileDescription', u'ImageSL — IHC Histology Analysis'),
-            StringStruct(u'FileVersion', u'1.0.0.0'),
+            StringStruct(u'FileVersion', u'1.0.1.0'),
             StringStruct(u'InternalName', u'ImageSL'),
             StringStruct(u'OriginalFilename', u'ImageSL.exe'),
             StringStruct(u'ProductName', u'ImageSL'),
-            StringStruct(u'ProductVersion', u'1.0.0.0'),
+            StringStruct(u'ProductVersion', u'1.0.1.0'),
             StringStruct(u'LegalCopyright', u'© ImageSL')
           ]
         )
