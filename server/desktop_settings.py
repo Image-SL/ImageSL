@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import socket
@@ -310,6 +311,20 @@ def _abs_url(url: str) -> str:
     return url if url.startswith("http") else f"{_site()}{url}"
 
 
+# Why the partial path was not used, when it was not used. Surfaced in
+# /api/desktop/info: a silent fallback to a 76 MB download is indistinguishable
+# from the feature not existing, which is exactly the kind of thing that stays
+# broken for months because nothing ever says so.
+_partial_note: Dict[str, Any] = {"reason": None}
+
+
+def _note_partial(reason: Optional[str]) -> None:
+    _partial_note["reason"] = reason
+    if reason:
+        logging.getLogger("imagesl.update").warning(
+            "partial update unavailable: %s", reason)
+
+
 def _staging_dir(version: str) -> Path:
     return _updates_dir() / f"staging-{version}"
 
@@ -334,10 +349,19 @@ def plan_delta(version: str, remote: Dict[str, Any]) -> Optional[Dict[str, Any]]
     raw = delta.fetch(_abs_url(manifest_url))
     got = hashlib.sha256(raw).hexdigest().lower()
     if got != manifest_sha:
-        # The digest came from /api/downloads over HTTPS and the manifest did
-        # not match it. That is not a reason to fall back quietly to the
-        # installer - something is wrong with the channel - so say so.
-        raise ValueError("the update manifest did not match its published checksum")
+        # The manifest does not match the digest /api/downloads published, so
+        # it cannot be used — but this must not stop the user updating.
+        #
+        # An earlier version raised here, on the reasoning that a mismatch
+        # means something is wrong with the channel. A packaging bug then
+        # proved the cost of that: the manifest was written in text mode on
+        # Windows and hashed in binary, so every published manifest failed this
+        # check, and raising turned a broken optimisation into "no updates at
+        # all" — including the installer, which has its own independently
+        # published digest and was never in doubt. Declining the partial path
+        # and letting the installer proceed is both safer and more useful.
+        _note_partial("the update manifest did not match its published checksum")
+        return None
 
     manifest = delta.parse_manifest(raw)
     if manifest["version"] != version:
@@ -441,8 +465,11 @@ def start_download(version: str, expected_sha: str = "",
         try:
             plan = plan_delta(version, remote)
         except Exception as exc:                              # noqa: BLE001
-            _dl_set(state="error", error=str(exc)[:300], file=None)
-            return _dl_snapshot()
+            # Anything unexpected on the partial path - a dead manifest URL, a
+            # malformed manifest, a read error - costs the optimisation, never
+            # the update. The installer below is independently verified.
+            _note_partial(str(exc)[:200])
+            plan = None
         if plan:
             threading.Thread(target=_delta_worker,
                              args=(version, plan, remote),
@@ -489,6 +516,7 @@ def register(app, app_version: str, cache_dir: Path | None) -> None:
             # Carried through so the download can try the partial path; it
             # holds the manifest URL and the digest that authenticates it.
             "platform_info": mine,
+            "partial_unavailable": _partial_note["reason"],
             "download": _dl_snapshot(),
         }
 

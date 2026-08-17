@@ -62,10 +62,27 @@ def build(tree: Path, out: Path, version: str, platform: str) -> dict:
 
     manifest = {"app": "ImageSL", "version": version,
                 "platform": platform, "files": files}
-    text = json.dumps(manifest, indent=2, sort_keys=True)
-    (out / "manifest.json").write_text(text, encoding="utf-8")
-    (out / "manifest.json.sha256").write_text(
-        hashlib.sha256(text.encode("utf-8")).hexdigest() + "\n", encoding="utf-8")
+
+    # write_bytes, not write_text, and hash EXACTLY the bytes written.
+    #
+    # Text mode translates "\n" to "\r\n" on Windows, so hashing the string and
+    # then writing it through write_text produced a digest of the LF form and a
+    # file in the CRLF form - two different byte sequences. The client hashes
+    # what it downloads and compares, so every delta update failed its manifest
+    # check on exactly the platform the manifest is built for. Nothing in the
+    # build looked wrong; the manifest was valid JSON and the digest was a real
+    # digest, just of bytes that never existed on disk.
+    data = json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8")
+    (out / "manifest.json").write_bytes(data)
+    digest = hashlib.sha256(data).hexdigest()
+    (out / "manifest.json.sha256").write_bytes(digest.encode("ascii") + b"\n")
+
+    # Prove it here rather than discovering it in the field: re-read the file
+    # from disk and confirm it hashes to what was just published.
+    written = (out / "manifest.json").read_bytes()
+    if hashlib.sha256(written).hexdigest() != digest:
+        raise SystemExit("manifest.json on disk does not match its published "
+                         "digest - refusing to publish an unusable manifest")
     return manifest
 
 
