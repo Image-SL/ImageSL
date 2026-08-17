@@ -233,3 +233,80 @@ jobs:
           done
           echo "::error::Service was still busy after 12 attempts over ~4 minutes. Last AWS message is above."
           exit 1
+
+      # Submitting a deployment is not deploying one.
+      #
+      # The step above ends at "Deployment submitted" and exits 0. Lightsail
+      # then rolls out asynchronously, and if the new version fails its health
+      # check it is abandoned and the PREVIOUS one keeps serving - with this
+      # job already green and nobody any the wiser. A deploy that cannot fail
+      # reports nothing, and that is how the site sat on an old image while
+      # every run showed a tick.
+      - name: Wait for the deployment to actually activate
+        env:
+          SITE_URL: ${{ vars.IMAGESL_SITE_URL || 'https://imagesl.com' }}
+        run: |
+          set -uo pipefail
+
+          # --query/--output text rather than piping JSON into an interpreter:
+          # an inline script inside a YAML block scalar has to start its lines
+          # at column 0 to be valid Python, which ends the block scalar and
+          # breaks the workflow file.
+          Q='containerServices[0].[currentDeployment.version,currentDeployment.state,nextDeployment.version,nextDeployment.state]'
+          state() {
+            aws lightsail get-container-services --region "$AWS_REGION" \
+              --service-name "$SERVICE" --query "$Q" --output text 2>/dev/null
+          }
+
+          # The version to wait for: whatever is queued now, or the current one
+          # if it already activated between submitting and arriving here.
+          s="$(state)" || s=""
+          CURV="$(echo "$s" | awk '{print $1}')"
+          NXTV="$(echo "$s" | awk '{print $3}')"
+          TARGET="$NXTV"
+          if [ -z "$TARGET" ] || [ "$TARGET" = "None" ]; then TARGET="$CURV"; fi
+          if [ -z "$TARGET" ] || [ "$TARGET" = "None" ]; then TARGET=0; fi
+          echo "Waiting for deployment version $TARGET to become ACTIVE."
+
+          ok=0
+          for i in $(seq 1 60); do
+            s="$(state)" || s=""
+            CURV="$(echo "$s" | awk '{print $1}')"
+            CURS="$(echo "$s" | awk '{print $2}')"
+            NXTV="$(echo "$s" | awk '{print $3}')"
+            NXTS="$(echo "$s" | awk '{print $4}')"
+            echo "  [$i] current=v${CURV:-?}/${CURS:-?} next=v${NXTV:-?}/${NXTS:-?}"
+
+            if [ "${NXTS:-}" = "FAILED" ]; then
+              echo "::error::Lightsail deployment v${NXTV} FAILED and was abandoned - v${CURV} is still serving. The new build is NOT live."
+              exit 1
+            fi
+            case "${CURV:-}" in
+              ''|*[!0-9]*) : ;;
+              *) if [ "$CURV" -ge "$TARGET" ] && [ "${CURS:-}" = "ACTIVE" ]; then
+                   echo "Deployment v$CURV is ACTIVE."
+                   ok=1
+                   break
+                 fi ;;
+            esac
+            sleep 15
+          done
+          if [ "$ok" != "1" ]; then
+            echo "::error::Deployment v${TARGET} did not become ACTIVE within ~15 minutes."
+            exit 1
+          fi
+
+          # ACTIVE is the control plane's word for it. Ask the site itself what
+          # it is running, because that is the claim that actually matters.
+          for i in $(seq 1 20); do
+            LIVE="$(curl -fsS "${SITE_URL}/api/downloads?ci=$i" 2>/dev/null \
+                    | sed -n 's/.*"server_version":[ ]*"\([^"]*\)".*/\1/p')"
+            echo "  live server_version=${LIVE:-unreachable} (want ${VERSION})"
+            if [ "${LIVE:-}" = "${VERSION}" ]; then
+              echo "Live site is serving ${VERSION}."
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "::error::The site never reported ${VERSION} after the deployment went active."
+          exit 1
