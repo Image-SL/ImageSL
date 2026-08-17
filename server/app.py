@@ -133,6 +133,19 @@ LEGACY_HOSTS = {
 # The only API a download page needs.
 _PUBLIC_API = {"/api/health", "/api/downloads"}
 
+# ...plus the update channel, which is part of distributing the application
+# rather than part of analysing slides. The manifest path carries the platform
+# as a path segment, so it cannot be matched by the exact-match set above.
+#
+# The gate below denies anything under /api/ that is not listed, deliberately,
+# so that a new endpoint is closed by default rather than exposed until someone
+# remembers. That is what happened here: /api/update/<platform>/manifest was
+# added for partial updates and 404'd in production while /api/downloads
+# advertised its digest, so every client asked for a manifest it could never
+# fetch and silently fell back to the full installer. The gate was right; the
+# omission was the bug.
+_PUBLIC_API_PREFIXES = ("/api/update/",)
+
 # Optional access control. If IMAGESL_ACCESS_TOKENS is set (comma-separated),
 # every /api/* call must carry a matching X-ImageSL-Key header. Unset => open.
 _TOKENS = {t.strip() for t in os.environ.get("IMAGESL_ACCESS_TOKENS", "").split(",") if t.strip()}
@@ -216,7 +229,8 @@ async def _analyzer_gate(request: Request, call_next):
     """
     if not ANALYZER_ENABLED:
         path = request.url.path
-        if path.startswith("/api/") and path not in _PUBLIC_API:
+        if (path.startswith("/api/") and path not in _PUBLIC_API
+                and not path.startswith(_PUBLIC_API_PREFIXES)):
             return JSONResponse(
                 {"detail": "ImageSL runs as a downloadable application. "
                            "This site does not analyse slides."},
