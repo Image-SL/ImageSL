@@ -389,9 +389,25 @@
     show('btnDownloadUpdate', !!u.update_available && d.state !== 'ready' && d.state !== 'downloading');
     show('btnInstallUpdate',  d.state === 'ready');
 
+    // A partial update replaces only the files that changed, so say so — "76 MB
+    // installer" and "3 files, 240 KB" are very different things to agree to,
+    // and the second one needs no reinstall.
+    var partial = d.method === 'delta';
+    var size = partial && d.bytes
+      ? " (" + (d.bytes < 1048576 ? Math.max(1, Math.round(d.bytes / 1024)) + " KB"
+                                  : (d.bytes / 1048576).toFixed(1) + " MB") + ")"
+      : "";
+    var what = partial
+      ? (d.files || 0) + " updated file" + ((d.files === 1) ? "" : "s") + size
+      : "the full installer";
+
     if (d.state === 'error')            note('setUpdateNote', "Download failed: " + d.error, 'err');
-    else if (d.state === 'ready')       note('setUpdateNote', "Version " + (d.version || "") + " is downloaded and ready to install.", 'ok');
-    else if (d.state === 'downloading') note('setUpdateNote', "Downloading " + (d.version || "") + "…");
+    else if (d.state === 'ready')       note('setUpdateNote', partial
+                                          ? "Version " + (d.version || "") + " is ready — " + what
+                                            + " will be replaced, then ImageSL restarts."
+                                          : "Version " + (d.version || "") + " is downloaded and ready to install.", 'ok');
+    else if (d.state === 'downloading') note('setUpdateNote', "Downloading " + (d.version || "")
+                                          + " · " + what + "…");
     else if (!u.online)                 note('setUpdateNote', "Updates are checked when you are online. Everything else works offline.");
     else if (u.update_available)        note('setUpdateNote', "Version " + u.latest_version + " is available.", 'warn');
     else if (u.checked)                 note('setUpdateNote', "This is the latest version.", 'ok');

@@ -126,11 +126,18 @@ jobs:
             # so /api/downloads can report the version of the bytes a user would
             # actually get rather than the version of this server.
             DL_VER="${BASE}/latest/VERSION"
+            # The partial-update store, so an installed app can fetch just the
+            # files that changed instead of the whole installer. Windows only:
+            # no macOS manifest is published yet, and an unset variable is the
+            # honest statement - /api/downloads then reports no manifest and
+            # every client uses the installer, exactly as before.
+            DL_UPD_WIN="${BASE}/latest/update/windows"
             echo "Installer base: $BASE"
           else
             DL_WIN=""
             DL_MAC=""
             DL_VER=""
+            DL_UPD_WIN=""
             echo "::warning::No IMAGESL_DOWNLOAD_BUCKET / _BASE_URL set - the desktop download buttons will stay greyed out."
           fi
 
@@ -150,7 +157,8 @@ jobs:
           DL_ENV=""
           for pair in "IMAGESL_DOWNLOAD_URL_WINDOWS=${DL_WIN}" \
                       "IMAGESL_DOWNLOAD_URL_MACOS=${DL_MAC}" \
-                      "IMAGESL_DOWNLOAD_VERSION_URL=${DL_VER}"; do
+                      "IMAGESL_DOWNLOAD_VERSION_URL=${DL_VER}" \
+                      "IMAGESL_UPDATE_URL_WINDOWS=${DL_UPD_WIN}"; do
             key="${pair%%=*}"
             val="${pair#*=}"
             if [ -n "$val" ]; then
