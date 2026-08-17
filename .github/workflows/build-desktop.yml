@@ -316,7 +316,7 @@ jobs:
         if: steps.cfg.outputs.go == 'true'
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::581586866061:role/imagesl-github-deploy
+          role-to-assume: arn:aws:iam::392617884477:role/imagesl-github-deploy
           aws-region: us-east-2
 
       - name: Upload installers to S3
@@ -473,8 +473,8 @@ jobs:
           # The app probes the object before advertising it, so this is the same
           # question a visitor's browser asks. Reported, not failed on: the site
           # may legitimately not be redeployed with the URLs set yet.
-          echo "https://imagesl.online/api/downloads says:"
-          curl -fsS https://imagesl.online/api/downloads || echo "(site unreachable)"
+          echo "https://imagesl.com/api/downloads says:"
+          curl -fsS https://imagesl.com/api/downloads || echo "(site unreachable)"
 
   # A single release job, rather than each matrix leg publishing, so the two
   # runners cannot race to create the same release.

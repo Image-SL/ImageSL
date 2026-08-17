@@ -105,22 +105,28 @@ ANALYZER_ENABLED = IMAGESL_DESKTOP or WEB_ANALYZER
 SITE_URL = (os.environ.get("IMAGESL_SITE_URL") or "https://imagesl.com").rstrip("/")
 
 # Domains we used to live on. Every request arriving on one is answered with a
-# permanent redirect to the same path on SITE_URL.
+# permanent redirect to the same path on SITE_URL. 301 rather than 302 on
+# purpose: the move is permanent, and only a permanent redirect transfers
+# accumulated search ranking to the new domain.
 #
-# This is done in the application, not by retiring the domain, because the old
-# name cannot simply be switched off: every copy of ImageSL already installed
-# has it compiled in as its update endpoint. Deleting it would leave those
-# installs polling a dead host forever - no update notifications, no way to tell
-# anyone a new version exists, and no way to reach them afterwards, because the
-# update channel WAS the way to reach them. urllib follows redirects, so a 301
-# keeps them working while they migrate themselves.
+# imagesl.online was the first of these, and this redirect existed specifically
+# so it would not have to be switched off - installs built before the move have
+# that hostname compiled in as their update endpoint, and urllib follows
+# redirects, so the 301 kept them working while they migrated themselves.
 #
-# 301 rather than 302 on purpose: this is a permanent move, and only a permanent
-# redirect transfers accumulated search ranking to the new domain.
+# Its DNS was removed on 2026-08-17, which ends that. Once resolvers stop
+# answering, requests no longer arrive here at all and this redirect can do
+# nothing for them: any copy still pointed at imagesl.online has lost its update
+# channel permanently, and there is no way to reach those installs, because the
+# update channel was the route. Recorded here rather than deleted because the
+# next person to retire a domain needs to know what it costs.
+#
+# The mechanism stays - it is env-driven and costs nothing, and the next move
+# will need it. The default is now empty: naming a host whose DNS is gone
+# asserts a redirect that can never fire.
 LEGACY_HOSTS = {
     h.strip().lower()
-    for h in (os.environ.get("IMAGESL_LEGACY_HOSTS")
-              or "imagesl.online,www.imagesl.online").split(",")
+    for h in (os.environ.get("IMAGESL_LEGACY_HOSTS") or "").split(",")
     if h.strip()
 }
 

@@ -77,7 +77,7 @@ works.
 
 ## Publishing to S3 — the live setup
 
-`imagesl.online` serves its installers from S3 and the app 302s to them. Two
+`imagesl.com` serves its installers from S3 and the app 302s to them. Two
 repository variables drive it (Settings → Secrets and variables → Actions →
 **Variables**, not Secrets — these are not sensitive):
 
@@ -183,7 +183,7 @@ A quick way to tell whether the live site has the build you think it has, withou
 downloading 72 MB:
 
 ```bash
-curl -s https://imagesl.online/api/downloads
+curl -s https://imagesl.com/api/downloads
 ```
 
 `bytes` and `sha256` there must match the local file — `Get-FileHash
@@ -194,7 +194,7 @@ Then set `IMAGESL_DOWNLOAD_BUCKET` and push (or re-run the deploy workflow) so
 the container picks up the URLs. Verify:
 
 ```bash
-curl -s https://imagesl.online/api/downloads
+curl -s https://imagesl.com/api/downloads
 ```
 
 > **These names must agree, or downloads break:** `_DOWNLOADS` in

@@ -25,7 +25,7 @@ It runs two ways from the same engine and the same code:
 
 - **Desktop app** (Windows and macOS) — bundles the whole analysis engine and
   runs it on a private loopback port. Fully offline; a slide never leaves the
-  machine. Download it from **<https://imagesl.online>**, or see
+  machine. Download it from **<https://imagesl.com>**, or see
   [desktop/BUILD.md](desktop/BUILD.md) to build and publish it. (Not from GitHub
   Releases: this repository is private, so a release link 404s for everyone who
   cannot see it — and it 404s as an HTML page, which navigates the visitor away
@@ -320,7 +320,7 @@ terms. A stain can score well above and still admit debris on a real section.
 Step-by-step is in **[docs/GETTING_STARTED.md](docs/GETTING_STARTED.md)**. There
 are no keys or accounts to configure.
 
-Shortest path: open **<https://imagesl.online>** and drop a slide on it.
+Shortest path: open **<https://imagesl.com>** and drop a slide on it.
 
 Locally:
 
