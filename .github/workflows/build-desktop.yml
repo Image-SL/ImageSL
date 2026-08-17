@@ -125,6 +125,65 @@ jobs:
         shell: bash
         run: ./dist/ImageSL/ImageSL.exe --selftest
 
+      # A manifest of the build, so an installed app can update itself by
+      # replacing only the files that changed - ~600 KB of engine and web assets
+      # out of a 257 MB tree - instead of re-downloading and re-running the
+      # whole installer. The installer stays the fallback, and is the only path
+      # for any release that touches the runtime or the executable.
+      #
+      # Windows only for now: DELTA_ROOTS in server/delta_update.py describes
+      # the onedir layout (`_internal/server/...`), and a macOS .app nests the
+      # same files under Contents/, so macOS needs its own roots before it can
+      # be offered. Publishing no manifest is a supported state - /api/downloads
+      # then reports manifest_sha256:null and the updater uses the installer,
+      # which is exactly today's behaviour.
+      - name: Build the update manifest (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          python desktop/make_manifest.py dist/ImageSL \
+            --out update/windows --version "$VERSION" --platform windows
+          ls -l update/windows
+
+      - name: Verify the manifest describes the build it was made from
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          # A manifest that disagrees with the tree it shipped beside would hand
+          # every client a checksum it can never satisfy, so the update would
+          # fail for everyone with no sign of trouble here. Re-check it against
+          # the built tree before it is allowed off the runner.
+          python - <<'PY'
+          import hashlib, json, pathlib, sys
+          tree = pathlib.Path("dist/ImageSL")
+          m = json.loads(pathlib.Path("update/windows/manifest.json").read_text())
+          bad = []
+          for f in m["files"]:
+              p = tree / f["path"]
+              if not p.is_file():
+                  bad.append(f"missing: {f['path']}"); continue
+              h = hashlib.sha256(p.read_bytes()).hexdigest()
+              if h != f["sha256"]:
+                  bad.append(f"digest differs: {f['path']}")
+          store = pathlib.Path("update/windows/files")
+          for f in m["files"]:
+              if f["delta"] and not (store / f["sha256"]).is_file():
+                  bad.append(f"blob missing for patchable file: {f['path']}")
+          if bad:
+              print("\n".join(f"::error::{b}" for b in bad[:40]))
+              sys.exit(1)
+          patch = [f for f in m["files"] if f["delta"]]
+          print(f"manifest OK: {len(m['files'])} files, {len(patch)} patchable, "
+                f"{sum(f['bytes'] for f in patch)/1024:.0f} KB, version {m['version']}")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Windows'
+        with:
+          name: ImageSL-Update-Windows
+          path: update/windows
+          if-no-files-found: error
+
       # ---- package -------------------------------------------------------- #
       - name: Package (Windows -> Inno Setup installer)
         if: runner.os == 'Windows'
@@ -271,10 +330,29 @@ jobs:
           # manual run archives under the commit so it cannot overwrite a release.
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then
             VER="${GITHUB_REF_NAME#v}"
+            IS_RELEASE=1
           else
             VER="dev-${GITHUB_SHA::12}"
+            IS_RELEASE=0
           fi
           echo "Publishing as $VER"
+
+          # Only a TAG may move the keys users actually receive.
+          #
+          # `latest/` is what /download/<platform> redirects to and what
+          # latest/VERSION advertises to every installed app. This job runs on
+          # workflow_dispatch too, so without this guard a manual run from any
+          # branch would overwrite the live installer with a dev build and set
+          # the published version to "dev-<sha>" - which is not a version any
+          # updater can compare sensibly, and leaves the site handing out an
+          # untagged build. A dev run still uploads its immutable v/<VER>/ copy,
+          # so it can be fetched and tested deliberately; it just cannot become
+          # what everyone else downloads by accident.
+          if [ "$IS_RELEASE" = "1" ]; then
+            echo "Tag build: v/${VER}/ and latest/ will both be updated."
+          else
+            echo "::notice::Not a tag - publishing only to v/${VER}/. latest/ is left untouched."
+          fi
 
           upload() {
             local src="$1" name="$2" ctype="$3"
@@ -297,10 +375,12 @@ jobs:
             # this key is overwritten by every release, so a long one would leave
             # browsers and intermediaries handing out a previous 86MB installer
             # after a new one shipped. 5 minutes costs nothing and bounds the lie.
+            if [ "$IS_RELEASE" = "1" ]; then
             aws s3 cp "$src" "s3://${BUCKET}/latest/${name}" \
               --content-type "$ctype" \
               --content-disposition "attachment; filename=\"${name}\"" \
               --cache-control "public, max-age=300"
+            fi
 
             # The digest, published AFTER the bytes it describes.
             #
@@ -315,9 +395,11 @@ jobs:
             aws s3 cp "${src}.sha256" "s3://${BUCKET}/v/${VER}/${name}.sha256" \
               --content-type "text/plain; charset=utf-8" \
               --cache-control "public, max-age=31536000, immutable"
+            if [ "$IS_RELEASE" = "1" ]; then
             aws s3 cp "${src}.sha256" "s3://${BUCKET}/latest/${name}.sha256" \
               --content-type "text/plain; charset=utf-8" \
               --cache-control "public, max-age=300"
+            fi
           }
 
           # Content-Disposition is set on the OBJECT because /download/<platform>
@@ -327,6 +409,40 @@ jobs:
                  "ImageSL-Setup-Windows.exe" "application/octet-stream"
           upload "artifacts/ImageSL-macOS/ImageSL-macOS.dmg" \
                  "ImageSL-macOS.dmg" "application/x-apple-diskimage"
+
+          # The partial-update store. Order matters exactly as it does for the
+          # installer digests: the blobs go up FIRST, because the manifest names
+          # them and a manifest that is visible before its objects describes
+          # files nobody can fetch yet. The blobs are content-addressed, so they
+          # are immutable and can be cached forever; re-uploading a build only
+          # adds objects for files that genuinely changed.
+          UPD="artifacts/ImageSL-Update-Windows"
+          if [ -d "$UPD/files" ]; then
+            if [ "$IS_RELEASE" = "1" ]; then
+            aws s3 sync "$UPD/files" "s3://${BUCKET}/latest/update/windows/files" \
+              --content-type "application/octet-stream" \
+              --cache-control "public, max-age=31536000, immutable"
+            aws s3 cp "$UPD/manifest.json" \
+              "s3://${BUCKET}/latest/update/windows/manifest.json" \
+              --content-type "application/json" \
+              --cache-control "public, max-age=60"
+            # The digest last, after the bytes it describes - /api/downloads
+            # republishes it and the client refuses any manifest that does not
+            # match, so a stale digest disables partial updates rather than
+            # weakening them.
+            aws s3 cp "$UPD/manifest.json.sha256" \
+              "s3://${BUCKET}/latest/update/windows/manifest.json.sha256" \
+              --content-type "text/plain; charset=utf-8" \
+              --cache-control "public, max-age=60"
+            fi
+            # An immutable copy under the version, so a release can be inspected
+            # (or rolled back to) after `latest` has moved on.
+            aws s3 sync "$UPD" "s3://${BUCKET}/v/${VER}/update/windows" \
+              --cache-control "public, max-age=31536000, immutable"
+            echo "Published partial-update store for $VER"
+          else
+            echo "::warning::No Windows update manifest in this run - partial updates will be unavailable and clients will use the full installer."
+          fi
 
           # What version those bytes ARE, published next to them.
           #
@@ -340,11 +456,15 @@ jobs:
           #
           # Written last: if any upload above failed, the marker still names the
           # previous release, which is the truthful answer.
-          printf '%s' "$VER" > VERSION
-          aws s3 cp VERSION "s3://${BUCKET}/latest/VERSION" \
-            --content-type "text/plain; charset=utf-8" \
-            --cache-control "public, max-age=60"
-          echo "Published version marker: $VER"
+          if [ "$IS_RELEASE" = "1" ]; then
+            printf '%s' "$VER" > VERSION
+            aws s3 cp VERSION "s3://${BUCKET}/latest/VERSION" \
+              --content-type "text/plain; charset=utf-8" \
+              --cache-control "public, max-age=60"
+            echo "Published version marker: $VER"
+          else
+            echo "Dev run: latest/VERSION left as-is."
+          fi
 
       - name: Confirm the live site can see them
         if: steps.cfg.outputs.go == 'true'
