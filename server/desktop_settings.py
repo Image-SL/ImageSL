@@ -31,8 +31,9 @@ import threading
 import time
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
+import delta_update as delta
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -199,8 +200,13 @@ def fetch_remote() -> Dict[str, Any]:
 # Download state (one at a time, reported to the UI by polling)
 # --------------------------------------------------------------------------- #
 _dl_lock = threading.Lock()
+# `method` is how this update will be applied: "installer" re-runs the full
+# ~76 MB setup, "delta" replaces only the files that actually changed. The UI
+# reads it to say which is happening, and install-update branches on it.
 _dl: Dict[str, Any] = {"state": "idle", "percent": 0, "file": None, "error": None,
-                       "version": None, "sha256": None, "verified": False}
+                       "version": None, "sha256": None, "verified": False,
+                       "method": "installer", "files": 0, "bytes": 0,
+                       "staging": None}
 
 
 def _dl_snapshot() -> Dict[str, Any]:
@@ -211,6 +217,157 @@ def _dl_snapshot() -> Dict[str, Any]:
 def _dl_set(**kw) -> None:
     with _dl_lock:
         _dl.update(kw)
+
+
+# The plan that produced the staged files, kept so install-update applies
+# exactly what was downloaded and verified rather than recomputing it against a
+# tree that may have changed in between.
+_delta_plans: Dict[str, Any] = {}
+
+
+def _relaunch() -> None:
+    """Start a fresh copy of the app and let this one go.
+
+    The engine's .py files have just been replaced on disk, but this process
+    imported the old ones and still holds them in memory, so the update only
+    takes effect on the next launch. Exit is deferred a moment so this
+    request's response reaches the page first — otherwise the user sees the
+    window vanish with no confirmation that anything worked.
+    """
+    try:
+        subprocess.Popen([sys.executable], close_fds=True)
+    except Exception:
+        return
+
+    def bye() -> None:
+        time.sleep(1.5)
+        os._exit(0)
+
+    threading.Thread(target=bye, name="imagesl-relaunch", daemon=True).start()
+
+
+def _installer_path(version: str) -> Path:
+    suffix = ".exe" if _platform_key() == "windows" else ".dmg"
+    return _updates_dir() / f"ImageSL-{version}{suffix}"
+
+
+# Versions this process has already tried to adopt, so the hash below runs once
+# and not on every poll of /api/desktop/info.
+_adopted: set = set()
+
+
+def adopt_downloaded(version: str, expected_sha: str) -> bool:
+    """Re-discover an installer that an EARLIER run already downloaded.
+
+    The download state above lives in memory only. Closing the app between
+    "Download" and "Install and restart" therefore stranded the file: the next
+    launch reported `idle`, offered to fetch the same ~76 MB again, and
+    /api/desktop/install-update answered "No downloaded update is ready to
+    install" — while the verified installer sat in `updates/` the whole time.
+    That is how a machine ends up holding a fixed build it can never reach, and
+    it is worse than a plain failure because nothing on screen says so.
+
+    Adoption is held to exactly the same bar as a fresh download rather than
+    trusting the filename: the file becomes `ready` only if it hashes to the
+    checksum the site publishes NOW. Anything else — a partial file from a
+    killed run, a leftover from a build that has since been replaced, a file
+    something else has written to — is deleted rather than offered, because the
+    next thing that happens to it is being executed.
+    """
+    if not version or not expected_sha:
+        return False                      # nothing to check it against
+    key = (version, expected_sha.lower())
+    with _dl_lock:
+        if key in _adopted or _dl["state"] != "idle":
+            return False
+        _adopted.add(key)
+
+    path = _installer_path(version)
+    if not path.is_file():
+        return False
+    digest = hashlib.sha256()
+    try:
+        with open(path, "rb") as fh:
+            for block in iter(lambda: fh.read(1024 * 1024), b""):
+                digest.update(block)
+    except OSError:
+        return False
+
+    got = digest.hexdigest()
+    if got.lower() != expected_sha.lower():
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        return False
+
+    _dl_set(state="ready", percent=100, file=str(path), sha256=got,
+            verified=True, version=version, error=None, method="installer")
+    return True
+
+
+def _abs_url(url: str) -> str:
+    return url if url.startswith("http") else f"{_site()}{url}"
+
+
+def _staging_dir(version: str) -> Path:
+    return _updates_dir() / f"staging-{version}"
+
+
+def plan_delta(version: str, remote: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """What a partial update would fetch, or None if it is not possible.
+
+    Returns None — rather than raising — for every "we cannot patch this"
+    case: running from source, no manifest published, a manifest describing a
+    different release, or a release that touches a binary. The caller then uses
+    the full installer, which must always remain the fallback. The one thing
+    this does NOT do quietly is accept a manifest it could not verify.
+    """
+    root = delta.app_root()
+    if root is None:
+        return None                       # a source checkout has nothing to patch
+    manifest_url = remote.get("manifest_url")
+    manifest_sha = (remote.get("manifest_sha256") or "").lower()
+    if not manifest_url or not manifest_sha:
+        return None                       # this build published no update store
+
+    raw = delta.fetch(_abs_url(manifest_url))
+    got = hashlib.sha256(raw).hexdigest().lower()
+    if got != manifest_sha:
+        # The digest came from /api/downloads over HTTPS and the manifest did
+        # not match it. That is not a reason to fall back quietly to the
+        # installer - something is wrong with the channel - so say so.
+        raise ValueError("the update manifest did not match its published checksum")
+
+    manifest = delta.parse_manifest(raw)
+    if manifest["version"] != version:
+        # The store belongs to a different build than the one being offered;
+        # patching to it would install a version nobody advertised.
+        return None
+
+    plan = delta.plan_update(root, manifest)
+    return plan if plan["possible"] else None
+
+
+def _delta_worker(version: str, plan: Dict[str, Any], remote: Dict[str, Any]) -> None:
+    """Fetch only the changed files, into staging. Nothing is applied here."""
+    staging = _staging_dir(version)
+    try:
+        _dl_set(state="downloading", percent=0, error=None, file=None,
+                version=version, sha256=None, method="delta",
+                files=plan["count"], bytes=plan["bytes"], staging=str(staging))
+        base = _abs_url(remote.get("file_url") or f"/update/{_platform_key()}/file")
+
+        def progress(done: int, total: int) -> None:
+            _dl_set(percent=min(99, int(done * 100 / max(total, 1))))
+
+        delta.download_blobs(plan, base, staging, progress=progress)
+        _delta_plans[version] = plan
+        _dl_set(state="ready", percent=100, verified=True,
+                file=str(staging), method="delta")
+    except Exception as exc:                                  # noqa: BLE001
+        _dl_set(state="error", error=str(exc)[:300], file=None,
+                method="delta")
 
 
 def _download_worker(version: str, expected_sha: str) -> None:
@@ -224,8 +381,7 @@ def _download_worker(version: str, expected_sha: str) -> None:
     not, the file is deleted rather than offered.
     """
     url = f"{_site()}/download/{_platform_key()}"
-    suffix = ".exe" if _platform_key() == "windows" else ".dmg"
-    target = _updates_dir() / f"ImageSL-{version}{suffix}"
+    target = _installer_path(version)
     part = target.with_suffix(target.suffix + ".part")
     try:
         _dl_set(state="downloading", percent=0, error=None, file=None,
@@ -268,10 +424,31 @@ def _download_worker(version: str, expected_sha: str) -> None:
         _dl_set(state="error", error=str(exc)[:300], file=None)
 
 
-def start_download(version: str, expected_sha: str = "") -> Dict[str, Any]:
+def start_download(version: str, expected_sha: str = "",
+                   remote: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Fetch the update — as a handful of files where that is possible.
+
+    The partial path is tried first and silently declines whenever it cannot
+    guarantee the same result as the installer, so the common release (a few
+    hundred KB of Python and web assets) costs a few hundred KB instead of
+    76 MB, while a release that changes the runtime still goes the long way.
+    """
     snap = _dl_snapshot()
     if snap["state"] == "downloading":
         return snap
+
+    if remote:
+        try:
+            plan = plan_delta(version, remote)
+        except Exception as exc:                              # noqa: BLE001
+            _dl_set(state="error", error=str(exc)[:300], file=None)
+            return _dl_snapshot()
+        if plan:
+            threading.Thread(target=_delta_worker,
+                             args=(version, plan, remote),
+                             name="imagesl-update-delta", daemon=True).start()
+            return _dl_snapshot()
+
     threading.Thread(target=_download_worker, args=(version, expected_sha),
                      name="imagesl-update-dl", daemon=True).start()
     return _dl_snapshot()
@@ -296,6 +473,11 @@ def register(app, app_version: str, cache_dir: Path | None) -> None:
         mine = platforms.get(_platform_key()) or {}
         can_get = bool(mine.get("available"))
         available = bool(latest and is_newer(latest, app_version) and can_get)
+        # Before reporting "idle", check whether a previous run already fetched
+        # this exact build — otherwise the UI offers to download a file that is
+        # sitting on disk, and Install stays permanently unavailable.
+        if available:
+            adopt_downloaded(latest, mine.get("sha256") or "")
         return {
             "online": online,
             "checked": bool(remote),
@@ -304,6 +486,9 @@ def register(app, app_version: str, cache_dir: Path | None) -> None:
             # The digest the server publishes for the build we would fetch. The
             # downloader checks against this before the file is offered.
             "sha256": mine.get("sha256") or "",
+            # Carried through so the download can try the partial path; it
+            # holds the manifest URL and the digest that authenticates it.
+            "platform_info": mine,
             "download": _dl_snapshot(),
         }
 
@@ -354,7 +539,8 @@ def register(app, app_version: str, cache_dir: Path | None) -> None:
         if (state["update_available"]
                 and load_settings().get("auto_download_updates")
                 and _dl_snapshot()["state"] in ("idle", "error")):
-            start_download(state["latest_version"], state.get("sha256", ""))
+            start_download(state["latest_version"], state.get("sha256", ""),
+                           state.get("platform_info"))
             state["download"] = _dl_snapshot()
         return JSONResponse(state)
 
@@ -365,7 +551,8 @@ def register(app, app_version: str, cache_dir: Path | None) -> None:
             raise HTTPException(status_code=409,
                                 detail="There is no update to download.")
         return JSONResponse(start_download(state["latest_version"],
-                                           state.get("sha256", "")))
+                                           state.get("sha256", ""),
+                                           state.get("platform_info")))
 
     @app.get("/api/desktop/download-progress")
     def desktop_download_progress() -> JSONResponse:
@@ -375,6 +562,32 @@ def register(app, app_version: str, cache_dir: Path | None) -> None:
     def desktop_install_update() -> JSONResponse:
         snap = _dl_snapshot()
         path = snap.get("file")
+
+        # A partial update is applied in place: the staged files are moved into
+        # the app (all of them or none - see delta_update.apply_update) and the
+        # app relaunches itself. No installer, no elevation, nothing to close.
+        if snap.get("method") == "delta":
+            if snap.get("state") != "ready" or not path:
+                raise HTTPException(status_code=409,
+                                    detail="No downloaded update is ready to install.")
+            root = delta.app_root()
+            plan = _delta_plans.get(snap.get("version") or "")
+            if root is None or not plan:
+                raise HTTPException(status_code=409,
+                                    detail="This update can no longer be applied "
+                                           "in place. Download it again.")
+            result = delta.apply_update(root, plan, Path(path))
+            if not result.get("applied"):
+                _dl_set(state="error",
+                        error=result.get("error") or "The update could not be applied.")
+                raise HTTPException(
+                    status_code=500,
+                    detail="The update could not be applied and was rolled back: "
+                           + str(result.get("error") or ""))
+            _relaunch()
+            return JSONResponse({"started": True, "method": "delta",
+                                 "files": result.get("files", 0)})
+
         if snap.get("state") != "ready" or not path or not Path(path).is_file():
             raise HTTPException(status_code=409,
                                 detail="No downloaded update is ready to install.")

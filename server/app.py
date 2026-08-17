@@ -991,12 +991,20 @@ async def api_downloads() -> JSONResponse:
             ok, size = on_disk, (path.stat().st_size if on_disk else 0)
             digest = await run_in_threadpool(_sha256_local, path) if ok else ""
 
+        # The partial-update store is optional and independent: a build may
+        # publish an installer and no manifest (nothing to patch from), and the
+        # updater must then simply use the installer rather than fail.
+        manifest_digest = await run_in_threadpool(_manifest_digest, key)
+
         platforms[key] = {
             "available": ok,
             "filename": name,
             "bytes": size,
             "sha256": digest or None,
             "url": f"/download/{key}" if ok else None,
+            "manifest_url": f"/api/update/{key}/manifest" if manifest_digest else None,
+            "manifest_sha256": manifest_digest or None,
+            "file_url": f"/update/{key}/file" if manifest_digest else None,
         }
     # `version` is what a user can INSTALL, which is what desktop/updater.py is
     # asking. Only fall back to this server's own version when nothing published
@@ -1010,6 +1018,90 @@ async def api_downloads() -> JSONResponse:
                          "server_version": APP_VERSION,
                          "platforms": platforms},
                         headers={"Cache-Control": "no-store"})
+
+
+# --------------------------------------------------------------------------- #
+# Partial updates
+# --------------------------------------------------------------------------- #
+# A release is ~76 MB and almost none of it changes: the bulk is the frozen
+# CPython runtime plus numpy, scipy, scikit-image and imagecodecs. What actually
+# moves in a normal release is the interpreted payload - server/**.py and the
+# web assets - which the desktop build ships as plain files. So alongside the
+# installer we publish a manifest of the build and a content-addressed store of
+# the patchable files, and the app fetches only what it is missing. The full
+# installer stays the fallback for any release that touches a binary.
+#
+# Layout under IMAGESL_UPDATE_DIR (or the external base URL):
+#   <platform>/manifest.json          every file in the build, with sha256
+#   <platform>/manifest.json.sha256   published so a client can prove the manifest
+#   <platform>/files/<sha256>         one blob per patchable file
+UPDATE_DIR = Path(os.environ.get("IMAGESL_UPDATE_DIR",
+                                 str(DOWNLOAD_DIR / "update")))
+_UPDATE_URL_KEYS = {"windows": "IMAGESL_UPDATE_URL_WINDOWS",
+                    "macos": "IMAGESL_UPDATE_URL_MACOS"}
+
+
+def _update_base(platform: str) -> str:
+    """Off-box home for the update store, if one is configured."""
+    return (os.environ.get(_UPDATE_URL_KEYS.get(platform, "")) or "").strip()
+
+
+def _manifest_digest(platform: str) -> str:
+    """The digest a client must check the manifest against before trusting it.
+
+    This is the root of the chain: /api/downloads is HTTPS and names this
+    digest, the manifest must hash to it, and every file the manifest lists
+    carries its own digest. Without this link the manifest would be trusted
+    purely because of where it was fetched from, which is exactly the property
+    an update channel must not have.
+    """
+    external = _update_base(platform)
+    if external:
+        return _sha256_external(external.rstrip("/") + "/manifest.json")
+    return _sha256_local(UPDATE_DIR / platform / "manifest.json")
+
+
+@app.get("/api/update/{platform}/manifest")
+def api_update_manifest(platform: str):
+    if platform not in _DOWNLOADS:
+        raise HTTPException(status_code=404, detail="Unknown platform.")
+    external = _update_base(platform)
+    if external:
+        return RedirectResponse(external.rstrip("/") + "/manifest.json",
+                                status_code=302)
+    path = UPDATE_DIR / platform / "manifest.json"
+    if not path.is_file():
+        raise HTTPException(status_code=404,
+                            detail="No update manifest is published.")
+    return FileResponse(path, media_type="application/json",
+                        headers={"Cache-Control": "no-store"})
+
+
+@app.get("/update/{platform}/file/{digest}")
+def update_file(platform: str, digest: str):
+    """Serve one content-addressed file from the update store.
+
+    `digest` is validated as a bare sha256 rather than used as a path: it
+    arrives from a URL, and joining unvalidated user input onto a directory is
+    how a file server becomes an arbitrary-read primitive. Content addressing
+    also makes these objects immutable, so unlike the manifest they can be
+    cached hard.
+    """
+    if platform not in _DOWNLOADS:
+        raise HTTPException(status_code=404, detail="Unknown platform.")
+    if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest.lower()):
+        raise HTTPException(status_code=400, detail="Not a digest.")
+    digest = digest.lower()
+
+    external = _update_base(platform)
+    if external:
+        return RedirectResponse(f"{external.rstrip('/')}/files/{digest}",
+                                status_code=302)
+    path = UPDATE_DIR / platform / "files" / digest
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="No such object.")
+    return FileResponse(path, media_type="application/octet-stream",
+                        headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
 
 def _open_external(url: str):
