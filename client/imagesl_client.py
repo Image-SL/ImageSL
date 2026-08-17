@@ -28,7 +28,7 @@ import webview  # pywebview
 APP_NAME = "ImageSL"
 # Where this shell points (env wins, then bundled config.json, then this
 # default). Override for a self-hosted deploy.
-DEFAULT_BACKEND = "https://imagesl.online"
+DEFAULT_BACKEND = "https://imagesl.com"
 
 
 def _config_dir() -> Path:

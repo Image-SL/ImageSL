@@ -7,7 +7,7 @@ engine is self-contained numpy and scikit-image.
 
 ## A. Just use it
 
-<https://imagesl.online> — drop a slide on the page. Nothing to install.
+<https://imagesl.com> — drop a slide on the page. Nothing to install.
 
 Or install the desktop app from the same page, which bundles the whole engine and
 runs it on a private loopback port, fully offline. A slide never leaves the

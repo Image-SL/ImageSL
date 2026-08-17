@@ -1,6 +1,6 @@
 # ImageSL — Deploying
 
-The live site is **<https://imagesl.online>**, running on an **AWS Lightsail
+The live site is **<https://imagesl.com>**, running on an **AWS Lightsail
 container service** in `us-east-2`. Deployment is automatic: every push to `main`
 runs [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml), which
 builds the `Dockerfile`, pushes the image to ECR, and rolls out a new deployment.
@@ -102,8 +102,8 @@ normally.
 ## Verify a deploy
 
 ```bash
-curl -s https://imagesl.online/api/health
-curl -s https://imagesl.online/api/downloads
+curl -s https://imagesl.com/api/health
+curl -s https://imagesl.com/api/downloads
 ```
 
 `/api/health` returns `{"status":"ok","version":"..."}`. `/api/downloads` reports
