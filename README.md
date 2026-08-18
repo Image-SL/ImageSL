@@ -2,6 +2,7 @@
 
 [![Build](https://github.com/Image-SL/ImageSL/actions/workflows/build-desktop.yml/badge.svg)](https://github.com/Image-SL/ImageSL/actions/workflows/build-desktop.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22003750.svg)](https://doi.org/10.5281/zenodo.22003750)
 [![Cite this repository](https://img.shields.io/badge/cite-CITATION.cff-brightgreen.svg)](CITATION.cff)
 [![Research use only](https://img.shields.io/badge/use-research%20only-important.svg)](DISCLAIMER.md)
 
