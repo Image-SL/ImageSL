@@ -20,6 +20,6 @@ keywords:
   - image analysis
   - quantification
   - colour deconvolution
-license: MIT
+license: Apache-2.0
 version: 1.0.1
 # doi: "10.5281/zenodo.XXXXXXX"   # add after archiving a release with Zenodo

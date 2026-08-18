@@ -1,6 +1,6 @@
 # Third-party licences
 
-ImageSL is MIT licensed. It depends on, and its desktop builds redistribute,
+ImageSL is licensed under Apache-2.0. It depends on, and its desktop builds redistribute,
 the following. All are permissive; none imposes copyleft obligations on this
 project or on binaries built from it.
 
@@ -35,6 +35,8 @@ bundling of applications under **any** licence, including proprietary ones.
 Only the bootloader is linked into the produced executable, and the exception
 covers exactly that. Freezing ImageSL with PyInstaller therefore does not make
 the resulting binary GPL, and does not require ImageSL to be GPL.
+
+Apache-2.0 is compatible with every dependency licence listed above.
 
 If the bootloader is ever modified, the exception no longer applies to it and
 the modified bootloader must be released under GPL-2.0. ImageSL does not

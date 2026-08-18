@@ -347,7 +347,8 @@ thumbnail. Every number in the CSV traces back to a pixel rule you can read in
 
 ## Licence, citation and contributing
 
-ImageSL is released under the [MIT License](LICENSE). Third-party components
+ImageSL is released under the [Apache License 2.0](LICENSE), which
+includes an express patent grant. See [NOTICE](NOTICE). Third-party components
 and their licences are listed in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md);
 all are permissive, and the PyInstaller bootloader exception means frozen
 builds carry no copyleft obligation.
