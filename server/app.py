@@ -761,7 +761,11 @@ if IMAGESL_DESKTOP:
     except Exception as _exc:
         print(f"ImageSL: desktop settings unavailable ({_exc})")
 
-_PUBLIC_PAGES = [("/", "1.0"), ("/privacy", "0.4"), ("/terms", "0.4")]
+# Only the page worth ranking. /privacy and /terms carry a noindex and are
+# deliberately absent: they were outranking the product page for the
+# project's own name, which is the worst possible first impression -
+# a search for ImageSL returned its privacy policy, not what it does.
+_PUBLIC_PAGES = [("/", "1.0")]
 
 @app.get("/robots.txt")
 def robots_txt():

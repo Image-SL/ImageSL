@@ -7,8 +7,10 @@
 <meta name="description" content="ImageSL quantifies DAB immunohistochemistry slides with automatic background removal, color deconvolution and precise positive-area measurement. Drop one slide or a whole batch.">
 <meta name="theme-color" content="#ffffff">
 
-<link rel="icon" type="image/png" sizes="32x32" href="/assets/favicon-32.png">
-<link rel="icon" type="image/png" sizes="192x192" href="/assets/logo-192.png">
+<link rel="icon" href="/assets/favicon.ico" sizes="any">
+<link rel="icon" type="image/png" sizes="48x48" href="/assets/favicon-48.png">
+<link rel="icon" type="image/png" sizes="96x96" href="/assets/favicon-96.png">
+<link rel="icon" type="image/png" sizes="192x192" href="/assets/favicon-192.png">
 <link rel="apple-touch-icon" href="/assets/logo-192.png">
 
 <meta property="og:type" content="website">
@@ -26,7 +28,7 @@
 <link rel="canonical" href="__SITE_URL__/">
 
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"WebApplication","name":"ImageSL","url":"__SITE_URL__/","applicationCategory":"HealthApplication","operatingSystem":"Web","description":"ImageSL quantifies DAB immunohistochemistry slides with automatic background removal, color deconvolution and precise positive-area measurement.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}
+{"@context": "https://schema.org", "@type": "SoftwareApplication", "name": "ImageSL", "url": "__SITE_URL__/", "applicationCategory": "ScienceApplication", "operatingSystem": "Windows 10, macOS 12", "description": "ImageSL measures the area of DAB-positive staining in immunohistochemistry images of tissue sections, with automatic background removal and colour deconvolution. Analysis runs entirely on the local machine.", "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}, "applicationSubCategory": "Histology image analysis"}
 </script>
 
 <link rel="stylesheet" href="/tokens.css?v=__ASSET_V__">
@@ -113,7 +115,7 @@
         <h3>About</h3>
         <dl class="kv">
           <dt>Analysis</dt><dd>Runs entirely on this computer. Slides are never uploaded.</dd>
-          <dt>Network use</dt><dd id="setSite">Only to check for updates.</dd>
+          <dt>Network use</dt><dd id="setSite">Only to check for, and download, updates.</dd>
         </dl>
         <p class="set-note">For research. Not for clinical diagnosis.</p>
       </section>
@@ -140,7 +142,7 @@
     <div id="stainPicker" class="stain-picker hidden">
       <div class="sp-field">
         <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-        <input id="stainSearch" type="text" autocomplete="off" spellcheck="false" placeholder="Search stains — DAB (further stains are being added)">
+        <input id="stainSearch" type="text" autocomplete="off" spellcheck="false" placeholder="Search stains — this build supports DAB only">
         <button id="stainClear" class="sp-clear hidden" title="Clear" aria-label="Clear selection">✕</button>
       </div>
       <div id="stainChosen" class="sp-chosen hidden"></div>
@@ -343,7 +345,7 @@
     $('setVersion').textContent = info.version || "–";
     $('setDataDir').textContent = info.data_dir || "–";
     $('setCache').textContent = bytes(info.cache_bytes);
-    if (info.site) $('setSite').textContent = "Only to check for updates (" + info.site + ").";
+    if (info.site) $('setSite').textContent = "Only to check for, and download, updates (" + info.site + ").";
 
     var s = info.settings || {};
     $('optCheckLaunch').checked  = !!s.check_updates_on_launch;
