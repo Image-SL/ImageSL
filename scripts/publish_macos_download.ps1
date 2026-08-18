@@ -30,7 +30,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$Source,
     [string]$Version = "1.0.0",
-    [string]$Bucket  = "imagesl-downloads-581586866061",
+    [string]$Bucket  = "$(if($env:IMAGESL_DOWNLOAD_BUCKET){$env:IMAGESL_DOWNLOAD_BUCKET}else{"imagesl-downloads-$env:AWS_ACCOUNT_ID"})",
     # Set this to the digest reported on the build machine to prove the copy
     # across arrived intact. Skipped when empty.
     [string]$ExpectedSha256 = ""

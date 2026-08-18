@@ -25,7 +25,8 @@ permissions:
 
 env:
   AWS_REGION: us-east-2
-  ECR_REGISTRY: 392617884477.dkr.ecr.us-east-2.amazonaws.com
+  AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+  ECR_REGISTRY: ${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-2.amazonaws.com
   ECR_REPO: imagesl
   SERVICE: imagesl
 
@@ -36,10 +37,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Check the deployment target is configured
+        run: |
+          if [ -z "${AWS_ACCOUNT_ID:-}" ]; then
+            echo "::error::Repository variable AWS_ACCOUNT_ID is not set, so there is no account to deploy to. Set it under Settings -> Secrets and variables -> Actions -> Variables. A fork needs its own value."
+            exit 1
+          fi
+          echo "Deploying into AWS account ${AWS_ACCOUNT_ID}."
+
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::392617884477:role/imagesl-github-deploy
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/imagesl-github-deploy
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Log in to Amazon ECR
@@ -96,7 +105,7 @@ jobs:
           # no change here. Hardcoding the fallback is consistent with this file
           # already hardcoding the account's ECR registry and role ARN: the
           # deployment target is not a secret and not a per-environment knob.
-          DL_BUCKET_DEFAULT="imagesl-downloads-392617884477"
+          DL_BUCKET_DEFAULT="imagesl-downloads-${AWS_ACCOUNT_ID}"
 
           # The site's canonical address. Every canonical tag, og:url, the
           # sitemap and robots.txt are built from it, so it has to be the domain

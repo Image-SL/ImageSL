@@ -1,5 +1,11 @@
 # ImageSL — Deploying
 
+> `<AWS_ACCOUNT_ID>` throughout this document is the AWS account the stack is
+> deployed into. It is not written into the workflows: set it once as the
+> repository variable `AWS_ACCOUNT_ID` (Settings -> Secrets and variables ->
+> Actions -> Variables) and both workflows read it from there. A fork deploying
+> into its own account sets its own value and changes no files.
+
 The live site is **<https://imagesl.com>**, running on an **AWS Lightsail
 container service** in `us-east-2`. Deployment is automatic: every push to `main`
 runs [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml), which
@@ -11,11 +17,11 @@ There is nothing to click. If you have pushed to `main`, you have deployed.
 
 | Thing | Value |
 | --- | --- |
-| AWS account | `581586866061` |
+| AWS account | `<AWS_ACCOUNT_ID>` |
 | Region | `us-east-2` |
 | ECR repository | `imagesl` |
 | Lightsail service | `imagesl` |
-| GitHub OIDC role | `arn:aws:iam::581586866061:role/imagesl-github-deploy` |
+| GitHub OIDC role | `arn:aws:iam::<AWS_ACCOUNT_ID>:role/imagesl-github-deploy` |
 
 Authentication is OIDC — there are no stored AWS keys in the repository or in
 GitHub secrets.
@@ -70,8 +76,8 @@ publish path.
 
 ### The bucket
 
-`imagesl-downloads-581586866061`, in `us-east-2`. Deliberately **not** the
-existing `imagesl-build-581586866061`, which holds `imagesl-source.zip`: a bucket
+`imagesl-downloads-<AWS_ACCOUNT_ID>`, in `us-east-2`. Deliberately **not** the
+existing `imagesl-build-<AWS_ACCOUNT_ID>`, which holds `imagesl-source.zip`: a bucket
 that serves anonymous downloads should not also hold the source, and one
 mis-scoped policy would be the whole difference.
 
@@ -88,7 +94,7 @@ v/<version>/...                    immutable archive copy, max-age=31536000
 
 > **`IMAGESL_DOWNLOAD_BUCKET` must be set as a repository variable**
 > (Settings → Secrets and variables → Actions → Variables) to
-> `imagesl-downloads-581586866061`. Until it is, `deploy.yml` resolves no
+> `imagesl-downloads-<AWS_ACCOUNT_ID>`. Until it is, `deploy.yml` resolves no
 > installer URLs, omits them from the deployment, and the download buttons go
 > back to "coming soon" on the next successful deploy — silently, because that is
 > the honest state as far as the app can tell. The workflow prints a warning when

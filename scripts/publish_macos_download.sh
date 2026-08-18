@@ -20,7 +20,7 @@
 #      failing loudly.
 set -euo pipefail
 
-BUCKET="${IMAGESL_DOWNLOAD_BUCKET:-imagesl-downloads-581586866061}"
+BUCKET="${IMAGESL_DOWNLOAD_BUCKET:-imagesl-downloads-${AWS_ACCOUNT_ID:?set AWS_ACCOUNT_ID or IMAGESL_DOWNLOAD_BUCKET}}"
 NAME="ImageSL-macOS.dmg"
 SRC="${1:-downloads/${NAME}}"
 VERSION="$(tr -d ' \t\r\n' < version.txt)"
