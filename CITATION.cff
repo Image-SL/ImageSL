@@ -5,7 +5,7 @@ type: software
 authors:
   - family-names: "Li"
     given-names: "Sam"
-repository-code: "https://github.com/ImageSL/ImageSL"
+repository-code: "https://github.com/Image-SL/ImageSL"
 url: "https://imagesl.com"
 abstract: >-
   ImageSL quantifies DAB-positive area in immunohistochemistry images. It

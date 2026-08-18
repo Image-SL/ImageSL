@@ -19,7 +19,7 @@
   ],
   "related_identifiers": [
     {
-      "identifier": "https://github.com/ImageSL/ImageSL",
+      "identifier": "https://github.com/Image-SL/ImageSL",
       "relation": "isSupplementTo",
       "scheme": "url"
     },
