@@ -152,7 +152,9 @@ aws iam get-role --role-name imagesl-github-deploy --query 'Role.AssumeRolePolic
 ```
 
 The `token.actions.githubusercontent.com:sub` condition should be
-`repo:solvergent/ImageSL:*` (any ref), not a single-workflow or single-ref match.
+the deploying repository's refs, scoped to `main` and release tags rather
+than any ref. That role and its trust policy live with the private deployment
+repository, not here.
 
 ### Bootstrap an installer you already have
 
