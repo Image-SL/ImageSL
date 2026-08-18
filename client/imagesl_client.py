@@ -1,21 +1,3 @@
-"""
-ImageSL desktop client — a thin native shell.
-
-This program deliberately contains NO analysis logic and NO API keys. It:
-  1. asks the user for their ImageSL license key (once, stored locally),
-  2. opens a native window (Edge WebView2 on Windows) pointed at the hosted
-     ImageSL web app, passing the license key,
-  3. lets the hosted backend do all the work.
-
-Note this is NOT the offline desktop app. That one is desktop/launcher.py, which
-bundles the engine and analyses locally; this shell needs a network and a server.
-
-Because nothing proprietary ships in the executable, there is nothing to
-decompile out of it. The build is small and unobfuscated, which also keeps
-antivirus heuristics calm (the durable fix for SmartScreen is code signing —
-see docs/SECURITY.md).
-"""
-
 from __future__ import annotations
 
 import json
@@ -23,13 +5,10 @@ import os
 import sys
 from pathlib import Path
 
-import webview  # pywebview
+import webview
 
 APP_NAME = "ImageSL"
-# Where this shell points (env wins, then bundled config.json, then this
-# default). Override for a self-hosted deploy.
 DEFAULT_BACKEND = "https://imagesl.com"
-
 
 def _config_dir() -> Path:
     base = os.environ.get("APPDATA") or os.path.expanduser("~")
@@ -37,9 +16,7 @@ def _config_dir() -> Path:
     d.mkdir(parents=True, exist_ok=True)
     return d
 
-
 def _bundled_config() -> dict:
-    # config.json placed next to the exe or bundled by PyInstaller.
     for candidate in (
         Path(getattr(sys, "_MEIPASS", ".")) / "config.json",
         Path(sys.argv[0]).resolve().parent / "config.json",
@@ -51,7 +28,6 @@ def _bundled_config() -> dict:
             pass
     return {}
 
-
 def backend_url() -> str:
     return (
         os.environ.get("IMAGESL_BACKEND_URL")
@@ -59,9 +35,7 @@ def backend_url() -> str:
         or DEFAULT_BACKEND
     ).rstrip("/")
 
-
 class Bridge:
-    """JS <-> Python bridge exposed to the local bootstrap page."""
 
     def __init__(self):
         self._cfg_path = _config_dir() / "config.json"
@@ -89,7 +63,6 @@ class Bridge:
 
     def open_app(self, key: str) -> None:
         webview.windows[0].load_url(self._app_url((key or "").strip()))
-
 
 BOOTSTRAP_HTML = """
 <!doctype html><html><head><meta charset="utf-8"><title>ImageSL</title>
@@ -131,7 +104,6 @@ BOOTSTRAP_HTML = """
 </script></body></html>
 """
 
-
 def main() -> None:
     bridge = Bridge()
     webview.settings["ALLOW_DOWNLOADS"] = True
@@ -146,7 +118,6 @@ def main() -> None:
         background_color="#08060d",
     )
     webview.start()
-
 
 if __name__ == "__main__":
     main()

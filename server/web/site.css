@@ -1,17 +1,8 @@
-/* ============================================================================
-   Shared site chrome — header, footer, buttons and document prose.
-
-   Used by landing.html, privacy.html and terms.html so the public pages cannot
-   drift apart. Page-specific layout (the landing hero, for instance) stays in
-   the page that owns it. Depends on tokens.css; load that first.
-   ========================================================================== */
-
 body{font-weight:var(--w-light);display:flex;flex-direction:column;min-height:100vh}
 a{color:inherit}
 .wrap{width:100%;max-width:var(--container);margin:0 auto;padding:0 var(--s6)}
 main{flex:1;display:flex;flex-direction:column}
 
-/* -- header -------------------------------------------------------------- */
 .site-header{
   border-bottom:1px solid var(--line);
   background:rgba(255,255,255,.72);
@@ -28,10 +19,6 @@ main{flex:1;display:flex;flex-direction:column}
 .site-nav a:hover{color:var(--ink)}
 @media(max-width:640px){ .site-nav a.opt{display:none} }
 
-/* -- buttons --------------------------------------------------------------
-   Pills. The primary carries the brand colour rather than being black: on a
-   page whose only other colour is the mark, a black slab is the heaviest thing
-   on screen and reads as a form submit, not as the thing you came for. */
 .btn{display:inline-flex;align-items:center;gap:9px;font-family:inherit;font-size:var(--t-base);
      font-weight:var(--w-normal);text-decoration:none;padding:13px 26px;border-radius:var(--radius-pill);
      border:1px solid var(--line-2);background:var(--card);color:var(--ink);white-space:nowrap;
@@ -40,8 +27,7 @@ main{flex:1;display:flex;flex-direction:column}
                 box-shadow var(--dur) var(--ease),transform var(--dur) var(--ease)}
 .btn:active{transform:scale(.985)}
 .btn svg{width:15px;height:15px;flex:none;opacity:.8}
-/* The platform glyph follows data-os, the same attribute that sets the label,
-   so a button can never show one platform's logo above another's name. */
+
 .btn[data-os="win"] .g-mac,
 .btn[data-os="mac"] .g-win{display:none}
 .btn:hover{border-color:var(--line-2);box-shadow:var(--shadow)}
@@ -54,7 +40,6 @@ main{flex:1;display:flex;flex-direction:column}
 .btn.off:hover{border-color:var(--line-2)}
 .btn.primary.off:hover{background:var(--ink);border-color:var(--ink)}
 
-/* -- footer -------------------------------------------------------------- */
 .site-footer{border-top:1px solid var(--line);background:var(--card)}
 .fgrid{display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:36px;padding:52px 0 40px}
 @media(max-width:760px){.fgrid{grid-template-columns:1fr 1fr;gap:32px 24px;padding-top:42px}}
@@ -64,17 +49,12 @@ main{flex:1;display:flex;flex-direction:column}
 .fcol ul{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:9px}
 .fcol a{font-size:13.5px;color:var(--ink-2);text-decoration:none;transition:color var(--dur) var(--ease)}
 .fcol a:hover{color:var(--ink)}
-/* A download link stays dimmed until the server confirms the file exists. */
+
 .fcol a.off{opacity:.4;cursor:not-allowed}
 .fcol a.off:hover{color:var(--ink-2)}
 .fbot{border-top:1px solid var(--line);padding:20px 0 30px;display:flex;flex-wrap:wrap;
       justify-content:space-between;gap:10px 24px;font-size:12.5px;color:var(--ink-3)}
 
-/* -- document prose (privacy, terms) --------------------------------------
-   Centred on the canvas and set on a white panel. Capping the measure is right,
-   but capping it and then leaving it pinned to the left of a 1120px container
-   left 450px of empty canvas beside every paragraph - the measure rule and the
-   centring rule have to be applied together or the page looks abandoned. */
 .doc{
   max-width:calc(var(--measure) + var(--s16));
   margin:var(--s12) auto;

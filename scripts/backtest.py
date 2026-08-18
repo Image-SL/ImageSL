@@ -1,49 +1,3 @@
-"""
-ImageSL detection backtest.
-
-Runs the real engine over a folder of slides and applies objective checks that
-need no hand-drawn ground truth. Every check is a statement that must hold for
-any correct IHC quantifier, and each failure names the slide and the number.
-
-  MISS      Unmistakable chromogen — dense, clearly brown, well above the
-            slide's own tissue texture — that the detector did not call
-            positive. This is the failure that made the previous build report
-            near-zero on obviously stained sections.
-
-  FLOOD     Positive pixels that carry essentially no excess absorbance, i.e.
-            background counted as signal.
-
-  GREY      Positive pixels whose excess absorbance is not chromogen-coloured:
-            folds, ink, dust, haematoxylin.
-
-  COVER     Reported, not enforced. The share of material that is chromogen by
-            the RAW image — absorbing strongly AND clearly warm — that was
-            detected. It is a useful second opinion on under-detection, in the
-            units a person looking at the slide would use rather than the
-            engine's own.
-
-            It is NOT a pass/fail gate, because on a diffusely stained section
-            the tissue itself meets that description: the metric cannot tell
-            "missed a structure" from "correctly declined to count the tissue's
-            own tone", and the two have opposite meanings. Requiring local
-            prominence to separate them just turns it back into MISS. Watch it
-            for large moves between runs; judge under-detection by MISS.
-
-  TISSUE    A tissue mask that has thrown away material which is plainly not
-            bare glass (the collapse that silently changes every denominator).
-
-  LIGHT     Instability against a ±12% illumination change. A measurement that
-            moves when the lamp does is not a measurement.
-
-  SCALE     Instability against analysing the same slide at a different
-            working resolution.
-
-  NOISE     Instability against mild JPEG compression.
-
-Usage:
-    python scripts/backtest.py <folder-of-images> [--montage out_dir] [--jobs N]
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -58,87 +12,36 @@ from PIL import Image
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "server"))
 
-from ihc import detect, engine  # noqa: E402
+from ihc import detect, engine
 
-# --------------------------------------------------------------------------- #
-# Tolerances
-# --------------------------------------------------------------------------- #
+MISS_MAX      = 0.05
+MISS_MIN_PX   = 60
+FLOOD_MAX     = 0.10
+GREY_MAX      = 0.22
+TISSUE_MIN    = 0.90
+ABS_TOL_PP    = 0.50
+LIGHT_TOL     = 0.30
+SCALE_TOL     = 0.40
+NOISE_TOL     = 0.30
 
-MISS_MAX      = 0.05    # ≤5% of unmistakable stain may be missed
-MISS_MIN_PX   = 60      # ... and a miss under this many pixels is not a finding
-FLOOD_MAX     = 0.10    # ≤10% of positives may carry no real excess
-GREY_MAX      = 0.22    # ≤22% of positives may be non-chromogen-coloured
-TISSUE_MIN    = 0.90    # tissue mask ≥ 90% of the not-obviously-glass area
-ABS_TOL_PP    = 0.50    # ... and under this many percentage points is never a failure
-LIGHT_TOL     = 0.30    # ≤30% relative change in positive area under ±12% light
-SCALE_TOL     = 0.40    # ≤40% relative change at a different working resolution
-NOISE_TOL     = 0.30    # ≤30% relative change under JPEG q80
+OBVIOUS_OD    = 0.40
+OBVIOUS_SIG   = 7.0
+OBVIOUS_BROWN = 0.30
 
-OBVIOUS_OD    = 0.40    # excess OD that is unmistakably chromogen
-OBVIOUS_SIG   = 7.0     # ... and this many texture sigmas above background
-OBVIOUS_BROWN = 0.30    # ... and this clearly the chromogen's own colour
-
-# A SECOND, independent statement of what is unmistakably stain — read on the
-# material's own absorbance rather than on its excess over the local background.
-#
-# The terms above are all excess-based, and the excess reading has one specific
-# blind spot: under a dense structure the local background is itself tinted by
-# the same chromogen, so subtracting it cancels the signature being tested for.
-# The densest DAB therefore fails OBVIOUS_BROWN and drops out of the ground
-# truth — which is why this suite reported MISS at a median of 0.0% across 46
-# slides while the engine was discarding up to 79% of the obvious chromogen on
-# others. A suite that cannot see a failure will never report one.
-#
-# This term is deliberately built from quantities the detector does not gate on:
-# absorbance along the chromogen axis relative to the slide's own tissue, and the
-# DIRECTION of that absorbance, which is scale-free and so does not degrade on a
-# near-black core. Small specks are dropped — a structure has to be a structure.
-RAW_SIG_K       = 6.0   # this many robust deviations above the tissue's own level
-RAW_MIN_BLOB_PX = 12    # ... in a blob at least this large
-# ... and this much of its absorbance must actually BE the chromogen.
-#
-# This replaced a pair of raw direction terms (B-R >= 0.15, B-G >= 0.02). A
-# direction describes the total absorbance, so a grey-green pigment body with a
-# faint warm cast passes it: the two masses on OK3259 that this suite insisted
-# the engine must count read B-R 0.185 and 0.182, and decompose to 12-13%
-# chromogen against 42% for the material the engine detected on that slide.
-# Enlarged they are obviously pigment, and the genuine DAB beside them is
-# detected. The ground truth was demanding a false positive.
-#
-# 0.30 is twice the engine's own `CHROMO_FRAC_MIN` and still far under the DAB
-# population's 1st percentile (0.348, measured per object over the corpus), so it
-# admits real staining with enormous margin while excluding material that is
-# mostly not chromogen. Being STRICTER than the gate it tests is the safe
-# direction for a ground truth: it only ever asks the engine to find things that
-# unambiguously are stain.
+RAW_SIG_K       = 6.0
+RAW_MIN_BLOB_PX = 12
 RAW_CHROMO_MIN  = 0.30
-# ... and it must not be intraluminal debris.
-#
-# Without this the check demands that granular luminal casts be counted. That
-# material is dense and sits against a pale lumen, so its EXCESS over the local
-# background is large and reads brown — every term above passes it — while the
-# material itself is olive-grey and plainly not chromogen. The excess-colour
-# reading is exactly the one that cannot see the difference, which is why the
-# engine needed a separate test for it; a suite built on that same reading would
-# otherwise keep insisting the false positive was right.
-#
-# The test is imported from the engine rather than restated here, so the suite
-# and the detector cannot end up asking different questions of the same pixels.
 
-COVER_RAW_OD  = 0.60    # raw absorbance along the chromogen axis that qualifies
-COVER_WARM    = 0.15    # ... together with this much raw warmth, (R−B)/(R+B)
-COVER_MIN_PX  = 400     # below this the population is too small to judge
+COVER_RAW_OD  = 0.60
+COVER_WARM    = 0.15
+COVER_MIN_PX  = 400
 GREEN = np.array([57, 255, 20], dtype=np.float64)
-
 
 def analyse(rgb: np.ndarray, level=None):
     res, maps = engine.analyze(rgb, (rgb.shape[1], rgb.shape[0]), level=level)
     return res, maps
 
-
 def glass_estimate(rgb: np.ndarray) -> float:
-    """Independent, deliberately crude estimate of the BARE GLASS fraction:
-    bright, colourless and smooth. Anything else is material of some kind."""
     from scipy.ndimage import uniform_filter
     hsv_h, sat, val = engine._rgb_to_hsv(rgb.astype(np.float32) / 255.0)
     white = np.percentile(rgb.reshape(-1, 3), 99.0, axis=0)
@@ -148,23 +51,11 @@ def glass_estimate(rgb: np.ndarray) -> float:
     bright = val >= (float(np.min(white)) / 255.0 - 0.06)
     return float((bright & (sat < 0.15) & (std < 0.012)).mean())
 
-
 def positive_fraction(rgb: np.ndarray) -> float:
     res, _ = analyse(rgb)
     return res.positive_percent
 
-
 def _grey_object_fraction(pos: np.ndarray, brown: np.ndarray, rgb: np.ndarray) -> float:
-    """Share of the positive AREA sitting in structures that are not
-    chromogen-coloured.
-
-    Two independent colour readings, because either one alone is unfair to a
-    genuine detection: the absorbance-excess direction (`brown`), which is the
-    engine's own measure and goes flat on dense, channel-crushed stain; and the
-    raw warmth of the pixels, (R − B)/(R + B), which stays clearly positive for
-    dark brown and sits at zero for ink, dust and folds. Only a structure that
-    fails BOTH is grey.
-    """
     if not pos.any():
         return 0.0
     from skimage.measure import label
@@ -180,25 +71,7 @@ def _grey_object_fraction(pos: np.ndarray, brown: np.ndarray, rgb: np.ndarray) -
     bad[0] = False
     return float(area[bad].sum()) / float(area[1:].sum() or 1)
 
-
 def _flood_object_fraction(pos: np.ndarray, sig: np.ndarray, sigma: float) -> float:
-    """Share of the positive AREA belonging to structures with no real excess.
-
-    Asked per structure, for the same reason GREY is (see `_grey_object_fraction`):
-    a structure is either background or it is not, and the question has no useful
-    answer pixel by pixel.
-
-    It used to be pixelwise, against `max(0.05, 1.2 * sigma)`. That made it an
-    absolute brightness claim competing with the detector's own candidate floor
-    (`max(1.6 * sigma, 0.025)`), and on a low-noise slide the two disagreed by a
-    factor of two — the floor sat at 0.032 while this demanded 0.05. Every object
-    measured down to its own isophote then had a rim of pixels between the two,
-    and the check called that rim "background counted as signal". It is not: it is
-    the edge of a real structure whose peak is far above both numbers. Four slides
-    failed on that alone.
-
-    What the check is actually for — a blob that is nothing but background — is a
-    statement about the blob's PEAK, so that is what it now tests."""
     if not pos.any():
         return 0.0
     from skimage.measure import label
@@ -214,13 +87,7 @@ def _flood_object_fraction(pos: np.ndarray, sig: np.ndarray, sigma: float) -> fl
     bad[0] = False
     return float(area[bad].sum()) / float(area[1:].sum() or 1)
 
-
 def _raw_obvious_stain(od: np.ndarray, tissue: np.ndarray) -> np.ndarray:
-    """Chromogen nobody could mistake, read on the material's OWN absorbance.
-
-    See RAW_SIG_K. Independent of the local background and of every reading the
-    detector gates on, which is the whole point: this is the term that can see
-    the failure the excess-based one is blind to."""
     from skimage.measure import label
     od_pos = np.clip(od, 0.0, None)
     dab = detect.DAB_OD / np.linalg.norm(detect.DAB_OD)
@@ -241,41 +108,7 @@ def _raw_obvious_stain(od: np.ndarray, tissue: np.ndarray) -> np.ndarray:
     keep = np.flatnonzero(areas >= RAW_MIN_BLOB_PX)
     return np.isin(lbl, keep[keep > 0])
 
-
 def _drop_debris_structures(mask: np.ndarray, od: np.ndarray) -> np.ndarray:
-    """Remove whole connected structures whose own absorbance carries no colour.
-
-    This exists so the MISS ground truth does not count a luminal cast of
-    pigment as stain the detector should have found. It is deliberately NOT the
-    detector's own gate any more.
-
-    It used to be exactly that — `detect.looks_like_debris` on each structure's
-    saturation-weighted mean — and that made the check circular in the worst
-    possible way: whatever the engine's debris rule threw away, the ground truth
-    threw away too, so MISS could not see it. The rule was wrong (it discarded
-    6.5% of real DAB objects and up to 79% of the unmistakable chromogen on some
-    slides), and this suite reported MISS at a median of 0.0% throughout. A
-    regression suite that shares a premise with the thing it is testing will
-    confirm that premise forever.
-
-    So this is a statement about the material in absorbance space: a structure is
-    refused when its absorbance is overwhelmingly NOT the chromogen.
-
-    It asks that as a decomposition (`detect.chromogen_fraction`) rather than as
-    a raw B-R direction, which is what it used to do and which does not work. A
-    direction describes the total absorbance, so a grey-green pigment body with a
-    faint warm cast clears a raw-direction bar while being almost entirely
-    neutral. Measured on OK3259, the two masses the old ground truth insisted the
-    engine must count read B-R 0.185 and 0.182 — over a 0.10 bar — yet decompose
-    to 13% and 12% chromogen, against 42% for the material the engine actually
-    detected on that slide. Enlarged, they are plainly pigment, and the real DAB
-    around them is detected. The suite was demanding a false positive.
-
-    The bar is 0.10 where the engine's is `CHROMO_FRAC_MIN` (0.15), deliberately:
-    anything between the two still counts as stain the engine is required to
-    find, so the ground truth stays strictly harder than the gate it tests and
-    the two cannot be tuned against one another.
-    """
     if not mask.any():
         return mask
     from skimage.measure import label
@@ -292,14 +125,7 @@ def _drop_debris_structures(mask: np.ndarray, od: np.ndarray) -> np.ndarray:
     bad[0] = False
     return mask & ~bad[lbl]
 
-
 def check(path: str, montage_dir=None, quick: bool = False) -> dict:
-    # Load exactly as the server does — from the file's own bytes, through
-    # engine.load_rgb, including the downsample to the working resolution.
-    # Reading the file with PIL here instead tested a code path no upload ever
-    # takes: a pyramidal or compressed TIF is decoded differently, and the
-    # analysis ran at full resolution, so the suite could pass while real
-    # uploads behaved differently or failed outright.
     with open(path, "rb") as fh:
         rgb, _source_size = engine.load_rgb(fh.read())
     t0 = time.time()
@@ -316,34 +142,19 @@ def check(path: str, montage_dir=None, quick: bool = False) -> dict:
     obvious = (tissue & (sig >= max(OBVIOUS_OD, OBVIOUS_SIG * sigma))
                & (brown >= OBVIOUS_BROWN))
     obvious = obvious | _raw_obvious_stain(maps["od"], tissue)
-    # ... asked STRUCTURE by structure, the way the engine decides and the way
-    # the GREY check below already works. A granule inside a luminal cast can be
-    # brown enough on its own; what gives the cast away is the colour of the body
-    # as a whole. Judging pixel by pixel would demand that most of each cast be
-    # counted while the engine correctly refuses the body.
     obvious = _drop_debris_structures(obvious, maps["od"])
     obv_px = int(obvious.sum())
     miss = float((obvious & ~pos).sum()) / obv_px if obv_px else 0.0
 
     pos_px = int(pos.sum())
     flood = _flood_object_fraction(pos, sig, sigma)
-    # Grey is asked OBJECT by object: a dense chromogen core is colour-crushed and
-    # would look "grey" pixel-wise even though the structure it belongs to is
-    # unmistakably brown. What must not be counted is a whole structure that is
-    # neutral — a fold, an ink mark, a dust speck.
     grey = _grey_object_fraction(pos, brown, rgb)
 
-    # Independent of the engine's own excess units: what a person would call
-    # obviously stained in the raw image.
     from ihc import detect as _detect
     dab = _detect.DAB_OD / np.linalg.norm(_detect.DAB_OD)
     raw_abs = (maps["od"] @ dab).astype(np.float32)
     fl = rgb.astype(np.float32)
     warm_raw = (fl[..., 0] - fl[..., 2]) / (fl[..., 0] + fl[..., 2] + 1.0)
-    # ... and locally prominent, if only slightly. Without that clause the
-    # population swallows the tissue tone of a diffusely stained section — which
-    # is exactly the material the engine is right not to count — and the check
-    # would punish correct behaviour.
     unambiguous = (tissue & (raw_abs >= COVER_RAW_OD) & (warm_raw >= COVER_WARM)
                    & (sig >= max(0.05, 1.5 * sigma)))
     unamb_px = int(unambiguous.sum())
@@ -354,22 +165,12 @@ def check(path: str, montage_dir=None, quick: bool = False) -> dict:
 
     base = res.positive_percent
 
-    # A perturbation "moved the answer" only if it moved it BOTH relatively and
-    # in absolute terms. On a slide reading 0.4% positive area, a 40% relative
-    # swing is 0.16 percentage points — smaller than the difference between two
-    # honest human annotations, and reporting it as a failure would just be
-    # reporting the small denominator.
     def rel(x):
         r = abs(x - base) / max(base, 0.05)
         return r if abs(x - base) >= ABS_TOL_PP else 0.0
 
     light = scale = noise = 0.0
     if not quick:
-        # Illumination is varied DOWNWARD and by colour temperature. Scaling a
-        # bright-field scan up instead would push a background that already sits
-        # at 247/255 into clipping, and pale tissue that has been flattened to
-        # pure white is not recoverable by any method — that would test the
-        # sensor, not the engine.
         f = rgb.astype(np.float32)
         dim = (f * 0.88).astype(np.uint8)
         dimmer = (f * 0.78).astype(np.uint8)
@@ -389,8 +190,6 @@ def check(path: str, montage_dir=None, quick: bool = False) -> dict:
         noise = rel(positive_fraction(noisy))
 
     fails = []
-    # A percentage of a handful of pixels is noise, not a finding: the miss has
-    # to be a real area before it counts as a failure.
     if miss > MISS_MAX and (miss * obv_px) >= MISS_MIN_PX:
         fails.append(f"MISS {miss*100:.1f}% of {obv_px}px")
     if flood > FLOOD_MAX:
@@ -435,7 +234,6 @@ def check(path: str, montage_dir=None, quick: bool = False) -> dict:
         "secs": round(secs, 2),
         "fails": fails,
     }
-
 
 def main() -> int:
     ap = argparse.ArgumentParser()
@@ -483,7 +281,6 @@ def main() -> int:
     worst = min(rows, key=lambda r: r["cover"])
     print(f"{'cover':10s}: median {sorted(cov)[len(cov)//2]*100:5.1f}%  worst {min(cov)*100:6.1f}% ({worst['file'][:24]})")
     return 1 if failed else 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

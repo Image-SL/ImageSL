@@ -1,0 +1,46 @@
+name: Bug report
+description: Something behaves incorrectly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If this is a **security** issue, please do not file it here — use the
+        Security tab's "Report a vulnerability" instead.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Shown in Settings, and in the header of every CSV export.
+      placeholder: "1.0.1"
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options: ["Windows (desktop app)", "macOS (desktop app)", "Running from source"]
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what happened, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: measurement
+    attributes:
+      label: If a measurement looks wrong
+      description: >-
+        The sensitivity level, whether Include/Exclude regions were drawn, and
+        the reported percentage. A slide image helps enormously if you are able
+        to share one.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log output
+      description: >-
+        On Windows, %LOCALAPPDATA%\ImageSL\imagesl.log and last-error.log.
+      render: text

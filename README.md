@@ -3,6 +3,13 @@
 **A tool for DAB IHC stain quantification, with automatic background
 detection and removal.**
 
+> [!IMPORTANT]
+> **Research use only. ImageSL is not a medical device and must not be used
+> for clinical diagnosis or patient management.** It has not been cleared or
+> approved by any regulatory authority. Validate against your own ground truth
+> before relying on any measurement, and report the sensitivity level and any
+> manual corrections alongside published results — see [DISCLAIMER.md](DISCLAIMER.md).
+
 Upload an immunohistochemistry (IHC) slide. ImageSL finds the slide background
 and throws it away, separates the true chromogenic stain from the counterstain
 (color deconvolution + per-slide background segmentation + Otsu thresholding —
@@ -336,3 +343,20 @@ deconvolution and hue/saturation/specificity gating — not a model guessing at 
 thumbnail. Every number in the CSV traces back to a pixel rule you can read in
 `server/ihc/engine.py`. Full design in
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+
+## Licence, citation and contributing
+
+ImageSL is released under the [MIT License](LICENSE). Third-party components
+and their licences are listed in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md);
+all are permissive, and the PyInstaller bootloader exception means frozen
+builds carry no copyleft obligation.
+
+If you use ImageSL in research, please cite it — see [CITATION.cff](CITATION.cff).
+
+* [DISCLAIMER.md](DISCLAIMER.md) — intended use and its limits
+* [CONTRIBUTING.md](CONTRIBUTING.md) — how to propose changes, and the higher
+  bar for anything that moves a measured number
+* [SECURITY.md](SECURITY.md) — reporting vulnerabilities, and how update
+  integrity is enforced
+* [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)

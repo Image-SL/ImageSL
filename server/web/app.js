@@ -1,19 +1,11 @@
 "use strict";
 
-/* ============================== helpers ============================== */
 const $ = (id) => document.getElementById(id);
 const RING_C = 2 * Math.PI * 52;
 const OVERLAY_ALPHA = 0.5;
 
-/* The detection overlay is ONE fixed colour — neon green (#39ff14). There is no
-   picker, no auto pick and no second colour anywhere; keep in step with
-   engine.OVERLAY_GREEN. */
 const OVERLAY_RGB = [57, 255, 20];
 
-/* Fallback ends of the sensitivity ladder, in step with detect.LADDER_STRICT /
-   _LOOSE. Only used to label the slider when a slide (an older cached one) does
-   not report its own span in `ladder_hi` / `ladder_lo`; the detection itself is
-   driven entirely by the level map. */
 const LADDER_STRICT = 4.0, LADDER_LOOSE = 0.25;
 
 function headers(json) { const h = {}; if (json) h["Content-Type"] = "application/json"; return h; }
@@ -29,7 +21,6 @@ async function downloadBlob(blob, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 4000);
 }
 
-/* progress toast */
 function makeToast(label) {
   const el = document.createElement("div");
   el.className = "toast";
@@ -62,8 +53,7 @@ async function streamedDownload(url, body, filename, label, estBytes) {
       chunks.push(value); received += value.length;
       t.set(estBytes ? (received / estBytes) * 0.92 : 0.4, `${label} · ${(received / 1048576).toFixed(1)} MB`);
     }
-    // An archive with nothing in it is a failure, not a download — say so rather
-    // than handing over an empty folder that looks like it worked.
+
     if (!received) throw new Error("the server returned an empty file");
     await downloadBlob(new Blob(chunks), filename);
     if (missing) t.fail(`Saved ${filename} — but ${missing} slide${missing === 1 ? "" : "s"} had expired and ${missing === 1 ? "is" : "are"} not included`);
@@ -71,36 +61,6 @@ async function streamedDownload(url, body, filename, label, estBytes) {
   } catch (e) { t.fail("Export failed: " + e.message); }
 }
 
-/* ============================== level-map overlay ==============================
-   The server sends ONE image carrying two channels:
-
-     R — the first sensitivity level at which the detector calls this pixel
-         positive (255 = never);
-     G — 255 on tissue, 0 on slide background.
-
-   R also carries two sentinels above the 0..200 ladder, matching detect.py:
-
-     CANDIDATE (254) a structure the detector formed and then refused, on colour
-                     or size rather than on sensitivity. Never positive
-                     automatically; recoverable by an Include region.
-     NEVER     (255) nothing here the detector would consider at any setting.
-                     No control can turn this positive.
-
-   Together they carry the whole family of results AND the denominator, so the
-   browser reproduces the server's area-based, object-by-object decision — and
-   its percentage — at any sensitivity and under any correction, by comparison
-   alone (mirrors ihc/regions.py `apply`):
-
-       positive =  tissue[i] && !excluded[i]
-                   && ( level[i] <= sensitivity
-                        || (included[i] && level[i] <= CANDIDATE) )
-       measured =  tissue[i]                       <- always the whole tissue
-       percent  =  positive / measured
-
-   The denominator is the tissue mask and nothing else. Include and Exclude
-   correct the numerator only, so "exclude everything" reads 0.000% and every
-   slide in a batch stays comparable — see the ihc/regions.py docstring for why
-   that replaced the region-of-interest behaviour. */
 const NEVER = 255;
 const CANDIDATE = 254;
 
@@ -114,13 +74,6 @@ function buildLevelData(levelImg) {
   const data = new Uint8Array(n);
   const tissue = new Uint8Array(n);
 
-  // Older builds sent a GRAYSCALE level map with no tissue channel, and a
-  // returning user's saved batch still holds one. There R === G, so reading the
-  // green channel as a tissue mask would mark every pixel the detector called
-  // positive (level 0-24) as *background* and report 0.00% for the whole slide.
-  // The new encoding puts only 0 or 255 in green, so anything in between
-  // identifies the old format, which is then treated as all-tissue — exactly
-  // what that build assumed.
   let hasTissueChannel = true;
   for (let j = 1; j < raw.length; j += 4) {
     const g = raw[j];
@@ -143,30 +96,21 @@ function buildLevelData(levelImg) {
 
   return {
     W, H, data, tissue, tissueCount,
-    include: null,                      // null = none drawn; else 0/1 per pixel
+    include: null,
     exclude: null,
     mask: new Uint8Array(n),
-    count: 0,                           // positive pixels at the current setting
-    measured: tissueCount,              // = tissueCount; regions never move it
-    added: 0, removed: 0,               // what the hand tools changed
+    count: 0,
+    measured: tissueCount,
+    added: 0, removed: 0,
     ov, ovCtx, ovData: ovCtx.createImageData(W, H),
     iso, isoCtx, isoData: isoCtx.createImageData(W, H),
     tmp, tmpCtx,
   };
 }
 
-/* Rasterise one drawn region into a 0/1 mask.
-
-   A pixel is inside when its CENTRE is inside the shape. That is the same rule
-   ihc/regions.py states and implements, written out here rather than delegated
-   to a canvas fill — because a canvas fill is not that rule. It excludes the far
-   edge of a rect where PIL includes it, and it antialiases the boundary, so the
-   two sides disagreed by a row and a column: 368 pixels of denominator on a
-   512x384 frame, i.e. an on-screen percentage that did not match the exported
-   one. Both sides now compute the mask arithmetically and agree exactly. */
 function rasterRegion(ld, region) {
   const { W, H } = ld;
-  // 1.0 is the OUTER EDGE of the last pixel, matching ihc/regions.py `_pts`.
+
   const pts = (region.points || []).map((p) => [p[0] * W, p[1] * H]);
   if (!pts.length) return null;
   const mask = new Uint8Array(W * H);
@@ -181,7 +125,6 @@ function rasterRegion(ld, region) {
   }
   if (pts.length < 3) return null;
 
-  // Even-odd scanline fill at pixel centres — the mirror of `_polygon_mask`.
   const n = pts.length;
   const xi = new Float64Array(n);
   for (let r = 0; r < H; r++) {
@@ -203,9 +146,6 @@ function rasterRegion(ld, region) {
   return mask;
 }
 
-/* Accepts the pre-rename spellings too: a batch restored from IndexedDB after a
-   deploy still holds `focus`/`ignore`, and dropping those would silently throw
-   away corrections the user had already made. Mirrors regions.canonical_mode. */
 function regionMode(m) {
   const s = String(m || "").toLowerCase();
   if (s === "include" || s === "focus" || s === "boost") return "include";
@@ -228,15 +168,6 @@ function applyRegions(ld, regions) {
   }
 }
 
-/* Count the separate stained structures in the current mask — 8-connected
-   components, the same rule `engine._object_summary` applies with
-   `skimage.measure.label(..., connectivity=2)`.
-
-   It is counted here rather than left to the server because "stained
-   structures" is one of the four headline numbers, and a tile that keeps
-   showing the pre-edit count while the three beside it move reads as the edit
-   having done nothing. Two-pass union-find over the mask: one pass to label and
-   record equivalences, one to count distinct roots. */
 function countObjects(ld) {
   const { W, H, mask } = ld;
   const labels = new Int32Array(W * H);
@@ -248,7 +179,7 @@ function countObjects(ld) {
     for (let x = 0; x < W; x++) {
       const i = y * W + x;
       if (!mask[i]) continue;
-      // The four already-visited 8-neighbours: NW, N, NE, W.
+
       let lab = 0;
       const nb = [
         y > 0 && x > 0 ? labels[i - W - 1] : 0,
@@ -267,8 +198,6 @@ function countObjects(ld) {
   return roots.size;
 }
 
-/* Reproduces ihc/regions.py `apply()` exactly. `measured` is the tissue count,
-   unconditionally — the hand tools correct the numerator, never the denominator. */
 function computeMask(ld, level, maxLevel) {
   const { data, tissue, include, exclude, mask } = ld;
   const lim = level < 0 ? 0 : (level > maxLevel ? maxLevel : level);
@@ -276,10 +205,10 @@ function computeMask(ld, level, maxLevel) {
   for (let i = 0; i < data.length; i++) {
     if (!tissue[i]) { mask[i] = 0; continue; }
     const lv = data[i];
-    const auto = lv <= lim;                                   // lim <= 200 < CANDIDATE
+    const auto = lv <= lim;
     let on = auto;
-    if (!on && include && include[i]) on = lv <= CANDIDATE;   // recover a refused structure
-    if (on && exclude && exclude[i]) on = false;              // exclude has the last word
+    if (!on && include && include[i]) on = lv <= CANDIDATE;
+    if (on && exclude && exclude[i]) on = false;
     mask[i] = on ? 1 : 0;
     if (on) { count++; if (!auto) added++; }
     else if (auto) removed++;
@@ -324,8 +253,6 @@ function overlayThumb(origImg, ld, maxW) {
   return cv.toDataURL("image/jpeg", 0.85);
 }
 
-/* STAIN ONLY — keep the detected structures in their true colours, on white.
-   Same live rule as the overlay, so the panel tracks the controls exactly. */
 function isolateThumb(origImg, ld, maxW) {
   const W = ld.W, H = ld.H;
   const px = ld.isoData.data, mask = ld.mask;
@@ -335,7 +262,7 @@ function isolateThumb(origImg, ld, maxW) {
   }
   ld.isoCtx.putImageData(ld.isoData, 0, 0);
 
-  const tc = ld.tmpCtx;                       // original ∩ mask
+  const tc = ld.tmpCtx;
   tc.globalCompositeOperation = "source-over";
   tc.clearRect(0, 0, W, H);
   tc.drawImage(origImg, 0, 0, W, H);
@@ -343,7 +270,7 @@ function isolateThumb(origImg, ld, maxW) {
   tc.drawImage(ld.iso, 0, 0);
   tc.globalCompositeOperation = "source-over";
 
-  let w = W, h = H;                           // flatten onto white
+  let w = W, h = H;
   if (maxW && w > maxW) { h = Math.round(h * maxW / w); w = maxW; }
   const cv = document.createElement("canvas"); cv.width = w; cv.height = h;
   const cx = cv.getContext("2d");
@@ -352,7 +279,6 @@ function isolateThumb(origImg, ld, maxW) {
   return cv.toDataURL("image/jpeg", 0.85);
 }
 
-/* ============================== IndexedDB persistence ============================== */
 const DB_NAME = "imagesl", STORE = "state", KEY = "batch";
 function idb() {
   return new Promise((res, rej) => {
@@ -380,15 +306,13 @@ async function loadState() {
 }
 async function clearState() { try { const db = await idb(); const tx = db.transaction(STORE, "readwrite"); tx.objectStore(STORE).delete(KEY); } catch (e) {} }
 
-/* ============================== state ============================== */
-let analyses = [];   // [{ id, filename, data }]
-let skipped = [];    // [{ filename, reason }] — read, but not a stained slide
-let failures = [];   // [{ filename, reason }] — could not be analyzed at all
-let mode = "auto";   // "auto" | "select"
-let selectedStain = null;   // { key, name, compartment_name, ... }
-let stainList = null;       // cached /api/stains
+let analyses = [];
+let skipped = [];
+let failures = [];
+let mode = "auto";
+let selectedStain = null;
+let stainList = null;
 
-/* ============================== mode selector + stain picker ============================== */
 document.querySelectorAll(".mode-card").forEach((btn) => {
   btn.addEventListener("click", () => {
     document.querySelectorAll(".mode-card").forEach((b) => { b.classList.toggle("active", b === btn); b.setAttribute("aria-selected", b === btn ? "true" : "false"); });
@@ -443,19 +367,9 @@ $("stainSearch") && $("stainSearch").addEventListener("blur", () => setTimeout((
 $("stainClear") && $("stainClear").addEventListener("click", () => { selectedStain = null; $("stainChosen").classList.add("hidden"); $("stainSearch").value = ""; $("stainClear").classList.add("hidden"); renderStainResults(""); $("stainSearch").focus(); });
 function currentStainKey() { return (mode === "select" && selectedStain) ? selectedStain.key : ""; }
 
-/* ============================== upload ============================== */
 const dropzone = $("dropzone");
 const fileInput = $("file");
 
-/* Chosen files are STAGED, not analysed. Dropping a folder used to start
-   measuring on the spot: no chance to check what was picked up, no chance to
-   choose the stain first, and no way out but to wait for it to finish. The
-   selection now sits here until Analyse is pressed.
-
-   Files accumulate rather than replace, because dragging a second folder in
-   almost always means "and these too". Duplicates are dropped on name+size+
-   mtime, which is what stops a double-drop quietly measuring everything twice
-   and reporting each slide two times in the CSV. */
 let staged = [];
 const MAX_LISTED = 12;
 
@@ -478,16 +392,14 @@ function renderSelection() {
   $("selCount").textContent =
     staged.length === 1 ? "1 file selected" : `${staged.length} files selected`;
 
-  // Only the first dozen are drawn. A folder can hold hundreds, and building a
-  // row for every one of them costs more than it tells the reader.
   list.innerHTML = "";
   staged.slice(0, MAX_LISTED).forEach((f, i) => {
     const li = document.createElement("li");
     li.className = "sel-item";
     const name = document.createElement("span");
     name.className = "sel-name";
-    name.textContent = f.name;              // textContent, never innerHTML: a
-    name.title = f.name;                    // filename is untrusted input
+    name.textContent = f.name;
+    name.title = f.name;
     const size = document.createElement("span");
     size.className = "sel-size";
     size.textContent = humanSize(f.size);
@@ -544,14 +456,7 @@ dropzone.addEventListener("click", () => { fileInput.value = ""; fileInput.click
 dropzone.addEventListener("keydown", (e) => {
   if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fileInput.value = ""; fileInput.click(); }
 });
-/* Snapshot the FileList BEFORE clearing the input. `input.files` is LIVE: on
-   Chromium - which is WebView2, so every Windows install - `value = ""` empties
-   the very list just captured, `f.length` then reads 0, and the slide the user
-   picked is dropped without a word. Dragging kept working because
-   `dataTransfer.files` is a separate object, which is what made this look like a
-   broken Browse button rather than a bug in the shared staging path.
-   The reset has to stay: without it, choosing the same file twice in a row fires
-   no `change` event at all. We now clear the value before the next click. */
+
 fileInput.addEventListener("change", (e) => {
   const files = Array.from(e.target.files);
   if (files.length) stage(files);
@@ -565,28 +470,21 @@ $("btnSelAdd").addEventListener("click", () => { fileInput.value = ""; fileInput
 $("btnAnalyze").addEventListener("click", () => {
   if (!staged.length) return;
   const batch = staged;
-  clearSelection();               // clear first: the run owns the list now, and
-  runBatch(batch, false);         // a second click cannot start it twice
+  clearSelection();
+  runBatch(batch, false);
 });
 
-// "Add files" from the results view stays immediate. That button is already an
-// explicit action on an existing batch, so staging it would add a second click
-// to confirm something the user just asked for.
 $("fileAdd").addEventListener("change", (e) => {
-  const files = Array.from(e.target.files);   // copy first - see the note above
+  const files = Array.from(e.target.files);
   if (files.length) runBatch(files, true);
 });
 $("btnAddMore").addEventListener("click", () => { $("fileAdd").value = ""; $("fileAdd").click(); });
 
-/* ============================== batch analyze ============================== */
 function setRing(fraction) {
   $("ringFill").style.strokeDashoffset = String(RING_C * (1 - fraction));
   $("ringPct").innerHTML = Math.round(fraction * 100) + "<small>%</small>";
 }
-/* A 4xx is a verdict about this file — retrying cannot change it. Anything else
-   (a dropped connection, a gateway timeout, a server briefly out of memory
-   under a big batch) is transient, and a single unlucky slide in a 46-slide run
-   should not come back as "failed" when simply asking again would have worked. */
+
 const RETRY_ATTEMPTS = 3;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -601,11 +499,7 @@ async function analyzeOnce(file) {
     data.filename = data.filename || file.name;
     return data;
   }
-  // HTTP/2 carries no status text, and a proxy that gave up mid-request sends no
-  // JSON body either — so both of the obvious sources are empty exactly when the
-  // failure is a server one. That is how a whole batch came back saying nothing
-  // but "Analysis failed", which names neither the cause nor anything to do
-  // about it. Fall back to something that does.
+
   let msg = "";
   try { msg = (await res.json()).detail || ""; } catch (e) {}
   if (!msg) msg = res.statusText;
@@ -626,7 +520,7 @@ async function analyzeOne(file, onRetry) {
       return await analyzeOnce(file);
     } catch (e) {
       last = e;
-      if (e && e.permanent) throw e;          // a verdict about the file itself
+      if (e && e.permanent) throw e;
     }
     if (attempt < RETRY_ATTEMPTS) {
       if (onRetry) onRetry(attempt);
@@ -635,17 +529,7 @@ async function analyzeOne(file, onRetry) {
   }
   throw last || new Error("Analysis failed");
 }
-/* How many slides may be in flight at once.
 
-   Uploads used to be strictly one at a time: read a file, send it, wait for the
-   measurement, then start reading the next. The server measures in about a
-   second, so for most of every cycle it sat idle waiting for the browser to
-   read and upload the next file, and a 200-slide batch spent minutes doing
-   nothing. Overlapping a few requests fills that gap.
-   Three, not thirty. The server measures at most `IMAGESL_MAX_CONCURRENCY` (2)
-   slides at once by design — piling on more requests would not measure them any
-   faster, it would just hold connections open, multiply peak memory and make a
-   timeout more likely. Three keeps that gate fed with one queued behind it. */
 const UPLOAD_CONCURRENCY = 3;
 
 async function runBatch(fileList, append) {
@@ -656,12 +540,9 @@ async function runBatch(fileList, append) {
   $("loaderSub").textContent = "Preparing…";
   const container = $("resultsContainer");
   const errors = [];
-  const results = new Array(files.length);      // slot per input file, keeps ORDER
+  const results = new Array(files.length);
   let done = 0, next = 0, added = 0;
 
-  // Cards are appended strictly in the order the files were chosen, not the
-  // order the server happened to finish them, so a batch reads the same way
-  // every time and matches the CSV.
   let emitAt = 0;
   function emitReady() {
     while (emitAt < files.length && results[emitAt] !== undefined) {
@@ -679,7 +560,7 @@ async function runBatch(fileList, append) {
       } else if (slot && slot.error) {
         errors.push(slot.error);
       }
-      results[emitAt] = null;                   // release the payload reference
+      results[emitAt] = null;
       emitAt++;
     }
   }
@@ -694,8 +575,7 @@ async function runBatch(fileList, append) {
         const why = (e && e.message) || "";
         results[i] = { error: {
           filename: files[i].name,
-          // A network-level failure throws a TypeError with no useful message —
-          // say what that means rather than the word "failed" on its own.
+
           reason: why || "the connection to the server was lost while analyzing this slide",
         } };
       }
@@ -722,7 +602,6 @@ async function runBatch(fileList, append) {
   saveState();
 }
 
-/* ============================== results ============================== */
 function renderSummary() {
   const n = analyses.length;
   const bits = [];
@@ -731,8 +610,6 @@ function renderSummary() {
   const note = bits.length ? ` <span class="sub">· ${bits.join(" · ")}</span>` : "";
   $("resultsCount").innerHTML = `${n} slide${n === 1 ? "" : "s"} analyzed${note}`;
 
-  // Name every file that did not produce a measurement, and say why. A bare
-  // "2 failed" is not something anyone can act on.
   const panel = $("skippedPanel"), list = $("skippedList");
   const items = skipped.map((s) => ({ ...s, kind: "skipped" }))
     .concat(failures.map((f) => ({ ...f, kind: "failed" })));
@@ -763,7 +640,7 @@ function currentLevel(data) {
 function createCard(data) {
   const node = $("resultTemplate").content.firstElementChild.cloneNode(true);
   const q = (sel) => node.querySelector(sel);
-  let analysisId = data.analysis_id;      // reassigned by _rebind after a rebuild
+  let analysisId = data.analysis_id;
   const filename = data.filename;
   const stem = safeStem(filename);
   let current = data;
@@ -777,33 +654,12 @@ function createCard(data) {
   q(".cThr").max = String(maxLevel);
   function persistData() { if (entry) entry.data = current; saveStateSoon(); }
 
-  /* ---- redraw: sensitivity + regions, entirely in the browser ----
-
-     COUNTING and PAINTING are deliberately separate, and which one may be
-     deferred is the whole point.
-
-     Counting the mask is one cheap pass; painting it means two `toDataURL`
-     encodes, which is the expensive part and is rightly throttled to a frame.
-     Previously both lived inside `redraw()` behind `requestAnimationFrame`,
-     while the readout was updated by a `liveMetrics()` call placed immediately
-     AFTER `redrawSoon()` — so it read `ld.count` and `ld.measured` from before
-     the change and printed the previous setting's percentage.
-
-     During a slider drag that only ever showed up as a one-event lag. Drawing a
-     region is a single discrete event, so there was no following event to
-     correct it: the number simply did not move. It was put right ~350 ms later
-     when the debounced server sync came back, which is why this looked like
-     "focus and ignore do nothing" — and why it looked permanent whenever that
-     round trip was slow, queued behind a large batch, or failed.
-
-     So the mask is now recomputed synchronously whenever anything asks for the
-     numbers, and `redraw()` reuses that result instead of repeating it. */
   let rafPending = false;
   let maskLevel = -1, maskStamp = -1, regionStamp = 0;
 
   function recount() {
     if (!st.ld) return;
-    if (maskLevel === level && maskStamp === regionStamp) return;   // already current
+    if (maskLevel === level && maskStamp === regionStamp) return;
     computeMask(st.ld, level, maxLevel);
     maskLevel = level; maskStamp = regionStamp;
   }
@@ -816,43 +672,28 @@ function createCard(data) {
     q(".imgOverlay").src = overlayThumb(st.origImg, st.ld, 560);
     q(".imgStainOnly").src = isolateThumb(st.origImg, st.ld, 560);
     drawRegionOutlines();
-    // Structure count rides with the repaint rather than with the readout: it is
-    // a full connected-component pass, so it belongs on the frame-rate path.
+
     q(".mObjects").textContent = countObjects(st.ld).toLocaleString();
   }
   function redrawSoon() {
-    if (document.hidden) { redraw(); return; }   // rAF is paused when hidden
+    if (document.hidden) { redraw(); return; }
     if (rafPending) return;
     rafPending = true;
     requestAnimationFrame(() => { rafPending = false; redraw(); });
   }
 
-  /* The live readout uses the SAME arithmetic the server does — positive pixels
-     over the whole image — so drawing a correction moves the percentage to
-     exactly the value the server will report and the CSV will carry.
-
-     The denominator never moves. Include and Exclude change what is counted as
-     positive and nothing else, and the image's pixel count is fixed, so
-     "Exclude the whole slide" reads 0.00%. Percentage of TISSUE was removed
-     from both the tiles and the export: that denominator shifts with the
-     segmentation, so the same slide could report two different figures for
-     identical staining. */
   function liveMetrics() {
     if (!st.ld) return;
-    recount();                 // the counts must describe the CURRENT setting
+    recount();
     const pos = st.ld.count;
     const measured = st.ld.measured;
     const framePx = st.ld.W * st.ld.H;
-    // Positive area is reported over the WHOLE frame only. The denominator is
-    // fixed by the image, so it cannot move with the segmentation - which is
-    // what makes two sections cut to the same field comparable.
+
     q(".mPercentImage").textContent = framePx ? (pos / framePx * 100).toFixed(2) + "%" : "–";
     q(".mPositive").textContent = pos.toLocaleString();
     q(".mTissue").textContent = measured.toLocaleString();
     q(".mImagePx").textContent = framePx.toLocaleString();
 
-    // Say exactly what the hand tools changed, so a corrected number is never
-    // mistaken for an automatic one.
     const scope = q(".mScope");
     if (scope) {
       const bits = [];
@@ -869,21 +710,12 @@ function createCard(data) {
     [".mPercentImage", ".mPositive", ".mTissue"].forEach((s) => { const b = q(s); if (b) { b.classList.remove("flash"); void b.offsetWidth; b.classList.add("flash"); } });
   }
 
-  /* The ladder is a multiplicative scaling of the bar a structure's peak has to
-     clear, so the honest label is that multiplier — not a step index, which now
-     runs to 200 and means nothing to a reader. ×0.72 says "counting structures
-     down to 72% of the automatic bar", and it is the same statement on every
-     slide. */
   function levelLabel() {
     const r = current.result || {};
     const auto = (r.auto_level == null ? 100 : r.auto_level);
     const n = (r.level_count == null ? 201 : r.level_count);
     if (level === auto) { q(".thrVal").textContent = "Auto"; return; }
-    // The ladder's ends are per-slide — they sit just outside this slide's own
-    // strongest and weakest structure, which is what makes the two extremes mean
-    // "nothing" and "everything" (see detect._ladder). So the multiplier is read
-    // from the slide's reported span, not from a constant; a constant named the
-    // wrong number the moment the span stopped being a fixed ±4×.
+
     const hi = (r.ladder_hi == null ? LADDER_STRICT : r.ladder_hi);
     const lo = (r.ladder_lo == null ? LADDER_LOOSE : r.ladder_lo);
     const mult = level < auto
@@ -909,7 +741,7 @@ function createCard(data) {
       st.origImg = o;
       st.ld = buildLevelData(s);
       applyRegions(st.ld, regions);
-      regionStamp++; invalidateMask();      // a brand-new map: nothing is cached
+      regionStamp++; invalidateMask();
       redraw(); liveMetrics();
     };
     o.onload = done; s.onload = done; o.src = origSrc; s.src = levelSrc;
@@ -940,7 +772,6 @@ function createCard(data) {
   }
   paint(data);
 
-  /* ---- comparison slider ---- */
   const vp = q(".cmp-viewport");
   let dragging = false;
   function setSplit(clientX) {
@@ -949,7 +780,7 @@ function createCard(data) {
     vp.style.setProperty("--split", Math.max(0, Math.min(100, pct)) + "%");
   }
   vp.addEventListener("pointerdown", (e) => {
-    if (tool !== "off") return;                // drawing takes precedence
+    if (tool !== "off") return;
     dragging = true; vp.setPointerCapture(e.pointerId); setSplit(e.clientX);
   });
   vp.addEventListener("pointermove", (e) => { if (dragging) setSplit(e.clientX); });
@@ -957,9 +788,6 @@ function createCard(data) {
   vp.addEventListener("pointercancel", () => { dragging = false; });
   node.querySelectorAll(".vImg").forEach((im) => im.addEventListener("click", () => showLightbox(im.src)));
 
-  /* ---- server recompute (debounced) ------------------------------------ #
-     The browser has already redrawn; this is what makes the REPORTED numbers,
-     the CSV and every export agree with what is on screen. */
   let viewDeb;
   function postView() {
     clearTimeout(viewDeb);
@@ -971,15 +799,13 @@ function createCard(data) {
           const d = await res.json();
           if (d.result) { current.result = d.result; paint(d, true); persistData(); }
         } else if (res.status === 404 || res.status === 410) {
-          // The earliest moment we can learn the server has dropped this batch —
-          // sooner than the next heartbeat, and long before an export. Repair now.
+
           keepAlive();
         }
       } catch (e) {}
     }, 350);
   }
 
-  /* ---- sensitivity ---- */
   q(".cThr").addEventListener("input", () => setLevel(+q(".cThr").value, true));
   q(".thr-auto").addEventListener("click", () => {
     const auto = (current.result && current.result.auto_level);
@@ -988,10 +814,6 @@ function createCard(data) {
     persistData(); postView();
   });
 
-  /* ============================ manual regions ============================
-     Coordinates are stored normalised, so a region drawn on screen is the same
-     region the server rasterises for the numbers and for every export, at any
-     resolution. */
   let tool = "off";
   let shape = "rect";
   let drawing = null;
@@ -1041,7 +863,7 @@ function createCard(data) {
   function commitRegions() {
     if (!st.ld) return;
     applyRegions(st.ld, regions);
-    regionStamp++;                       // the measured area changed
+    regionStamp++;
     regionCountLabel();
     liveMetrics(); redrawSoon();
     if (current.params) current.params.regions = regions;
@@ -1095,12 +917,6 @@ function createCard(data) {
   window.addEventListener("resize", drawRegionOutlines);
   regionCountLabel();
 
-  /* ---- downloads (always carry the CURRENT on-screen view) ----
-     Sent as a POST body rather than a query string so the drawn regions travel
-     with the sensitivity; a lasso does not fit in a URL, and without it a
-     single-slide TIFF came back ignoring every region on screen. */
-  // Beat first, so a single-slide download recovers an expired slide the same
-  // way a batch export does rather than failing with "Analysis expired".
   async function dlTif(type) {
     await keepAlive();
     streamedDownload("/api/download_tif",
@@ -1110,7 +926,7 @@ function createCard(data) {
   node.querySelectorAll(".dl-btn").forEach((b) => b.addEventListener("click", () => dlTif(b.dataset.type)));
   node.querySelectorAll(".vdl").forEach((b) => b.addEventListener("click", (e) => { e.stopPropagation(); dlTif(b.dataset.type); }));
   q(".export-one").addEventListener("click", async () => {
-    await keepAlive();                       // may rebuild this slide and reissue its id
+    await keepAlive();
     streamedDownload("/api/export_csv",
       { analysis_ids: [analysisId], overrides: { [analysisId]: { level, regions } } },
       `${stem}_data.csv`, "Exporting CSV", 0);
@@ -1119,9 +935,7 @@ function createCard(data) {
   node.dataset.analysisId = analysisId;
   node._view = () => ({ level, regions });
   node._filename = filename;
-  /* Point this card at a rebuilt analysis (see `healExpired`). The id lives in
-     this closure — every download, CSV and appearance call reads it — so a card
-     that is not rebound keeps talking about a slide the server has forgotten. */
+
   node._rebind = (id, d) => {
     analysisId = id;
     node.dataset.analysisId = id;
@@ -1137,16 +951,8 @@ function createCard(data) {
   return node;
 }
 
-/* ============================== mass export ==============================
-   Every export carries each card's CURRENT sensitivity and regions. The server
-   re-measures any slide whose view differs from the one it last cached, so an
-   export taken immediately after a change can never fall back on the previous
-   settings' numbers. */
 function currentOverrides() {
-  // Keyed by the card's own analysis id, not by its position. Pairing the Nth
-  // card with the Nth entry breaks the moment the two lists differ — and they
-  // do, whenever a file is skipped or a batch is appended — which would attach
-  // one slide's regions to another slide's export.
+
   const overrides = {};
   document.querySelectorAll("#resultsContainer .card").forEach((card) => {
     const id = card.dataset.analysisId;
@@ -1156,11 +962,7 @@ function currentOverrides() {
   });
   return overrides;
 }
-// Refresh the batch immediately before an export, so a long review session
-// cannot lose entries in the moment between the last heartbeat and the click —
-// and read the ids AFTERWARDS, because that refresh may have rebuilt expired
-// slides and reissued their ids. Reading them first is how an export could ask
-// for the very slides that had just been repaired, and come back short.
+
 $("btnExportCsv").addEventListener("click", async () => {
   if (!analyses.length) return;
   await keepAlive();
@@ -1183,13 +985,6 @@ $("btnNew").addEventListener("click", () => {
   clearState(); showView("uploadView"); window.scrollTo({ top: 0, behavior: "smooth" });
 });
 
-/* ============================== keep the batch alive ==============================
-   The server holds each analysis for a limited time and has no other way to know
-   a page is still using one. Reviewing forty slides — drawing regions, comparing,
-   deciding a sensitivity — takes as long as it takes, and a batch left open while
-   the user does something else used to expire underneath them: the export then
-   failed, or succeeded and produced an empty archive. A heartbeat costs one tiny
-   request and removes the whole class of problem. */
 const KEEPALIVE_MS = 4 * 60 * 1000;
 
 async function keepAlive() {
@@ -1203,31 +998,12 @@ async function keepAlive() {
     const d = await res.json();
     const expired = new Set(d.expired || []);
     if (expired.size) await healExpired(expired);
-  } catch (e) { /* offline or asleep: the next beat will do */ }
+  } catch (e) {  }
 }
 
-/* Rebuild whatever the server has let go of, from the copy this page kept.
-
-   The heartbeat above makes expiry unlikely; it cannot make it impossible. A
-   deploy, a container restart, a machine that ran out of memory under a large
-   batch — all of them drop the server's side of the session while this page is
-   still showing it, and the user finds out at the moment they click Export,
-   after an afternoon of drawing regions. Telling them "re-upload forty slides"
-   at that point is not a recovery.
-
-   It does not need to be, because nothing was actually lost. Every card holds
-   the exact pixels the engine measured (`images.original`, stored losslessly
-   for this reason), plus its sensitivity and its regions. So the analysis is
-   simply made again, server-side, and the card is rebound to the new id with
-   its settings intact — verified on the validation set to reproduce the same
-   measurement to the digit. Done one at a time so recovering a large batch
-   cannot itself be the thing that overloads the server. */
 let healing = null;
 function healExpired(expired) {
-  // Join an in-flight recovery rather than declining. The export buttons await
-  // this before they run, and returning early would let an export go out with
-  // the ids that are being replaced — the batch would be repaired and the
-  // archive still short.
+
   if (healing) return healing;
   healing = _heal(expired).finally(() => { healing = null; });
   return healing;
@@ -1257,7 +1033,7 @@ async function _heal(expired) {
         if (!res.ok) throw new Error(String(res.status));
         const d = await res.json();
         if (!d.analysis_id) throw new Error("no id");
-        // Keep the browser's own copy of the pixels: it is the master now.
+
         d.images = Object.assign({}, d.images, { original: src });
         entry.data = d;
         card._rebind(d.analysis_id, d);
@@ -1286,11 +1062,9 @@ function markLost(card) {
 setInterval(keepAlive, KEEPALIVE_MS);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) keepAlive(); });
 
-/* ============================== lightbox ============================== */
 function showLightbox(src) { if (!src) return; $("lightboxImg").src = src; $("lightbox").classList.remove("hidden"); }
 $("lightbox").addEventListener("click", () => $("lightbox").classList.add("hidden"));
 
-/* ============================== restore on load ============================== */
 (async function restore() {
   const stt = await loadState();
   if (!stt || (!(stt.analyses || []).length && !(stt.skipped || []).length)) return;
@@ -1301,9 +1075,6 @@ $("lightbox").addEventListener("click", () => $("lightbox").classList.add("hidde
   analyses.forEach((a) => container.appendChild(createCard(a.data)));
   renderSummary();
   showView("resultsView");
-  // A reload is the single most likely moment for the server's side of the batch
-  // to be gone — it is what a user does after a deploy, or after the page sat
-  // open overnight. Check (and rebuild) immediately rather than waiting out the
-  // first heartbeat interval and letting them click Export in between.
+
   keepAlive();
 })();

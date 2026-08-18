@@ -1,18 +1,5 @@
-/* ============================================================================
-   ImageSL analyzer.
-
-   Same design language as the public site: white, sharp, hairline-ruled, light
-   weights, sentence case. Colour is reserved for the brand mark, the one accent
-   action in a view, and status — so anything coloured actually means something.
-
-   Tokens come from tokens.css, which index.html loads first. The few aliases
-   below exist only because this file predates the shared tokens and its class
-   names are referenced from app.js; they map old names onto the shared scale
-   rather than redefining a second palette.
-   ========================================================================== */
-
 :root{
-  /* Brand aliases, kept so existing rules read naturally. */
+
   --violet-700:var(--accent-2);
   --violet-600:var(--accent);
   --violet-500:#8b5cf6;
@@ -21,9 +8,6 @@
   --violet-100:var(--accent-line);
   --violet-50:var(--accent-weak);
 
-  /* A pale neutral fill for chips and hover states. Deliberately NOT --line-2:
-     that is a border colour on the shared scale and is far too dark to sit
-     behind text. */
   --fill-subtle:#f1f3f5;
 }
 
@@ -33,10 +17,6 @@ body{
   min-height:100vh;
 }
 
-/* -------- top bar -------- */
-/* Translucent and blurred over the canvas, the way a system toolbar behaves:
-   content scrolls under it and stays faintly visible instead of vanishing at a
-   hard edge. */
 .topbar{
   display:flex; align-items:center; justify-content:space-between;
   padding:0 var(--s6); height:52px; border-bottom:1px solid var(--line);
@@ -63,7 +43,6 @@ body{
 
 main{ max-width:1120px; margin:0 auto; padding:44px 22px 90px; }
 
-/* -------- settings sheet (desktop build) -------- */
 .overlay{
   position:fixed; inset:0; z-index:900; background:rgba(13,15,18,.32);
   display:flex; align-items:flex-start; justify-content:center;
@@ -105,15 +84,6 @@ main{ max-width:1120px; margin:0 auto; padding:44px 22px 90px; }
 .view{ animation:fadeUp .4s var(--ease) both; }
 .hidden{ display:none !important; }
 
-/* -------- upload view --------
-   One column, centred, narrow. The whole pre-analysis screen is a single
-   decision followed by a single action, so it is composed as one centred
-   column rather than a grid of panels - which is what made it read as crowded
-   and lopsided. Nothing here has a border except the drop target itself. */
-/* Centred in the viewport, on a bright white panel. The panel is what makes the
-   screen read as an object rather than as text floating on a page, and it is
-   symmetrical by construction: one centred container, everything inside it
-   centred to the same axis. */
 #uploadView{
   max-width:520px; margin:0 auto; padding:var(--s12) var(--s10) var(--s10);
   min-height:auto;
@@ -121,7 +91,7 @@ main{ max-width:1120px; margin:0 auto; padding:44px 22px 90px; }
   box-shadow:var(--shadow);
   display:flex; flex-direction:column; justify-content:center;
 }
-/* The canvas centres the panel vertically. */
+
 main:has(#uploadView.view:not(.hidden)){
   min-height:calc(100vh - 52px);
   display:flex; align-items:center; justify-content:center;
@@ -129,33 +99,22 @@ main:has(#uploadView.view:not(.hidden)){
 
 .hero{ text-align:center; margin:0 0 var(--s8); padding:0; border:0; }
 .hero h1{
-  /* Weight 200 at this size reads as wispy, not refined - the thin end of a
-     system face has no authority in a heading. Medium, tighter, smaller. */
+
   font-size:var(--t-display); line-height:1.2; letter-spacing:-.025em;
   margin:0; font-weight:var(--w-med); color:var(--ink);
 }
 .lede{ color:var(--ink-3); max-width:44ch; margin:var(--s3) auto 0; font-size:var(--t-base); line-height:1.6; }
 
-/* Section labels are gone from the markup; keep the rule harmless if reused. */
 .sec-label{ display:none; }
 
-/* -------- mode: a segmented control --------
-   Two mutually exclusive options belong in one control, not two cards competing
-   for weight. A segment is smaller, symmetrical, and says "pick one" by shape. */
-/* One pill, no internal divider, the selected segment lifted on white. Equal
-   columns and a fully rounded track are what stop this reading as a two-cell
-   table, which is exactly what it looked like before. */
 .mode-select{
   display:grid; grid-template-columns:1fr 1fr; gap:0;
   margin:0 auto var(--s8); padding:3px;
-  /* Tinted track on the white panel, so the control is legible without an
-     outline. On a white-on-white page it needed a border to exist at all. */
+
   background:var(--bg); border:0;
   border-radius:var(--radius-pill); max-width:300px;
 }
-/* The stain picker sits between the control and the drop target in Select mode.
-   Defined once, here, including its box - see the note further down about why
-   a selector appearing twice made this stylesheet unpredictable. */
+
 .stain-picker{
   margin:0 auto var(--s10); max-width:360px;
   background:var(--card); border:1px solid var(--line);
@@ -173,17 +132,10 @@ main:has(#uploadView.view:not(.hidden)){
   background:var(--card); color:var(--ink);
   box-shadow:0 1px 2px rgba(13,15,18,.07), 0 0 0 .5px rgba(13,15,18,.05);
 }
-.mode-ic{ display:none; }                 /* an icon per segment is noise at this size */
+.mode-ic{ display:none; }
 .mode-txt b{ display:block; font-size:var(--t-body); font-weight:var(--w-normal); letter-spacing:-.005em; }
-.mode-txt small{ display:none; }          /* the label alone is unambiguous */
+.mode-txt small{ display:none; }
 
-/* -------- drop target --------
-   Large, quiet, symmetrical. A dashed hairline reads as "put something here"
-   without shouting; the filled icon tile it used to have was the loudest thing
-   on a screen whose job is to be calm. */
-/* A recessed well inside the panel: tinted, rounded, dashed. Reading as a
-   slightly sunken area is what says "put something in here" without a border
-   heavy enough to compete with the panel's own edge. */
 .dropzone{
   border:1.5px dashed var(--line-2); border-radius:var(--radius);
   background:var(--surface);
@@ -202,11 +154,6 @@ main:has(#uploadView.view:not(.hidden)){
 .dropzone p{ color:var(--ink-3); margin:0; font-size:var(--t-body); }
 .link-inline{ color:var(--ink); font-weight:var(--w-normal); border-bottom:1px solid var(--line-2); }
 
-/* -------- stain picker internals (pre-upload) --------
-   The mode selector's old card rules lived here and, being later in the file,
-   silently overrode the segmented control defined above - which is why that
-   restyle appeared not to take at all. A selector defined twice is the reason a
-   stylesheet stops being predictable; every one is now defined once. */
 .sp-field{ display:flex; align-items:center; gap:9px; padding:10px 13px; border:1px solid var(--line-2); border-radius:var(--radius); background:var(--bg); color:var(--ink-3); }
 .sp-field:focus-within{ border-color:var(--accent); }
 .sp-field input{ flex:1; border:none; outline:none; background:transparent; font:inherit; font-size:15px; color:var(--ink); }
@@ -228,7 +175,6 @@ main:has(#uploadView.view:not(.hidden)){
 .sp-chosen .sp-change{ margin-left:auto; font:inherit; font-size:12.5px; font-weight:var(--w-normal); color:var(--ink); background:#fff; border:1px solid var(--line-2); border-radius:var(--radius); padding:5px 11px; cursor:pointer; }
 .sp-chosen .sp-change:hover{ border-color:var(--ink); }
 
-/* -------- live threshold slider (sits directly under the slide image) -------- */
 .threshold-row{ display:flex; align-items:center; gap:13px; margin-top:12px; }
 .oc-label{ display:inline-flex; align-items:center; gap:7px; font-size:13.5px; font-weight:var(--w-normal); color:var(--ink-2); white-space:nowrap; }
 .threshold-row .cThr{ flex:1; min-width:110px; }
@@ -242,12 +188,8 @@ main:has(#uploadView.view:not(.hidden)){
 .metric b.flash{ animation:mflash .4s ease; }
 @keyframes mflash{ 0%{ color:var(--accent);} 100%{} }
 
-/* -------- manual region tools -------- */
 .tool-row{ display:flex; align-items:center; gap:10px; margin-top:10px; flex-wrap:wrap; }
-/* The same segmented control as the mode picker: tinted track, selected segment
-   lifted on white. Deliberately NOT accent-filled — the accent marks the one
-   action worth taking in a view, and filling a three-way toggle with it put the
-   loudest colour on the page on the segment that means "do nothing". */
+
 .tool-group{ display:inline-flex; border:0; background:var(--bg);
   border-radius:var(--radius-pill); padding:3px; gap:2px; }
 .tool{ font:inherit; font-size:var(--t-small); font-weight:var(--w-normal); color:var(--ink-3);
@@ -266,8 +208,6 @@ main:has(#uploadView.view:not(.hidden)){
 .card-note{ margin:10px 0 0; padding:10px 13px; border-left:2px solid var(--accent);
   background:var(--surface); border-radius:0; font-size:12.5px; line-height:1.55; color:var(--ink-2); }
 
-/* The drawing surface sits above the comparison, but only takes the pointer
-   while a region tool is armed — otherwise the split handle stays usable. */
 .cmpDraw{ position:absolute; inset:0; z-index:4; width:100%; height:100%; pointer-events:none; }
 .cmp-viewport.drawing .cmpDraw{ pointer-events:auto; cursor:crosshair; }
 .cmp-viewport.drawing .cmp-handle{ opacity:.35; }
@@ -277,7 +217,6 @@ main:has(#uploadView.view:not(.hidden)){
 .feature b{ display:block; font-size:14px; font-weight:var(--w-med); letter-spacing:-.005em; }
 .feature span{ display:block; font-size:12.5px; color:var(--ink-3); margin-top:3px; }
 
-/* -------- staged selection (before analysis starts) -------- */
 .selection{
   margin-top:var(--s3); background:var(--card); border:1px solid var(--line);
   border-radius:var(--radius); padding:var(--s4) var(--s5);
@@ -311,7 +250,6 @@ main:has(#uploadView.view:not(.hidden)){
 .upload-foot{ margin-top:20px; display:flex; flex-direction:column; align-items:center; gap:10px; }
 .err{ color:var(--danger); font-size:14px; margin:0; }
 
-/* -------- loader -------- */
 .loader{ display:flex; flex-direction:column; align-items:center; padding:60px 0; }
 .ring{ position:relative; width:150px; height:150px; }
 .ring svg{ width:100%; height:100%; transform:rotate(-90deg); }
@@ -329,8 +267,6 @@ main:has(#uploadView.view:not(.hidden)){
 .loader-dots span{ width:6px; height:6px; border-radius:50%; background:var(--ink-3); animation:bounce 1.2s infinite ease-in-out; }
 .loader-dots span:nth-child(2){ animation-delay:.15s; } .loader-dots span:nth-child(3){ animation-delay:.3s; }
 
-/* -------- results bar --------
-   A toolbar: ruled off from the results it governs, actions to the right. */
 .results-bar{
   display:flex; align-items:center; justify-content:space-between;
   gap:var(--s4); margin-bottom:var(--s6); flex-wrap:wrap;
@@ -341,14 +277,12 @@ main:has(#uploadView.view:not(.hidden)){
 .results-tools{ display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
 .results-actions{ display:flex; gap:9px; flex-wrap:wrap; }
 
-/* -------- buttons -------- */
 .btn{ font:inherit; font-size:var(--t-body); font-weight:var(--w-normal); padding:9px 18px; border-radius:var(--radius-pill);
   border:1px solid var(--line-2); background:var(--card); color:var(--ink); cursor:pointer;
   display:inline-flex; align-items:center; gap:8px;
   transition:border-color var(--dur) var(--ease), background var(--dur) var(--ease); }
 .btn:hover{ border-color:var(--line-2); box-shadow:var(--shadow); }
-/* Accent, not black - the same primary as the site. A black slab was the
-   heaviest object on a results page whose subject is a purple-marked image. */
+
 .btn.primary{ background:var(--accent); color:#fff; border-color:var(--accent);
   box-shadow:0 1px 2px rgba(109,40,217,.18), 0 4px 14px rgba(109,40,217,.20); }
 .btn.primary:hover{ background:var(--accent-2); border-color:var(--accent-2); }
@@ -358,27 +292,16 @@ main:has(#uploadView.view:not(.hidden)){
 .btn.subtle:hover{ background:var(--fill-subtle); color:var(--ink); border-color:transparent; }
 .btn.tiny{ padding:5px 10px; font-size:12px; }
 
-/* -------- skipped panel -------- */
 .skipped{ background:var(--warn-weak); border:1px solid #f0e0bd; border-radius:var(--radius); padding:14px 16px; margin-bottom:22px; }
 .skipped-head{ display:flex; align-items:center; gap:9px; color:var(--warn); font-weight:var(--w-med); font-size:14px; }
 .skipped ul{ margin:10px 0 2px; padding:0; list-style:none; display:flex; flex-direction:column; gap:7px; }
 .skipped li{ display:flex; gap:9px; font-size:13px; color:var(--ink-2); align-items:baseline; }
 .skipped li b{ color:var(--ink); font-weight:var(--w-med); white-space:nowrap; }
 .skipped li .why{ color:var(--ink-3); }
-/* a file that could not be analyzed at all, as opposed to one correctly
-   recognised as not being a stained slide */
+
 .skipped li.failed b::before{ content:"⚠ "; color:var(--danger); }
 .skipped li.failed .why{ color:var(--danger); }
 
-/* -------- card --------
-   The card header is a real title bar: ruled off, filename set in the mono face
-   because it is a filename and will be compared against a file list. */
-/* Each slide is a section of the page, separated by generous space and one
-   hairline — not a raised card. Chrome around every result is what made a batch
-   look like a pile of boxes. */
-/* Each slide is a white panel on the canvas, exactly like the upload screen and
-   the legal pages. They were sitting bare on the grey, which made the results
-   page the one surface in the product that did not follow its own system. */
 #resultsContainer{ display:flex; flex-direction:column; gap:var(--s6); }
 .card{
   background:var(--card); border:0; border-radius:var(--radius-lg);
@@ -399,7 +322,6 @@ main:has(#uploadView.view:not(.hidden)){
 }
 .badge{ font-size:11.5px; font-weight:var(--w-normal); letter-spacing:.01em; color:var(--ink-2); background:var(--fill-subtle); padding:3px 9px; border-radius:var(--radius-sm); white-space:nowrap; }
 
-/* -------- comparison slider (natural aspect ratio, fills fully) -------- */
 .compare{ margin-bottom:18px; }
 .cmp-viewport{
   position:relative; border-radius:var(--radius); overflow:hidden; cursor:ew-resize;
@@ -415,15 +337,6 @@ main:has(#uploadView.view:not(.hidden)){
 .cmp-grip{ position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); width:32px; height:32px; border-radius:50%; background:#fff; color:var(--ink); display:flex; align-items:center; justify-content:center; box-shadow:var(--shadow); border:1px solid var(--line-2); }
 .cmp-grip svg{ margin:0 -3px; }
 
-/* -------- metrics --------
-   One bordered strip of cells rather than five floating cards. Measurements
-   belong together and are read across, so they share a frame and are separated
-   by hairlines - the way a results table is set, not a dashboard of tiles.
-   Labels sit ABOVE values: the eye scans the numbers down a column without
-   stepping over caption text. */
-/* No boxes. Figures sit on the page with air around them and are separated by
-   space, not by lines - five bordered cells in a row is a table, and a table is
-   the wrong instrument for five summary numbers. */
 .metrics{
   display:grid; grid-template-columns:repeat(5,1fr);
   gap:var(--s4); border:0; background:transparent;
@@ -442,12 +355,11 @@ main:has(#uploadView.view:not(.hidden)){
   line-height:1.15; color:var(--ink);
   font-variant-numeric:var(--num); font-feature-settings:"tnum" 1;
 }
-/* The headline figure leads by size alone. */
+
 .hero-metric{ background:transparent; box-shadow:none; }
 .hero-metric b{ font-size:var(--t-display); font-weight:var(--w-thin); color:var(--ink); }
 .hero-metric span{ color:var(--ink-3); font-weight:var(--w-normal); }
 
-/* -------- variants (natural aspect ratio; no crop, no empty space) -------- */
 .variants{ display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
 .variant{ margin:0; }
 .vwrap{ border-radius:var(--radius); border:1px solid var(--line); overflow:hidden; background:var(--surface); line-height:0; }
@@ -457,10 +369,8 @@ main:has(#uploadView.view:not(.hidden)){
 .vdl{ font:inherit; font-size:11.5px; font-weight:var(--w-normal); color:var(--ink); background:#fff; border:1px solid var(--line-2); border-radius:var(--radius); padding:3px 8px; cursor:pointer; }
 .vdl:hover{ border-color:var(--ink); }
 
-/* range sliders */
 input[type="range"]{ -webkit-appearance:none; appearance:none; height:4px; border-radius:2px; background:var(--line); outline:none; }
 
-/* -------- downloads -------- */
 .downloads{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:16px; padding-top:16px; border-top:1px solid var(--line); }
 .dl-label{ font-size:13px; font-weight:var(--w-normal); color:var(--ink-3); margin-right:2px; }
 .dl-btn{ font:inherit; font-size:var(--t-small); font-weight:var(--w-normal); padding:7px 15px; border-radius:var(--radius-pill); border:1px solid var(--line-2); background:#fff; color:var(--ink); cursor:pointer; transition:border-color var(--dur) var(--ease), background var(--dur) var(--ease); }
@@ -468,11 +378,9 @@ input[type="range"]{ -webkit-appearance:none; appearance:none; height:4px; borde
 .dl-btn.primary{ background:var(--accent); color:#fff; border-color:var(--accent); }
 .dl-btn.primary:hover{ background:var(--accent-2); border-color:var(--accent-2); color:#fff; }
 
-/* -------- lightbox -------- */
 .lightbox{ position:fixed; inset:0; z-index:1000; background:rgba(13,15,18,.88); display:flex; align-items:center; justify-content:center; cursor:zoom-out; padding:30px; animation:fadeUp .2s ease; }
 .lightbox img{ max-width:94%; max-height:94%; border-radius:var(--radius); }
 
-/* -------- export progress toasts -------- */
 #toasts{ position:fixed; top:16px; right:16px; z-index:2000; display:flex; flex-direction:column; gap:10px; pointer-events:none; }
 .toast{ width:290px; background:var(--card); border:1px solid var(--line-2); border-radius:var(--radius); box-shadow:var(--shadow-lg);
   padding:13px 15px; opacity:0; transform:translateX(16px); transition:opacity .3s ease, transform .3s var(--ease); }
@@ -488,12 +396,10 @@ input[type="range"]{ -webkit-appearance:none; appearance:none; height:4px; borde
 .toast.ok .toast-fill{ background:var(--pos); }
 @keyframes pulse{ 0%,100%{ opacity:.4; } 50%{ opacity:1; } }
 
-/* -------- animations -------- */
 @keyframes fadeUp{ from{opacity:0; transform:translateY(8px);} to{opacity:1; transform:none;} }
 @keyframes cardIn{ from{opacity:0; transform:translateY(10px);} to{opacity:1; transform:none;} }
 @keyframes bounce{ 0%,80%,100%{ transform:scale(.5); opacity:.5;} 40%{ transform:scale(1); opacity:1;} }
 
-/* -------- responsive -------- */
 @media (max-width:900px){
   .variants{ grid-template-columns:repeat(2,1fr); }
   .metrics{ grid-template-columns:repeat(2,1fr); }
@@ -509,17 +415,14 @@ input[type="range"]{ -webkit-appearance:none; appearance:none; height:4px; borde
   .mode-select{ grid-template-columns:1fr; }
   .results-actions{ flex:1; }
   .results-actions .btn{ flex:1; justify-content:center; }
-  /* Threshold row: label on its own line, controls beneath — otherwise the
-     nowrap label + slider + value + Auto together overflow a phone viewport. */
+
   .threshold-row{ flex-wrap:wrap; row-gap:10px; }
   .threshold-row .oc-label{ flex:1 0 100%; }
   .threshold-row .cThr{ flex:1 1 auto; min-width:80px; }
   .threshold-row .thrVal{ min-width:50px; }
 }
 
-/* a slide the server no longer holds — it cannot be exported */
 .card.expired{ opacity:.72; border-color:var(--danger); }
 .card.expired .card-note{ color:var(--danger); border-left-color:var(--danger); }
 
-/* denominator note — visible only while a region restricts the measurement */
 .mScope{ margin:-6px 0 12px; font-size:12.5px; color:var(--ink-3); font-variant-numeric:tabular-nums; }

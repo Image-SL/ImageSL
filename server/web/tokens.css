@@ -1,117 +1,57 @@
-/* ============================================================================
-   ImageSL design tokens — the single source of truth for both surfaces.
-
-   Loaded by the landing page and by the analyzer, so the site and the desktop
-   app cannot drift apart. Change a value here and it changes everywhere.
-
-   The aesthetic: white, sharp, hairline-ruled, light weights, sentence case.
-   Colour is reserved for the brand mark and for status; nothing else is
-   tinted, so the things that ARE coloured actually mean something.
-
-   Every ink step below is measured against white. The contrast ratios are not
-   decoration - --ink-3 is the lightest text allowed anywhere, and it sits at
-   4.83:1, just over the 4.5:1 WCAG AA floor for normal-size text. Do not
-   introduce a lighter grey for text; if something needs to recede, make it
-   smaller or give it more space, not less contrast.
-   ========================================================================== */
-
 :root{
-  /* -- Ink ---------------------------------------------------------------- */
-  --ink:#1d1d1f;        /* primary text            15.9:1 on white */
-  --ink-2:#515154;      /* secondary text           7.6:1 */
-  --ink-3:#6e6e73;      /* tertiary / meta          5.3:1  <- the floor */
 
-  /* -- Rules and surfaces --------------------------------------------------
-     The canvas is a soft tinted grey and the content sits on WHITE panels
-     above it. That inversion is the whole look: pure white edge-to-edge has
-     nothing to separate content from chrome, so everything has to be drawn with
-     lines, and a page drawn with lines reads as a form. Give the panels a
-     brighter surface than the page and they separate themselves. */
-  --line:#e8e8ed;       /* default hairline */
-  --line-2:#d2d2d7;     /* emphasised border, control outlines */
-  --bg:#f5f5f7;         /* the canvas */
-  --surface:#fbfbfd;    /* faintly recessed area inside a panel */
-  --card:#ffffff;       /* the bright white panels */
+  --ink:#1d1d1f;
+  --ink-2:#515154;
+  --ink-3:#6e6e73;
 
-  /* -- Brand -------------------------------------------------------------- */
-  /* The violet of the logo mark. Used for the mark, focus rings and the one
-     accent action per view - never as page furniture. */
+  --line:#e8e8ed;
+  --line-2:#d2d2d7;
+  --bg:#f5f5f7;
+  --surface:#fbfbfd;
+  --card:#ffffff;
+
   --accent:#6d28d9;
-  --accent-2:#5b21b6;   /* hover / pressed */
+  --accent-2:#5b21b6;
   --accent-weak:#f5f3ff;
   --accent-line:#ddd6fe;
 
-  /* -- Status ------------------------------------------------------------- */
-  /* Darkened from the usual web palette so they clear 4.5:1 on white; the
-     stock #22c55e green is 2.3:1 and unreadable as text. */
   --pos:#15803d;   --pos-weak:#f0fdf4;
   --danger:#b91c1c; --danger-weak:#fef2f2;
   --warn:#a16207;  --warn-weak:#fffbeb;
 
-  /* -- Geometry ------------------------------------------------------------
-     Generously rounded. 3px corners read as a form field; these read as
-     objects, which is what a panel on a canvas needs to be. --radius-pill is
-     for segmented controls and buttons that should look pressable. */
-  --radius:12px;        /* panels, cards, images */
-  --radius-sm:8px;      /* inputs, small controls, chips */
-  --radius-lg:18px;     /* large containers */
+  --radius:12px;
+  --radius-sm:8px;
+  --radius-lg:18px;
   --radius-pill:980px;
 
-  /* -- Spacing -------------------------------------------------------------
-     A 4px scale. Every margin and padding in the product comes from here, so
-     vertical rhythm is consistent instead of being chosen per component - which
-     is the single thing that most makes an interface look assembled rather than
-     designed. */
   --s1:4px;  --s2:8px;  --s3:12px; --s4:16px; --s5:20px;
   --s6:24px; --s8:32px; --s10:40px; --s12:48px; --s16:64px;
 
-  /* -- Type scale ----------------------------------------------------------
-     Fixed steps rather than arbitrary sizes. Numbers use --font-num so figures
-     line up in columns and a changing value does not shift the ones beside it. */
   --t-micro:11.5px; --t-small:12.5px; --t-body:13.5px;
   --t-base:15px;    --t-lead:17px;    --t-title:20px;
   --t-display:28px; --t-hero:34px;
 
-  /* -- Elevation -----------------------------------------------------------
-     Soft and wide rather than dark and tight. A panel should look like it is
-     resting on the canvas, not stamped onto it - the giveaway of a cheap
-     interface is a hard drop shadow at high opacity. */
   --shadow-sm:0 1px 2px rgba(0,0,0,.04);
   --shadow:0 1px 2px rgba(0,0,0,.04), 0 6px 20px rgba(0,0,0,.05);
   --shadow-lg:0 4px 12px rgba(0,0,0,.06), 0 20px 48px rgba(0,0,0,.09);
 
-  /* -- Type --------------------------------------------------------------- */
   --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;
   --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
-  /* Measurements are read in columns and compared between slides, so they are
-     set in tabular figures: every digit occupies the same width and a value
-     changing from 9 to 10 does not reflow the row beside it. */
+
   --font-num:var(--font);
   --num:tabular-nums lining-nums;
 
-  /* Weights. Two rules: nothing below 200, nothing above 500. */
   --w-thin:200; --w-light:300; --w-normal:400; --w-med:500;
 
-  /* -- Layout --------------------------------------------------------------
-     See docs/DESIGN.md for where these come from. --measure caps body text at
-     68 characters: every published system states a 60-75 limit, and it is the
-     most common thing "minimal" designs get wrong, because a wide column looks
-     clean and reads badly. */
   --container:1120px;
   --measure:68ch;
-  --target:44px;        /* minimum click/touch target, Apple HIG */
+  --target:44px;
 
-  /* -- Line heights --------------------------------------------------------
-     1.5 body, 1.2 headings - unanimous across Carbon, Polaris, Primer and
-     Material. */
   --lh-body:1.5; --lh-tight:1.2;
 
-  /* -- Motion --------------------------------------------------------------
-     150-250ms, ease-out. Longer than ~300ms feels slow in a tool used all day. */
   --dur:.15s; --dur-slow:.24s; --ease:cubic-bezier(.2,.7,.3,1);
 }
 
-/* Shared primitives, so both surfaces agree on the basics without copying. */
 *{box-sizing:border-box}
 html,body{margin:0}
 body{
@@ -122,8 +62,6 @@ body{
   -moz-osx-font-smoothing:grayscale;
 }
 
-/* A visible focus ring everywhere. Keyboard users are not an edge case, and
-   the default ring disappears against a white page in several browsers. */
 :where(a,button,input,select,textarea,[tabindex]):focus-visible{
   outline:2px solid var(--accent);
   outline-offset:2px;

@@ -1,23 +1,3 @@
-"""Settings, update checking and updating — desktop build only.
-
-These routes are registered ONLY when IMAGESL_DESKTOP=1, so the public web
-deployment never exposes them. The analyzer asks for /api/desktop/info on load;
-a 404 simply means "not the desktop app" and the settings button stays hidden.
-
-Design decisions worth keeping:
-
-* **Updates download automatically (optionally), but never install themselves.**
-  Installing means relaunching, and relaunching mid-session throws away the
-  batch the user is working on. Worse, a quantification tool that swaps its own
-  analysis code out from under a half-finished experiment produces two sets of
-  numbers from one sitting with nothing on screen to say so. The download is the
-  slow part and can be done quietly; pressing "Install" stays a decision.
-
-* **Offline is normal, not an error.** Every network call here fails silently
-  into "unknown" and the app carries on. The engine is local; the network is
-  only ever consulted about updates.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -47,16 +27,6 @@ DEFAULTS: Dict[str, Any] = {
     "auto_download_updates": False,
 }
 
-# Deliberately absent: any option to "use the online engine when online".
-# Analysis always runs locally. Routing slides to a server when a connection
-# happens to exist would silently break the one guarantee this app makes - that
-# a slide never leaves the machine - and it would do so invisibly, varying with
-# the network. Online/offline affects updates and nothing else.
-
-
-# --------------------------------------------------------------------------- #
-# Where our own data lives
-# --------------------------------------------------------------------------- #
 def _data_dir() -> Path:
     base = (os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
             or os.path.expanduser("~/.imagesl"))
@@ -64,20 +34,15 @@ def _data_dir() -> Path:
     d.mkdir(parents=True, exist_ok=True)
     return d
 
-
 def _settings_path() -> Path:
     return _data_dir() / "settings.json"
-
 
 def _updates_dir() -> Path:
     d = _data_dir() / "updates"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
-
 def load_settings() -> Dict[str, Any]:
-    """Defaults overlaid with whatever is on disk. A corrupt file is ignored
-    rather than fatal — bad settings must never stop the app from opening."""
     out = dict(DEFAULTS)
     try:
         p = _settings_path()
@@ -90,7 +55,6 @@ def load_settings() -> Dict[str, Any]:
         pass
     return out
 
-
 def save_settings(values: Dict[str, Any]) -> Dict[str, Any]:
     current = load_settings()
     for k in DEFAULTS:
@@ -102,47 +66,27 @@ def save_settings(values: Dict[str, Any]) -> Dict[str, Any]:
         pass
     return current
 
-
-# --------------------------------------------------------------------------- #
-# Version comparison
-# --------------------------------------------------------------------------- #
 def _norm(v: str) -> tuple:
     nums = re.findall(r"\d+", v or "")
     return tuple(int(n) for n in nums[:4]) if nums else (0,)
-
 
 def is_newer(candidate: str, current: str) -> bool:
     a, b = _norm(candidate), _norm(current)
     n = max(len(a), len(b))
     return a + (0,) * (n - len(a)) > b + (0,) * (n - len(b))
 
-
-# --------------------------------------------------------------------------- #
-# Talking to the site
-# --------------------------------------------------------------------------- #
 def _site() -> str:
     return (os.environ.get("IMAGESL_SITE") or "https://imagesl.com").rstrip("/")
 
-
 def _platform_key() -> str:
     return "windows" if sys.platform.startswith("win") else "macos"
-
 
 _online_cache: tuple[float, bool] | None = None
 _online_lock = threading.Lock()
 _ONLINE_TTL_OK = 30.0
 _ONLINE_TTL_BAD = 10.0
 
-
 def _online() -> bool:
-    """Is the site reachable? Cached, because this blocks.
-
-    Opening Settings used to pay a fresh TCP connect with a 2.5 s timeout, so
-    on a machine with no network the panel sat empty for two and a half seconds
-    before drawing - which reads as the app hanging. The answer barely changes
-    within a few seconds, so it is cached; a negative result expires sooner so
-    reconnecting is noticed quickly.
-    """
     global _online_cache
     now = time.time()
     with _online_lock:
@@ -155,18 +99,11 @@ def _online() -> bool:
         _online_cache = (time.time(), val)
     return val
 
-
 def _probe_online() -> bool:
-    """Cheap reachability probe: DNS + TCP only, no HTTP round trip.
-
-    The port comes from the URL rather than being assumed to be 443, so a site
-    on any other port (a staging host, or a local server during development)
-    is not misreported as offline.
-    """
     url = _site()
     scheme, _, rest = url.partition("://")
     hostport = rest.split("/", 1)[0]
-    if hostport.startswith("["):                       # IPv6 literal
+    if hostport.startswith("["):
         host, _, tail = hostport[1:].partition("]")
         port_s = tail[1:] if tail.startswith(":") else ""
     else:
@@ -181,9 +118,7 @@ def _probe_online() -> bool:
     except Exception:
         return False
 
-
 def fetch_remote() -> Dict[str, Any]:
-    """What the site is currently offering. Never raises."""
     try:
         req = urllib.request.Request(
             f"{_site()}/api/downloads",
@@ -196,45 +131,23 @@ def fetch_remote() -> Dict[str, Any]:
     except Exception:
         return {}
 
-
-# --------------------------------------------------------------------------- #
-# Download state (one at a time, reported to the UI by polling)
-# --------------------------------------------------------------------------- #
 _dl_lock = threading.Lock()
-# `method` is how this update will be applied: "installer" re-runs the full
-# ~76 MB setup, "delta" replaces only the files that actually changed. The UI
-# reads it to say which is happening, and install-update branches on it.
 _dl: Dict[str, Any] = {"state": "idle", "percent": 0, "file": None, "error": None,
                        "version": None, "sha256": None, "verified": False,
                        "method": "installer", "files": 0, "bytes": 0,
                        "staging": None}
 
-
 def _dl_snapshot() -> Dict[str, Any]:
     with _dl_lock:
         return dict(_dl)
-
 
 def _dl_set(**kw) -> None:
     with _dl_lock:
         _dl.update(kw)
 
-
-# The plan that produced the staged files, kept so install-update applies
-# exactly what was downloaded and verified rather than recomputing it against a
-# tree that may have changed in between.
 _delta_plans: Dict[str, Any] = {}
 
-
 def _relaunch() -> None:
-    """Start a fresh copy of the app and let this one go.
-
-    The engine's .py files have just been replaced on disk, but this process
-    imported the old ones and still holds them in memory, so the update only
-    takes effect on the next launch. Exit is deferred a moment so this
-    request's response reaches the page first — otherwise the user sees the
-    window vanish with no confirmation that anything worked.
-    """
     try:
         subprocess.Popen([sys.executable], close_fds=True)
     except Exception:
@@ -246,37 +159,15 @@ def _relaunch() -> None:
 
     threading.Thread(target=bye, name="imagesl-relaunch", daemon=True).start()
 
-
 def _installer_path(version: str) -> Path:
     suffix = ".exe" if _platform_key() == "windows" else ".dmg"
     return _updates_dir() / f"ImageSL-{version}{suffix}"
 
-
-# Versions this process has already tried to adopt, so the hash below runs once
-# and not on every poll of /api/desktop/info.
 _adopted: set = set()
 
-
 def adopt_downloaded(version: str, expected_sha: str) -> bool:
-    """Re-discover an installer that an EARLIER run already downloaded.
-
-    The download state above lives in memory only. Closing the app between
-    "Download" and "Install and restart" therefore stranded the file: the next
-    launch reported `idle`, offered to fetch the same ~76 MB again, and
-    /api/desktop/install-update answered "No downloaded update is ready to
-    install" — while the verified installer sat in `updates/` the whole time.
-    That is how a machine ends up holding a fixed build it can never reach, and
-    it is worse than a plain failure because nothing on screen says so.
-
-    Adoption is held to exactly the same bar as a fresh download rather than
-    trusting the filename: the file becomes `ready` only if it hashes to the
-    checksum the site publishes NOW. Anything else — a partial file from a
-    killed run, a leftover from a build that has since been replaced, a file
-    something else has written to — is deleted rather than offered, because the
-    next thing that happens to it is being executed.
-    """
     if not version or not expected_sha:
-        return False                      # nothing to check it against
+        return False
     key = (version, expected_sha.lower())
     with _dl_lock:
         if key in _adopted or _dl["state"] != "idle":
@@ -306,17 +197,10 @@ def adopt_downloaded(version: str, expected_sha: str) -> bool:
             verified=True, version=version, error=None, method="installer")
     return True
 
-
 def _abs_url(url: str) -> str:
     return url if url.startswith("http") else f"{_site()}{url}"
 
-
-# Why the partial path was not used, when it was not used. Surfaced in
-# /api/desktop/info: a silent fallback to a 76 MB download is indistinguishable
-# from the feature not existing, which is exactly the kind of thing that stays
-# broken for months because nothing ever says so.
 _partial_note: Dict[str, Any] = {"reason": None}
-
 
 def _note_partial(reason: Optional[str]) -> None:
     _partial_note["reason"] = reason
@@ -324,57 +208,32 @@ def _note_partial(reason: Optional[str]) -> None:
         logging.getLogger("imagesl.update").warning(
             "partial update unavailable: %s", reason)
 
-
 def _staging_dir(version: str) -> Path:
     return _updates_dir() / f"staging-{version}"
 
-
 def plan_delta(version: str, remote: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """What a partial update would fetch, or None if it is not possible.
-
-    Returns None — rather than raising — for every "we cannot patch this"
-    case: running from source, no manifest published, a manifest describing a
-    different release, or a release that touches a binary. The caller then uses
-    the full installer, which must always remain the fallback. The one thing
-    this does NOT do quietly is accept a manifest it could not verify.
-    """
     root = delta.app_root()
     if root is None:
-        return None                       # a source checkout has nothing to patch
+        return None
     manifest_url = remote.get("manifest_url")
     manifest_sha = (remote.get("manifest_sha256") or "").lower()
     if not manifest_url or not manifest_sha:
-        return None                       # this build published no update store
+        return None
 
     raw = delta.fetch(_abs_url(manifest_url))
     got = hashlib.sha256(raw).hexdigest().lower()
     if got != manifest_sha:
-        # The manifest does not match the digest /api/downloads published, so
-        # it cannot be used — but this must not stop the user updating.
-        #
-        # An earlier version raised here, on the reasoning that a mismatch
-        # means something is wrong with the channel. A packaging bug then
-        # proved the cost of that: the manifest was written in text mode on
-        # Windows and hashed in binary, so every published manifest failed this
-        # check, and raising turned a broken optimisation into "no updates at
-        # all" — including the installer, which has its own independently
-        # published digest and was never in doubt. Declining the partial path
-        # and letting the installer proceed is both safer and more useful.
         _note_partial("the update manifest did not match its published checksum")
         return None
 
     manifest = delta.parse_manifest(raw)
     if manifest["version"] != version:
-        # The store belongs to a different build than the one being offered;
-        # patching to it would install a version nobody advertised.
         return None
 
     plan = delta.plan_update(root, manifest)
     return plan if plan["possible"] else None
 
-
 def _delta_worker(version: str, plan: Dict[str, Any], remote: Dict[str, Any]) -> None:
-    """Fetch only the changed files, into staging. Nothing is applied here."""
     staging = _staging_dir(version)
     try:
         _dl_set(state="downloading", percent=0, error=None, file=None,
@@ -389,21 +248,11 @@ def _delta_worker(version: str, plan: Dict[str, Any], remote: Dict[str, Any]) ->
         _delta_plans[version] = plan
         _dl_set(state="ready", percent=100, verified=True,
                 file=str(staging), method="delta")
-    except Exception as exc:                                  # noqa: BLE001
+    except Exception as exc:
         _dl_set(state="error", error=str(exc)[:300], file=None,
                 method="delta")
 
-
 def _download_worker(version: str, expected_sha: str) -> None:
-    """Fetch the installer, then prove it is the one that was published.
-
-    The file this writes is about to be EXECUTED. Downloading an executable and
-    running it without checking it against a digest published by the server
-    turns the update channel into a way to run arbitrary code on this machine -
-    a hostile network, a broken proxy or a compromised bucket is all it takes.
-    So the bytes are hashed as they arrive and the result must match; if it does
-    not, the file is deleted rather than offered.
-    """
     url = f"{_site()}/download/{_platform_key()}"
     target = _installer_path(version)
     part = target.with_suffix(target.suffix + ".part")
@@ -435,8 +284,6 @@ def _download_worker(version: str, expected_sha: str) -> None:
                           "website instead.")
             return
 
-        # Rename only once the bytes are all here AND verified, so a partial or
-        # unverified installer can never be presented as ready to run.
         part.replace(target)
         _dl_set(state="ready", percent=100, file=str(target), sha256=got,
                 verified=bool(expected_sha))
@@ -447,16 +294,8 @@ def _download_worker(version: str, expected_sha: str) -> None:
             pass
         _dl_set(state="error", error=str(exc)[:300], file=None)
 
-
 def start_download(version: str, expected_sha: str = "",
                    remote: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Fetch the update — as a handful of files where that is possible.
-
-    The partial path is tried first and silently declines whenever it cannot
-    guarantee the same result as the installer, so the common release (a few
-    hundred KB of Python and web assets) costs a few hundred KB instead of
-    76 MB, while a release that changes the runtime still goes the long way.
-    """
     snap = _dl_snapshot()
     if snap["state"] == "downloading":
         return snap
@@ -464,10 +303,7 @@ def start_download(version: str, expected_sha: str = "",
     if remote:
         try:
             plan = plan_delta(version, remote)
-        except Exception as exc:                              # noqa: BLE001
-            # Anything unexpected on the partial path - a dead manifest URL, a
-            # malformed manifest, a read error - costs the optimisation, never
-            # the update. The installer below is independently verified.
+        except Exception as exc:
             _note_partial(str(exc)[:200])
             plan = None
         if plan:
@@ -480,17 +316,11 @@ def start_download(version: str, expected_sha: str = "",
                      name="imagesl-update-dl", daemon=True).start()
     return _dl_snapshot()
 
-
-# --------------------------------------------------------------------------- #
-# Routes
-# --------------------------------------------------------------------------- #
 class SettingsBody(BaseModel):
     check_updates_on_launch: bool | None = None
     auto_download_updates: bool | None = None
 
-
 def register(app, app_version: str, cache_dir: Path | None) -> None:
-    """Attach the desktop-only routes to `app`."""
 
     def _update_state() -> Dict[str, Any]:
         online = _online()
@@ -500,9 +330,6 @@ def register(app, app_version: str, cache_dir: Path | None) -> None:
         mine = platforms.get(_platform_key()) or {}
         can_get = bool(mine.get("available"))
         available = bool(latest and is_newer(latest, app_version) and can_get)
-        # Before reporting "idle", check whether a previous run already fetched
-        # this exact build — otherwise the UI offers to download a file that is
-        # sitting on disk, and Install stays permanently unavailable.
         if available:
             adopt_downloaded(latest, mine.get("sha256") or "")
         return {
@@ -510,11 +337,7 @@ def register(app, app_version: str, cache_dir: Path | None) -> None:
             "checked": bool(remote),
             "latest_version": latest,
             "update_available": available,
-            # The digest the server publishes for the build we would fetch. The
-            # downloader checks against this before the file is offered.
             "sha256": mine.get("sha256") or "",
-            # Carried through so the download can try the partial path; it
-            # holds the manifest URL and the digest that authenticates it.
             "platform_info": mine,
             "partial_unavailable": _partial_note["reason"],
             "download": _dl_snapshot(),
@@ -524,10 +347,6 @@ def register(app, app_version: str, cache_dir: Path | None) -> None:
 
     @app.get("/api/desktop/info")
     def desktop_info() -> JSONResponse:
-        # Walking the cache is O(files) and this endpoint is polled while an
-        # update downloads. A batch of slides leaves thousands of entries, and
-        # re-summing them every poll made Settings stutter for a number that
-        # changes slowly. Ten seconds is fresh enough for a size readout.
         cache_bytes = 0
         now = time.time()
         if cache_dir and Path(cache_dir).is_dir():
@@ -562,8 +381,6 @@ def register(app, app_version: str, cache_dir: Path | None) -> None:
     @app.post("/api/desktop/check-update")
     def desktop_check_update() -> JSONResponse:
         state = _update_state()
-        # Honour the auto-download preference at the moment we learn there is
-        # something to fetch, so the user does not have to come back and ask.
         if (state["update_available"]
                 and load_settings().get("auto_download_updates")
                 and _dl_snapshot()["state"] in ("idle", "error")):
@@ -591,9 +408,6 @@ def register(app, app_version: str, cache_dir: Path | None) -> None:
         snap = _dl_snapshot()
         path = snap.get("file")
 
-        # A partial update is applied in place: the staged files are moved into
-        # the app (all of them or none - see delta_update.apply_update) and the
-        # app relaunches itself. No installer, no elevation, nothing to close.
         if snap.get("method") == "delta":
             if snap.get("state") != "ready" or not path:
                 raise HTTPException(status_code=409,
@@ -620,10 +434,6 @@ def register(app, app_version: str, cache_dir: Path | None) -> None:
             raise HTTPException(status_code=409,
                                 detail="No downloaded update is ready to install.")
 
-        # Refuse to launch anything we could not prove. An update mechanism that
-        # runs an unverified executable is a way to execute arbitrary code on
-        # this machine, so "we could not check" is treated as "no", not as "go
-        # ahead" - the safe default is the one that stops.
         if not snap.get("verified"):
             raise HTTPException(
                 status_code=409,
@@ -631,9 +441,6 @@ def register(app, app_version: str, cache_dir: Path | None) -> None:
                        "checksum, so it will not be run. Download the installer "
                        "from the website instead.")
 
-        # Re-hash immediately before running it. The check at download time
-        # proves what arrived; this proves what is about to execute, and the two
-        # are not the same claim if anything touched the file in between.
         expected = (snap.get("sha256") or "").lower()
         actual = hashlib.sha256()
         try:
@@ -656,8 +463,6 @@ def register(app, app_version: str, cache_dir: Path | None) -> None:
                                        "downloaded. It has been deleted.")
         try:
             if sys.platform.startswith("win"):
-                # Hand off to the installer and let this process exit; it cannot
-                # overwrite files it is still holding open.
                 subprocess.Popen([path], close_fds=True)
             else:
                 subprocess.Popen(["open", path], close_fds=True)

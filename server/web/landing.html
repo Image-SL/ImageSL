@@ -19,11 +19,6 @@
 <meta property="og:image" content="__SITE_URL__/assets/og-image.png">
 <meta name="twitter:card" content="summary_large_image">
 
-<!-- Structured data. Search engines read this to work out what the site IS and
-     what its parts are; it is the input to the sub-links shown beneath a result.
-     Those links cannot be requested or configured - they are generated from a
-     crawlable structure that agrees with itself. This states the name once, so
-     there is no ambiguity about what to label the site. -->
 <script type="application/ld+json">
 {
   "@context": "https://schema.org",
@@ -122,16 +117,7 @@
       <p class="sub">Measures stained area. Runs on your computer, offline.</p>
 
       <div class="dl">
-        <!-- Both buttons ship DISABLED and are switched on only once
-             /api/downloads confirms a real file. Starting them enabled meant
-             every visitor got a live link during the fetch, and on a platform
-             with no build that link is a 404 - the exact thing this page is
-             built to avoid. Failing dark is the honest direction. -->
-        <!-- Each button carries BOTH glyphs; CSS shows the one matching its
-             data-os. The buttons swap places on a Mac (own platform first), and
-             when only the label moved the primary button read "Download for
-             macOS" above a Windows logo. Tying the glyph to the same attribute
-             that drives the label makes them impossible to separate. -->
+
         <a class="btn primary off" id="dl-primary" href="#" rel="noopener" aria-disabled="true" data-os="win">
           <svg class="g-win" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.5 10.2 4.5v6.9H3V5.5Zm0 13 7.2 1v-6.8H3v5.8Zm8.3 1.1L21 21v-9.6h-9.7v8.2Zm0-15.2v8.1H21V3l-9.7 1.4Z"/></svg>
           <svg class="g-mac" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16.4 12.6c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.1-2.8.9-3.5.9s-1.8-.9-3-.8c-1.5 0-2.9.9-3.7 2.3-1.6 2.7-.4 6.8 1.1 9 .7 1.1 1.6 2.3 2.8 2.2 1.1 0 1.5-.7 2.9-.7s1.7.7 2.9.7 2-1.1 2.7-2.1c.8-1.2 1.2-2.4 1.2-2.5-.1 0-2.3-.9-2.3-3.4ZM14.2 5.8c.6-.8 1-1.9.9-3-.9 0-2 .6-2.6 1.4-.6.7-1.1 1.8-.9 2.9 1 0 2-.5 2.6-1.3Z"/></svg>

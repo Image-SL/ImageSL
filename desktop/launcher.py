@@ -1,18 +1,3 @@
-"""
-ImageSL desktop launcher — the offline app.
-
-Unlike the old thin client, this bundles the ENTIRE analysis engine. It starts
-the real FastAPI backend on a private localhost port, waits for it to come up,
-and opens a native window pointed at the analyzer. No server, no account, no
-license key, no network — a slide never leaves the machine. The only thing that
-touches the network is a best-effort check for a newer release (see updater.py),
-and even that fails silently offline.
-
-Runs two ways, unchanged:
-  * from source, for development:   python desktop/launcher.py
-  * frozen by PyInstaller:          ImageSL.exe   (server/ bundled alongside)
-"""
-
 from __future__ import annotations
 
 import os
@@ -23,47 +8,19 @@ import time
 from pathlib import Path
 
 APP_NAME = "ImageSL"
-# Site the auto-updater asks what the current build is, and where the download
-# lives. Not a GitHub repo: the repository is private, so the releases API 404s
-# for everyone and the check never fires.
 SITE = os.environ.get("IMAGESL_SITE", "https://imagesl.com")
 
-
-# --------------------------------------------------------------------------- #
-# Locate the bundled server package, whether frozen or running from source.
-# --------------------------------------------------------------------------- #
 def _server_dir() -> Path:
     if getattr(sys, "frozen", False):
-        # PyInstaller unpacks datas under sys._MEIPASS.
-        return Path(sys._MEIPASS) / "server"          # type: ignore[attr-defined]
+        return Path(sys._MEIPASS) / "server"
     return Path(__file__).resolve().parent.parent / "server"
-
 
 def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         return int(s.getsockname()[1])
 
-
 def _ensure_std_streams() -> None:
-    """Give a windowed build the stdout/stderr that third-party code assumes.
-
-    PyInstaller sets both to None when console=False, and libraries do not
-    expect that. uvicorn's default logging config calls sys.stdout.isatty()
-    while constructing its formatter; against None that raises AttributeError,
-    dictConfig turns it into "Unable to configure formatter 'default'", and the
-    server dies before it ever binds. The app then exits with no window and no
-    message.
-
-    This is worth understanding rather than patching narrowly, because the
-    failure is invisible to testing: run the frozen exe from a shell, or with
-    its output redirected - which is what CI does - and stdout is a real handle,
-    so everything passes. It only breaks when launched from Explorer, which is
-    how every user launches it.
-
-    Only substitutes when the stream is genuinely absent, so a redirected or
-    console run keeps its real stream and its output.
-    """
     for _name in ("stdout", "stderr"):
         if getattr(sys, _name, None) is None:
             try:
@@ -72,15 +29,7 @@ def _ensure_std_streams() -> None:
             except Exception:
                 pass
 
-
 def _emit(msg: str, err: bool = False) -> None:
-    """Write a line without assuming a console exists.
-
-    A windowed PyInstaller build (console=False) leaves sys.stdout/sys.stderr as
-    None, so a bare sys.stdout.write() raises AttributeError — which would fail
-    --selftest on exactly the builds CI ships. Fall back to the raw fd, and give
-    up quietly if that is closed too; the exit code carries the result.
-    """
     stream = sys.stderr if err else sys.stdout
     if stream is not None:
         try:
@@ -94,23 +43,18 @@ def _emit(msg: str, err: bool = False) -> None:
     except Exception:
         pass
 
-
 def _configure_env(port: int) -> None:
-    """Local, single-user, offline defaults — set BEFORE the app is imported."""
-    os.environ["IMAGESL_DESKTOP"] = "1"          # "/" boots straight into the analyzer
-    os.environ.pop("IMAGESL_ACCESS_TOKENS", None)  # no auth on a loopback socket
+    os.environ["IMAGESL_DESKTOP"] = "1"
+    os.environ.pop("IMAGESL_ACCESS_TOKENS", None)
     os.environ.setdefault("IMAGESL_VERSION", _read_version())
     os.environ["IMAGESL_PORT"] = str(port)
-    # Keep the disk cache inside the user's app-data, not a random /data volume.
     base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") \
         or os.path.expanduser("~/.imagesl")
     cache = Path(base) / APP_NAME / "cache"
     cache.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("IMAGESL_CACHE_DIR", str(cache))
 
-
 def _read_version() -> str:
-    # version.txt is written at build time; falls back for source runs.
     for p in (_server_dir().parent / "version.txt",
               Path(__file__).resolve().parent / "version.txt"):
         try:
@@ -120,15 +64,10 @@ def _read_version() -> str:
             pass
     return "0.0.0-dev"
 
-
-# --------------------------------------------------------------------------- #
-# The embedded server
-# --------------------------------------------------------------------------- #
 def _start_server(port: int):
-    """Import the real app and serve it on the loopback interface, in a thread."""
     sys.path.insert(0, str(_server_dir()))
     import uvicorn
-    from app import app  # the actual ImageSL FastAPI application
+    from app import app
 
     config = uvicorn.Config(app, host="127.0.0.1", port=port,
                             log_level="warning", access_log=False)
@@ -137,7 +76,6 @@ def _start_server(port: int):
     t = threading.Thread(target=server.run, name="imagesl-server", daemon=True)
     t.start()
     return server
-
 
 def _wait_healthy(port: int, timeout: float = 40.0) -> bool:
     import urllib.request
@@ -152,10 +90,6 @@ def _wait_healthy(port: int, timeout: float = 40.0) -> bool:
             time.sleep(0.25)
     return False
 
-
-# --------------------------------------------------------------------------- #
-# Update check (best-effort, non-blocking)
-# --------------------------------------------------------------------------- #
 def _check_update_async(window) -> None:
     def run():
         try:
@@ -170,7 +104,6 @@ def _check_update_async(window) -> None:
         if info.get("available") and window is not None:
             _show_update_banner(window, info)
     threading.Thread(target=run, name="imagesl-update", daemon=True).start()
-
 
 def _show_update_banner(window, info: dict) -> None:
     ver = str(info.get("version", "")).replace("'", "")
@@ -195,24 +128,7 @@ def _show_update_banner(window, info: dict) -> None:
     except Exception:
         pass
 
-
-# --------------------------------------------------------------------------- #
-# Native file dialogs and saving
-# --------------------------------------------------------------------------- #
 def _enable_downloads() -> None:
-    """Let the page save a file.
-
-    pywebview ships with downloads DISABLED (`ALLOW_DOWNLOADS: False`), and both
-    backends enforce it: the macOS delegate never promotes the navigation to a
-    download, and the Windows one sets `args.Cancel = True` outright. Every
-    export in the analyzer - the CSV, the per-slide TIFFs, the ZIP - is an
-    `<a download>` pointed at a blob, so with the default the buttons do
-    nothing at all. No error, no dialog, no file: the click is simply dropped,
-    which reads as a broken app rather than a disabled feature.
-
-    This is a desktop application whose entire purpose is to measure slides and
-    hand back the numbers, so saving them is not an optional extra.
-    """
     try:
         import webview
         webview.settings["ALLOW_DOWNLOADS"] = True
@@ -220,22 +136,7 @@ def _enable_downloads() -> None:
     except Exception:
         pass
 
-
 def _start_diagnostics_log() -> None:
-    """Send the GUI layer's own errors to a file.
-
-    A windowed build has no stdout and no stderr, so anything the web view host
-    reports - a failed file dialog, a refused download, an exception inside an
-    Objective-C or WebView2 callback - is written to a stream that goes
-    nowhere. The app keeps running and the user sees a button that does
-    nothing, with no way to find out why and nothing to send us. That is what
-    made the export and file-picker reports so hard to pin down.
-
-    `_record_crash` already catches a launcher-level crash; this covers the far
-    more common case where the app survives and only one interaction fails.
-    Best-effort, and never fatal: logging must not be the thing that stops the
-    app from starting.
-    """
     try:
         import logging
         path = _crash_log().with_name("imagesl.log")
@@ -245,32 +146,19 @@ def _start_diagnostics_log() -> None:
         root = logging.getLogger()
         root.addHandler(handler)
         root.setLevel(logging.INFO)
-        # pywebview logs its delegate failures here and nowhere else.
         logging.getLogger("pywebview").setLevel(logging.DEBUG)
         logging.info("ImageSL %s starting (frozen=%s, platform=%s)",
                      _read_version(), getattr(sys, "frozen", False), sys.platform)
     except Exception:
         pass
 
-
-# --------------------------------------------------------------------------- #
-# Entry point
-# --------------------------------------------------------------------------- #
 def _selftest() -> int:
-    """Headless smoke test of the FROZEN bundle: start the engine, confirm it
-    answers, exit. Used by CI and by `ImageSL --selftest` — proves the packaged
-    app can actually run the analysis code without needing a display."""
     port = _free_port()
     _configure_env(port)
 
-    # Start the engine under the conditions a double-clicked windowed build
-    # actually runs in: no stdout, no stderr. CI invokes this exe from a shell
-    # with its output captured, so both streams are real handles here and the
-    # no-console path would never otherwise be exercised - which is precisely
-    # how a crash that killed every real launch passed every smoke test.
     _real_out, _real_err = sys.stdout, sys.stderr
     try:
-        sys.stdout = sys.stderr = None          # type: ignore[assignment]
+        sys.stdout = sys.stderr = None
         _ensure_std_streams()
         _start_server(port)
         healthy = _wait_healthy(port)
@@ -291,19 +179,13 @@ def _selftest() -> int:
     _emit(f"SELFTEST OK  version={_read_version()}  port={port}\n")
     return 0
 
-
 def main() -> int:
-    # Must run before anything imports uvicorn or touches logging.
     _ensure_std_streams()
 
     if "--selftest" in sys.argv:
         return _selftest()
 
     if "--check-update" in sys.argv:
-        # Ask once, on demand, and say what came back — including "offline",
-        # which the launch-time check deliberately keeps silent about. An
-        # offline install otherwise has no way to distinguish "up to date" from
-        # "has not been able to ask since it was installed".
         try:
             sys.path.insert(0, str(Path(__file__).resolve().parent))
             from updater import check_for_update, describe
@@ -329,8 +211,8 @@ def main() -> int:
     icon = _server_dir().parent / "ImageSL.ico"
 
     _start_diagnostics_log()
-    import webview  # pywebview
-    _enable_downloads()          # read at start-up, so it must precede start()
+    import webview
+    _enable_downloads()
     
     class Api:
         def open_external(self, link: str) -> None:
@@ -344,25 +226,15 @@ def main() -> int:
         background_color="#faf9fd",
     )
     _check_update_async(window)
-    # gui="edgechromium" on Windows (WebView2); pywebview auto-selects per OS.
     webview.start(icon=str(icon) if icon.is_file() else None)
     return 0
 
-
 def _crash_log() -> Path:
-    """Where a windowed build leaves its traceback.
-
-    A console build prints and the user can read it. A windowed build has no
-    stdout at all, so an unhandled exception is simply an app that vanishes -
-    which is exactly what happened here, and is unsupportable: there is nothing
-    to send us and nothing to search for. The traceback goes to a file instead.
-    """
     base = (os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
             or os.path.expanduser("~/.imagesl"))
     d = Path(base) / APP_NAME
     d.mkdir(parents=True, exist_ok=True)
     return d / "last-error.log"
-
 
 def _record_crash(text: str):
     try:
@@ -374,17 +246,13 @@ def _record_crash(text: str):
     except Exception:
         return None
 
-
 def _message_box(msg: str) -> bool:
-    """Win32 message box - the one way to reach the user with no window toolkit
-    and no console. Used when the GUI stack itself is what failed."""
     try:
         import ctypes
-        ctypes.windll.user32.MessageBoxW(None, msg, APP_NAME, 0x10)  # MB_ICONERROR
+        ctypes.windll.user32.MessageBoxW(None, msg, APP_NAME, 0x10)
         return True
     except Exception:
         return False
-
 
 def _fatal(msg: str) -> None:
     _emit(msg + "\n", err=True)
@@ -397,18 +265,15 @@ def _fatal(msg: str) -> None:
         webview.start()
         return
     except Exception:
-        # The window toolkit is a plausible cause of the failure we are
-        # reporting, so never let it swallow the report.
         pass
     _message_box(msg)
-
 
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except SystemExit:
         raise
-    except BaseException:                      # noqa: BLE001 - last line of defence
+    except BaseException:
         import traceback
         _tb = traceback.format_exc()
         _where = _record_crash(_tb)

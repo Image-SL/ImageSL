@@ -1,51 +1,18 @@
-"""
-ImageSL — stain / chromogen registry.
-
-**ImageSL currently ships DAB-only** (see `ENABLED_KEYS` below). The rest of the
-registry stays defined, sourced and ready — it is switched off, not deleted, so
-adding the next stain is a one-line change rather than a rewrite.
-
-The user picks the **stain colour / method** (DAB, AEC, Masson trichrome, …), NOT
-the antibody: the antibody (CK19, Ki-67, …) only decides *where* the signal is —
-the colour on the slide is set by the chromogen, and that colour is what the pixel
-engine actually measures. So each entry carries the two things the color-
-deconvolution engine needs: the target stain's optical-density vector and the
-counterstain's vector.
-
-Vectors:
-  * IHC chromogens and classic special stains use the canonical Ruifrok & Johnston
-    color-deconvolution vectors (as encoded in scikit-image / the ImageJ
-    "Colour Deconvolution" plugin).  https://qupath.readthedocs.io (Separating
-    stains) · G. Landini, Colour Deconvolution 2.
-  * A few colour-defined stains (Prussian blue, Congo red, …) derive their OD
-    vector from a representative pure-stain colour.
-  * "Black" silver/argyrophil stains (GMS, reticulin, Verhoeff) carry no hue, so
-    they are flagged `black` and detected by darkness-in-tissue instead of hue.
-
-Sources consulted: Roche/Abcam/AAT Bioquest chromogen guides; Leica "Routine and
-Special Staining"; Dako Guide to Special Stains; Ruifrok & Johnston 2001.
-"""
-
 from __future__ import annotations
 import math
 import numpy as np
 
-
 def _od(rgb) -> list[float]:
-    """Representative pure-stain RGB (0..255) → normalised optical-density vector."""
     a = np.asarray(rgb, dtype=np.float64)
     od = -np.log10((a + 1.0) / 256.0)
     n = np.linalg.norm(od) or 1.0
     return (od / n).tolist()
 
-
 def _disp_hex(od) -> str:
-    """Display colour of a stain from its OD vector."""
     v = np.asarray(od, dtype=np.float64)
     v = v / (np.linalg.norm(v) or 1.0)
     rgb = np.clip(255.0 * np.power(10.0, -v), 0, 255).astype(int)
     return "#%02x%02x%02x" % tuple(rgb)
-
 
 def _hue(hex_or_od) -> float:
     if isinstance(hex_or_od, str):
@@ -60,26 +27,23 @@ def _hue(hex_or_od) -> float:
     else: h = (r - g) / d + 4
     return (h * 60) % 360
 
-
-# --- canonical Ruifrok & Johnston OD vectors (scikit-image / ImageJ) ---------- #
-HEMA        = [0.650, 0.704, 0.286]     # haematoxylin (blue nuclei)
-DAB         = [0.268, 0.570, 0.776]     # DAB (brown)
-AEC         = [0.2743, 0.6796, 0.6803]  # AEC (red)
-EOSIN       = [0.070, 0.990, 0.110]     # eosin (pink)
-FAST_RED    = [0.2139, 0.8511, 0.4779]  # Fast Red (AP, red)
-FAST_BLUE   = [0.7489, 0.6062, 0.2673]  # Fast Blue / BCIP-NBT (AP, blue-purple)
-METHYL_GRN  = [0.980, 0.144, 0.133]     # methyl green counterstain
-TRI_COLLAGEN= [0.7995, 0.5914, 0.1053]  # Masson methyl-blue (collagen)
-TRI_MUSCLE  = [0.1000, 0.7374, 0.6680]  # Masson ponceau-fuchsin (muscle/cytoplasm)
-PAS_MAGENTA = [0.1754, 0.9722, 0.1546]  # PAS (magenta)
-ALCIAN      = [0.8746, 0.4577, 0.1583]  # Alcian blue
-GIEMSA_BLUE = [0.8348, 0.5136, 0.1963]  # Giemsa methylene blue
-GIEMSA_EOS  = [0.0928, 0.9541, 0.2831]  # Giemsa eosin
-FEULGEN     = [0.9471, 0.2537, 0.1965]  # Feulgen (magenta)
-LIGHT_GREEN = [0.4642, 0.8301, 0.3083]  # light green counter
-AZAN_BLUE   = [0.8530, 0.5087, 0.1127]  # AZAN anilin blue (collagen)
-AZAN_AZO    = [0.0929, 0.8662, 0.4910]  # AZAN azocarmine (nuclei/muscle)
-
+HEMA        = [0.650, 0.704, 0.286]
+DAB         = [0.268, 0.570, 0.776]
+AEC         = [0.2743, 0.6796, 0.6803]
+EOSIN       = [0.070, 0.990, 0.110]
+FAST_RED    = [0.2139, 0.8511, 0.4779]
+FAST_BLUE   = [0.7489, 0.6062, 0.2673]
+METHYL_GRN  = [0.980, 0.144, 0.133]
+TRI_COLLAGEN= [0.7995, 0.5914, 0.1053]
+TRI_MUSCLE  = [0.1000, 0.7374, 0.6680]
+PAS_MAGENTA = [0.1754, 0.9722, 0.1546]
+ALCIAN      = [0.8746, 0.4577, 0.1583]
+GIEMSA_BLUE = [0.8348, 0.5136, 0.1963]
+GIEMSA_EOS  = [0.0928, 0.9541, 0.2831]
+FEULGEN     = [0.9471, 0.2537, 0.1965]
+LIGHT_GREEN = [0.4642, 0.8301, 0.3083]
+AZAN_BLUE   = [0.8530, 0.5087, 0.1127]
+AZAN_AZO    = [0.0929, 0.8662, 0.4910]
 
 def _stain(key, name, category, target_od, counter_od, counter_name, desc,
            enzyme="", black=False, min_px=6):
@@ -93,12 +57,10 @@ def _stain(key, name, category, target_od, counter_od, counter_name, desc,
         "black": black, "min_px": min_px,
     }
 
-
 IHC = "IHC chromogen"
 SPECIAL = "Special / histochemical stain"
 
 STAINS: list[dict] = [
-    # ---------------- IHC chromogens ---------------- #
     _stain("dab", "DAB (brown)", IHC, DAB, HEMA, "Haematoxylin",
            "3,3'-diaminobenzidine — HRP. Brown, permanent, alcohol-insoluble; the most common IHC chromogen.", "HRP"),
     _stain("aec", "AEC (red)", IHC, AEC, HEMA, "Haematoxylin",
@@ -120,7 +82,6 @@ STAINS: list[dict] = [
     _stain("deep-space-black", "Deep Space Black (black)", IHC, _od((25, 25, 28)), _od((205, 92, 140)), "Nuclear Fast Red",
            "Deep Space Black — HRP. Dark grey-to-black; detected by darkness.", "HRP", black=True, min_px=5),
 
-    # ---------------- Special / histochemical stains ---------------- #
     _stain("he", "H&E (routine)", SPECIAL, HEMA, EOSIN, "Eosin",
            "Haematoxylin (blue-purple nuclei) + Eosin (pink cytoplasm/collagen). Measures haematoxylin (nuclear) area by default.", min_px=4),
     _stain("he-eosin", "H&E — eosin area", SPECIAL, EOSIN, HEMA, "Haematoxylin",
@@ -148,7 +109,6 @@ STAINS: list[dict] = [
     _stain("ziehl-neelsen", "Ziehl-Neelsen / AFB (red)", SPECIAL, _od((190, 30, 90)), _od((90, 150, 210)), "Methylene blue",
            "Acid-fast bacilli. Red bacilli on a blue background (carbol fuchsin).", min_px=3),
 
-    # ---------------- Black / silver stains (darkness-detected) ---------------- #
     _stain("gms", "GMS / Grocott (black)", SPECIAL, _od((26, 26, 28)), _od((90, 150, 120)), "Light green",
            "Grocott methenamine silver. Black fungal walls / Pneumocystis on a pale green background.", black=True, min_px=4),
     _stain("reticulin", "Reticulin (silver, black)", SPECIAL, _od((28, 28, 30)), _od((210, 200, 120)), "Background",
@@ -157,71 +117,26 @@ STAINS: list[dict] = [
            "Verhoeff elastic. Black elastic fibres; Van Gieson red/yellow background.", black=True, min_px=3),
 ]
 
-# --------------------------------------------------------------------------- #
-# WHICH STAINS ARE LIVE
-# --------------------------------------------------------------------------- #
-# Only these keys are offered in "Select stain" and accepted by the API. To bring
-# another one online as it is validated:
-#
-#   1. add its key here                              → it appears in the picker
-#   2. if it is an IHC chromogen that auto-detect
-#      should also be able to find on its own, add
-#      the matching family to engine.ENABLED_FAMILIES
-#
-# Everything above this line stays exactly as it is. A request naming a stain
-# that is not enabled falls back to auto-detect rather than failing.
-#
-# THE EDIT IS ONE LINE; THE VALIDATION IS NOT. An entry in this registry means
-# "we know this chromogen's OD vector", which is necessary and not sufficient.
-#
-# The good news, measured rather than assumed: this path — an explicit pick —
-# hands the chosen basis straight to the detector, so it does not depend on
-# auto-detect identifying the chromogen. On the synthetic grid a red scene picked
-# as AEC reaches 98.3% recall against DAB's own 98.6%. The engine can measure a
-# red chromogen properly today; only the picker is closed.
-#
-# What still has to be checked per stain, because these are written in DAB's
-# terms and do not all transfer: the brownness axis in detect.py (DAB +0.51, a
-# red chromogen +0.03 — the same place neutral debris sits at 0.00), and the
-# washed-out-and-olive debris rule at DEBRIS_HUE_MIN = 30 deg, which is most of a
-# green chromogen. Those decide false positives, not recall, so a stain can score
-# well on the grid above and still admit debris on a real section.
-#
-# Do NOT assume enabling here also lets auto-detect find it — that needs
-# engine.ENABLED_FAMILIES, which is currently blocked on _detect_family being
-# uncalibrated. See the note there.
-#
-# The evidence to gather first, which stains the grid with that family and scores
-# it against exact ground truth:
-#
-#   python scripts/synthetic_matrix.py --chromogen H-Red
 ENABLED_KEYS: set[str] = {"dab"}
 
 _BY_KEY = {s["key"]: s for s in STAINS}
-# common aliases so search / URLs are forgiving
 _ALIASES = {"diaminobenzidine": "dab", "trichrome": "masson-trichrome",
             "masson": "masson-trichrome", "h&e": "he", "hande": "he",
             "hematoxylin-eosin": "he", "periodic-acid-schiff": "pas",
             "perls": "prussian-blue", "iron": "prussian-blue", "afb": "ziehl-neelsen",
             "acid-fast": "ziehl-neelsen", "grocott": "gms", "silver": "gms"}
 
-
 def _slug(s: str) -> str:
     import re
     return re.sub(r"[^a-z0-9]+", "-", (s or "").lower()).strip("-")
 
-
 def is_enabled(key: str | None) -> bool:
-    """Is this stain currently shipped? (see ENABLED_KEYS)"""
     if not key:
         return False
     k = _slug(key)
     return (k in ENABLED_KEYS) or (_ALIASES.get(k, "") in ENABLED_KEYS)
 
-
 def lookup(key: str | None) -> dict | None:
-    """Resolve a stain key — ENABLED stains only. A disabled or unknown key
-    returns None, which the caller reads as "use auto-detect"."""
     if not key:
         return None
     k = _slug(key)
@@ -230,17 +145,11 @@ def lookup(key: str | None) -> dict | None:
         return None
     return _BY_KEY.get(k)
 
-
 def enabled_stains() -> list[dict]:
-    """The live stain entries, in listing order."""
     order = {IHC: 0, SPECIAL: 1}
     live = [s for s in STAINS if s["key"] in ENABLED_KEYS]
     return sorted(live, key=lambda s: (order.get(s["category"], 9), s["name"].lower()))
 
-
 def as_list() -> list[dict]:
-    """UI listing (category then name). Strips the heavy OD vectors for transport.
-    Only ENABLED stains are listed — the picker can never offer one the engine is
-    not shipping yet."""
     return [{k: s[k] for k in ("key", "name", "category", "swatch", "description", "enzyme")}
             for s in enabled_stains()]

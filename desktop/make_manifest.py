@@ -1,27 +1,3 @@
-"""Generate the update manifest and content store from a built app tree.
-
-Run after PyInstaller, before packaging the installer:
-
-    python desktop/make_manifest.py dist/ImageSL --out downloads/update/windows
-
-It writes, under --out:
-
-    manifest.json           every file in the build, with its sha256
-    manifest.json.sha256    the digest /api/downloads publishes, so the client
-                            can prove the manifest itself before trusting it
-    files/<sha256>          one blob per distinct file, content-addressed
-
-Content-addressing is what makes the store cheap to publish repeatedly: a file
-that did not change between releases has the same name, so re-uploading a
-build only adds the blobs that are genuinely new, and a client that already
-has a blob never fetches it twice.
-
-Publishing the whole build (not only the patchable part) is deliberate. The
-manifest is what the client compares against to decide whether a delta is even
-possible; if it only listed the files we hoped to patch, a release that also
-changed a DLL would look patchable and produce a broken install.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -32,8 +8,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "server"))
-from delta_update import is_delta_eligible, sha256_file   # noqa: E402
-
+from delta_update import is_delta_eligible, sha256_file
 
 def build(tree: Path, out: Path, version: str, platform: str) -> dict:
     files = []
@@ -54,37 +29,22 @@ def build(tree: Path, out: Path, version: str, platform: str) -> dict:
             "delta": is_delta_eligible(rel),
         })
         blob = store / digest
-        # Only the patchable files are ever fetched individually, so only those
-        # need a blob. Publishing the runtime here would add ~76 MB of objects
-        # that no client can use — the full installer covers that case.
         if is_delta_eligible(rel) and not blob.exists():
             shutil.copy2(path, blob)
 
     manifest = {"app": "ImageSL", "version": version,
                 "platform": platform, "files": files}
 
-    # write_bytes, not write_text, and hash EXACTLY the bytes written.
-    #
-    # Text mode translates "\n" to "\r\n" on Windows, so hashing the string and
-    # then writing it through write_text produced a digest of the LF form and a
-    # file in the CRLF form - two different byte sequences. The client hashes
-    # what it downloads and compares, so every delta update failed its manifest
-    # check on exactly the platform the manifest is built for. Nothing in the
-    # build looked wrong; the manifest was valid JSON and the digest was a real
-    # digest, just of bytes that never existed on disk.
     data = json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8")
     (out / "manifest.json").write_bytes(data)
     digest = hashlib.sha256(data).hexdigest()
     (out / "manifest.json.sha256").write_bytes(digest.encode("ascii") + b"\n")
 
-    # Prove it here rather than discovering it in the field: re-read the file
-    # from disk and confirm it hashes to what was just published.
     written = (out / "manifest.json").read_bytes()
     if hashlib.sha256(written).hexdigest() != digest:
         raise SystemExit("manifest.json on disk does not match its published "
                          "digest - refusing to publish an unusable manifest")
     return manifest
-
 
 def main() -> int:
     ap = argparse.ArgumentParser()
@@ -110,7 +70,6 @@ def main() -> int:
           f"({sum(f['bytes'] for f in patchable) / 1024:.0f} KB), "
           f"version {version}")
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

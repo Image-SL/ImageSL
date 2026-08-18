@@ -1,0 +1,28 @@
+cff-version: 1.2.0
+title: "ImageSL: DAB immunohistochemistry staining quantification"
+message: "If you use this software in research, please cite it."
+type: software
+authors:
+  # TODO before publishing: replace with the real author list.
+  - family-names: "REPLACE-ME"
+    given-names: "REPLACE-ME"
+    # orcid: "https://orcid.org/0000-0000-0000-0000"
+    # affiliation: "REPLACE-ME"
+repository-code: "https://github.com/solvergent/ImageSL"
+url: "https://imagesl.com"
+abstract: >-
+  ImageSL quantifies DAB-positive area in immunohistochemistry images. It
+  performs automatic background and tissue segmentation, colour deconvolution,
+  and area-based positivity measurement over the whole imaged field, with an
+  adjustable sensitivity ladder and optional manual include/exclude regions.
+  Analysis runs entirely on the local machine.
+keywords:
+  - immunohistochemistry
+  - DAB
+  - digital pathology
+  - image analysis
+  - quantification
+  - colour deconvolution
+license: MIT
+version: 1.0.1
+# doi: "10.5281/zenodo.XXXXXXX"   # add after archiving a release with Zenodo

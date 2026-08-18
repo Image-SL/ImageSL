@@ -1,0 +1,21 @@
+name: Feature request
+description: Suggest a change or addition
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve
+      description: The situation you are in, not the solution you have in mind.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like it to do
+  - type: checkboxes
+    id: measurement
+    attributes:
+      label: Measurement impact
+      options:
+        - label: This would change measured results (detection, thresholds, area)
