@@ -1,4 +1,0 @@
-# ImageSL desktop client (thin shell) build dependencies
-pywebview>=5.1        # native window; uses Edge WebView2 on Windows
-pyinstaller>=6.6      # produces the .exe
-Pillow>=10.3          # only used by the build to (re)generate the icon

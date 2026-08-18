@@ -121,12 +121,6 @@ class Detection:
     object_areas: list = field(default_factory=list)
     notes: list = field(default_factory=list)
 
-def _masked_mean(x: np.ndarray, m: np.ndarray, win: int) -> tuple[np.ndarray, np.ndarray]:
-    mf = m.astype(np.float32)
-    num = _uniform_filter(np.where(m, x, 0.0).astype(np.float32), win)
-    den = _uniform_filter(mf, win)
-    return num, den
-
 def _mask_weights(keep: np.ndarray, win: int) -> tuple[np.ndarray, np.ndarray]:
     k = keep.astype(np.float32)
     return (_uniform_filter(k, win),
@@ -204,25 +198,6 @@ def chromogen_fraction(od: np.ndarray,
     a = np.clip(np.clip(od, 0.0, None) @ inv, 0.0, None)
     return (a[..., 1] / (a[..., 1] + a[..., 2] + 1e-6)).astype(np.float32)
 
-def chroma_readings(od: np.ndarray, rel_scale: float = 1.0
-                    ) -> tuple[np.ndarray, np.ndarray]:
-    t = np.power(10.0, -np.clip(od, 0.0, None))
-    sigma = CHROMA_SMOOTH * rel_scale
-    if sigma > 0.15 and _gaussian is not None:
-        t = _gaussian(t, (sigma, sigma, 0), mode="nearest")
-    mx = t.max(axis=2)
-    mn = t.min(axis=2)
-    sat = ((mx - mn) / np.maximum(mx, 1e-6)).astype(np.float32)
-    r, g, b = t[..., 0], t[..., 1], t[..., 2]
-    d = np.maximum(mx - mn, 1e-6)
-    h = np.where(mx == r, ((g - b) / d) % 6.0,
-                 np.where(mx == g, (b - r) / d + 2.0, (r - g) / d + 4.0))
-    return sat, ((h * 60.0) % 360.0).astype(np.float32)
-
-def looks_like_debris(sat, hue):
-    dhue = (np.asarray(hue) - DEBRIS_HUE_MIN + 180.0) % 360.0 - 180.0
-    return (np.asarray(sat) < DEBRIS_SAT_MAX) & (dhue > 0.0)
-
 def excess_colour(od_exc: np.ndarray, target_od: Optional[np.ndarray] = None
                   ) -> tuple[np.ndarray, np.ndarray]:
     mag = np.linalg.norm(od_exc, axis=2).astype(np.float32)
@@ -274,14 +249,6 @@ def _otsu_log(values: np.ndarray) -> tuple[float, float]:
         d = (mu2 - mu1) / max(s1 + s2, 1e-9)
     return float(10.0 ** centre), sep, float(d)
 
-def _weighted_median(values: np.ndarray, weights: np.ndarray) -> float:
-    if values.size == 0 or weights.sum() <= 0:
-        return float("nan")
-    order = np.argsort(values)
-    w = weights[order].astype(np.float64)
-    c = np.cumsum(w) / w.sum()
-    return float(values[order][int(np.searchsorted(c, 0.5))])
-
 def _area_weighted(peaks: np.ndarray, areas: np.ndarray, cap: int = 400) -> np.ndarray:
     if peaks.size == 0:
         return peaks
@@ -297,21 +264,6 @@ def _ladder(bar: float, peak_hi: float = 0.0, peak_lo: float = 0.0) -> np.ndarra
     up = np.geomspace(hi, bar, AUTO_LEVEL + 1)
     dn = np.geomspace(bar, lo, N_LEVELS - AUTO_LEVEL)
     return np.concatenate([up[:-1], dn]).astype(np.float32)
-
-def _sharpness(signal: np.ndarray, flat_lbl: np.ndarray, inside: np.ndarray,
-               peak: np.ndarray, n: int, rel_scale: float) -> np.ndarray:
-    if _sobel is None:
-        return np.full(n + 1, np.inf)
-    grad = np.hypot(_sobel(signal, axis=1), _sobel(signal, axis=0)).ravel() / 4.0
-    sel = inside & (flat_lbl > 0)
-    lab = flat_lbl[sel]
-    cnt = np.bincount(lab, minlength=n + 1).astype(np.float64)
-    gsum = np.bincount(lab, weights=grad[sel].astype(np.float64), minlength=n + 1)
-    with np.errstate(invalid="ignore", divide="ignore"):
-        gmean = gsum / np.maximum(cnt, 1.0)
-        out = (gmean / np.maximum(peak, 1e-6)) * float(rel_scale)
-    out[cnt == 0] = 0.0
-    return out
 
 def _object_stats(lbl: np.ndarray, n: int, signal: np.ndarray,
                   brown: np.ndarray, seed: np.ndarray,

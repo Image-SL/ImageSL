@@ -50,7 +50,7 @@ DisableProgramGroupPage=yes
 DisableDirPage=auto
 AllowNoIcons=yes
 
-SetupIconFile=client\ImageSL.ico
+SetupIconFile=desktop\ImageSL.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 
 ; Setup's own artwork. Without these Inno shows its stock graphics, so the

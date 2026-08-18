@@ -14,10 +14,6 @@ venv/
 *.egg-info/
 
 # Client build artifacts
-client/build/
-client/dist/
-client/*.spec.bak
-server/dist/
 *.pdb
 
 # Desktop packaging output (PyInstaller writes these; CI rebuilds them)

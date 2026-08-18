@@ -65,25 +65,32 @@ systems and a red flag in itself. ImageSL will not ship that.
 
 ```powershell
 # EV certs live on a hardware token / cloud HSM; OV certs you import as a .pfx.
+# Sign the frozen exe BEFORE Inno Setup wraps it, then sign the installer too.
 signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 `
-  /n "Your Company Name" client\dist\ImageSL.exe
+  /n "Your Company Name" dist\ImageSL\ImageSL.exe
+signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 `
+  /n "Your Company Name" ImageSL-Setup-Windows.exe
 
 # verify
-signtool verify /pa /v client\dist\ImageSL.exe
+signtool verify /pa /v ImageSL-Setup-Windows.exe
 ```
 
-Timestamping (`/tr`) keeps the signature valid after the cert expires. After
-signing, copy the exe to `server/dist/ImageSL.exe` and redeploy so
-`/download/windows` serves the signed build.
+Timestamping (`/tr`) keeps the signature valid after the cert expires. The
+signing steps are already sketched in `.github/workflows/build-desktop.yml` and
+commented out pending certificates; the published installer comes from that
+workflow, not from a hand copy.
 
 ### What ImageSL does on its side to help
 
-- `--onefile --windowed`, **no UPX**, **no obfuscation** — the traits AV
-  heuristics flag are exactly the ones we avoid.
-- Full `version_info.txt` metadata (company, product, version) and a real icon.
-- `asInvoker` manifest — requests no admin elevation, which trustworthy apps
-  don't need.
-- A tiny codebase (a WebView shell), so there's little for a scanner to trip on.
+- **Windowed, `--onedir`, no UPX, no obfuscation** — the traits AV heuristics
+  flag are exactly the ones we avoid. `desktop/ImageSL.spec` sets `upx=False`
+  deliberately and says why.
+- **A real icon and a per-user install** — `installer.iss` uses
+  `PrivilegesRequired=lowest`, so nothing asks for admin elevation, which
+  trustworthy applications do not need.
+- **Reproducible provenance** — every installer is built by CI from a tagged
+  commit and published alongside a SHA-256 digest the updater verifies before
+  it will run anything.
 
 **Bottom line:** build clean (done) → **sign with an OV/EV cert (your step, it
 costs money and requires identity verification)** → distribute. That is the only

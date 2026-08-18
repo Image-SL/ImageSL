@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 import io
-import math
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 
@@ -15,8 +14,6 @@ try:
 except Exception:
     _HAVE_TIFFFILE = False
 
-from skimage.morphology import disk
-from skimage.morphology import erosion as _grey_erosion
 from skimage.measure import label as _label
 from skimage.filters import threshold_otsu as _otsu
 
@@ -281,10 +278,6 @@ def _bg_class_is_glass(total_od: np.ndarray, sat: np.ndarray,
     chroma = float(np.median(sat[::3, ::3][sub]))
     return od_med <= _BG_GLASS_OD_MAX and chroma <= _BG_GLASS_SAT
 
-def white_is_glass(rgb: np.ndarray, white: np.ndarray) -> bool:
-    med = float(np.median(rgb[::4, ::4]))
-    return float(np.min(white)) - med > _WHITE_GLASS_SEP
-
 def _rgb_to_hsv(rgb01: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     rgb01 = rgb01.astype(np.float32, copy=False)
     r, g, b = rgb01[..., 0], rgb01[..., 1], rgb01[..., 2]
@@ -301,24 +294,9 @@ def _rgb_to_hsv(rgb01: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     sat = np.where(mx > 1e-6, diff / (mx + 1e-6), 0.0)
     return hue.astype(np.float32), sat.astype(np.float32), mx
 
-def _hue_dist(h: np.ndarray, target: float) -> np.ndarray:
-    d = np.abs(h - target) % 360.0
-    return np.minimum(d, 360.0 - d)
-
 def _in_hue_band(h: np.ndarray, band) -> np.ndarray:
     lo, hi = float(band[0]), float(band[1])
     return (h >= lo) & (h <= hi) if lo <= hi else (h >= lo) | (h <= hi)
-
-def _hue_band_for(target_hue: float, method: str):
-    ref = _REF_BASES.get(method)
-    if ref and ref.get("band"):
-        return ref["band"]
-    probe = np.array([float(target_hue) % 360.0])
-    for r in _REF_BASES.values():
-        band = r.get("band")
-        if band and bool(_in_hue_band(probe, band)[0]):
-            return band
-    return None
 
 def _normalize_rows(m: np.ndarray) -> np.ndarray:
     norms = np.linalg.norm(m, axis=1, keepdims=True)
@@ -493,30 +471,6 @@ def _hdab_matrix() -> np.ndarray:
     m = _HDAB_REFERENCE.copy()
     m[2] = np.cross(m[0], m[1])
     return _normalize_rows(m)
-
-def estimate_stains_macenko(od_tissue: np.ndarray, *, alpha: float = 1.0) -> Optional[np.ndarray]:
-    if od_tissue.shape[0] < 200:
-        return None
-    try:
-        cov = np.cov(od_tissue.T)
-        _, eigvecs = np.linalg.eigh(cov)
-    except np.linalg.LinAlgError:
-        return None
-    plane = eigvecs[:, [2, 1]] if eigvecs.shape[1] >= 3 else eigvecs[:, -2:]
-    if plane.shape[1] < 2:
-        return None
-    proj = od_tissue @ plane
-    phi = np.arctan2(proj[:, 1], proj[:, 0])
-    lo = np.percentile(phi, alpha)
-    hi = np.percentile(phi, 100 - alpha)
-    v_min = np.abs(plane @ np.array([math.cos(lo), math.sin(lo)]))
-    v_max = np.abs(plane @ np.array([math.cos(hi), math.sin(hi)]))
-    stains = _normalize_rows(np.vstack([v_min, v_max]))
-    if not np.all(np.isfinite(stains)) or np.linalg.norm(stains[0] - stains[1]) < 1e-3:
-        return None
-    if stains[0, 2] < stains[1, 2]:
-        stains = stains[::-1]
-    return stains
 
 def _circular_median_deg(angles: np.ndarray) -> float:
     a = np.deg2rad(angles)
@@ -809,11 +763,6 @@ def _object_summary(positive: np.ndarray) -> tuple[int, np.ndarray]:
     areas = counts[1:] if counts.size > 1 else np.array([], dtype=np.int64)
     return int(areas.size), areas
 
-def _binary_erode(mask: np.ndarray, radius: int) -> np.ndarray:
-    if not mask.any():
-        return mask
-    return _grey_erosion(mask.astype(np.uint8), disk(radius)).astype(bool)
-
 def _remove_small(mask: np.ndarray, min_px: int) -> np.ndarray:
     lbl = _label(mask, connectivity=1)
     if lbl.max() == 0:
@@ -879,27 +828,6 @@ def render_stain(
     amt = amt[..., None]
     out = bg[None, None, :] * (1 - amt) + color[None, None, :] * amt
     return np.clip(out, 0, 255).astype(np.uint8)
-
-def render_variant(
-    rgb: np.ndarray,
-    maps: dict[str, np.ndarray],
-    *,
-    target_gain: float = 1.0,
-    counterstain_gain: float = 1.0,
-    background_rgb: Optional[tuple[int, int, int]] = None,
-    target_index: int = 1,
-) -> np.ndarray:
-    conc = maps["conc"].copy()
-    stain_matrix = maps["stain_matrix"]
-    counter_index = 1 - target_index if target_index in (0, 1) else 0
-    conc[..., target_index] *= float(target_gain)
-    conc[..., counter_index] *= float(counterstain_gain)
-    conc = np.clip(conc, 0, None)
-    out = _recompose(conc, stain_matrix)
-    if background_rgb is not None:
-        bg = ~maps["tissue_mask"]
-        out[bg] = np.array(background_rgb, dtype=np.uint8)
-    return out
 
 def _load_font(size: int, bold: bool = True):
     size = max(10, int(size))
@@ -1002,11 +930,6 @@ def compose_comparison(
 
     return np.asarray(canvas)
 
-def to_png_bytes(rgb: np.ndarray) -> bytes:
-    buf = io.BytesIO()
-    Image.fromarray(rgb).save(buf, format="PNG", optimize=True)
-    return buf.getvalue()
-
 def original_data_uri(rgb: np.ndarray) -> str:
     buf = io.BytesIO()
     im = Image.fromarray(rgb).convert("RGB")
@@ -1018,26 +941,6 @@ def original_data_uri(rgb: np.ndarray) -> str:
         im.save(buf, format="PNG", compress_level=1)
         mime = "image/png"
     return f"data:{mime};base64," + base64.b64encode(buf.getvalue()).decode("ascii")
-
-def to_data_uri(rgb: np.ndarray, fmt: str = "PNG", quality: int = 86) -> str:
-    buf = io.BytesIO()
-    im = Image.fromarray(rgb)
-    if fmt.upper() in ("JPEG", "JPG"):
-        im.convert("RGB").save(buf, format="JPEG", quality=quality)
-        mime = "image/jpeg"
-    else:
-        im.save(buf, format=fmt)
-        mime = "image/png"
-    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-    return f"data:{mime};base64,{b64}"
-
-def mask_data_uri(mask: np.ndarray) -> str:
-    h, w = mask.shape[:2]
-    rgba = np.zeros((h, w, 4), dtype=np.uint8)
-    rgba[mask.astype(bool)] = (255, 255, 255, 255)
-    buf = io.BytesIO()
-    Image.fromarray(rgba, "RGBA").save(buf, format="PNG", optimize=True)
-    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
 
 def level_data_uri(level_map: np.ndarray, tissue_mask: Optional[np.ndarray] = None) -> str:
     arr = np.asarray(level_map, dtype=np.uint8)

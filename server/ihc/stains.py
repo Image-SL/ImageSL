@@ -1,5 +1,4 @@
 from __future__ import annotations
-import math
 import numpy as np
 
 def _od(rgb) -> list[float]:
@@ -129,12 +128,6 @@ _ALIASES = {"diaminobenzidine": "dab", "trichrome": "masson-trichrome",
 def _slug(s: str) -> str:
     import re
     return re.sub(r"[^a-z0-9]+", "-", (s or "").lower()).strip("-")
-
-def is_enabled(key: str | None) -> bool:
-    if not key:
-        return False
-    k = _slug(key)
-    return (k in ENABLED_KEYS) or (_ALIASES.get(k, "") in ENABLED_KEYS)
 
 def lookup(key: str | None) -> dict | None:
     if not key:

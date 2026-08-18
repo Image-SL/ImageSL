@@ -151,12 +151,19 @@ second export comes back half empty.
 carry a matching `X-ImageSL-Key` header. The desktop client passes the user's
 license key; the web app reads it from `?key=` and stores it locally.
 
-## Desktop client
+## Desktop application
 
-`client/imagesl_client.py` is a `pywebview` shell (~1 small file). It stores the
-license key under `%APPDATA%/ImageSL/config.json`, then loads
-`<backend>/app?key=<license>`. No analysis, no secrets, nothing proprietary.
-Built to a single `.exe` with `scripts/build_client.ps1`.
+`desktop/launcher.py` starts the real FastAPI backend on a private loopback
+port and opens a native window (`pywebview`) on the analyzer. The entire
+analysis engine ships inside the application, so a slide is never uploaded and
+the app works with no network at all. PyInstaller freezes it via
+`desktop/ImageSL.spec`; Inno Setup wraps the Windows build via
+`desktop/installer.iss`.
+
+An earlier licence-key thin client lived in `client/`. It loaded a hosted
+analyzer over the network and has been removed: the hosted analyzer was
+withdrawn, `/app` now redirects to the download page, and there is no licence
+system.
 
 ## Data flow for one analysis
 

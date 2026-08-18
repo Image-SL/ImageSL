@@ -22,7 +22,7 @@ block_cipher = None
 # Repo root = parent of this spec's directory.
 ROOT = os.path.abspath(os.path.join(os.path.dirname(SPECPATH), "."))
 SERVER = os.path.join(ROOT, "server")
-ICON = os.path.join(ROOT, "client", "ImageSL.ico")
+ICON = os.path.join(ROOT, "desktop", "ImageSL.ico")
 # macOS needs .icns, not .ico. CI generates this next to the spec (see the
 # workflow); if it is absent the app simply builds with the default icon.
 ICNS = os.path.join(ROOT, "desktop", "ImageSL.icns")

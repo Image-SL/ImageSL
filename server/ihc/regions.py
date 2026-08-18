@@ -4,7 +4,7 @@ from typing import Iterable, Optional
 
 import numpy as np
 
-from .detect import LEVEL_CANDIDATE, LEVEL_NEVER
+from .detect import LEVEL_CANDIDATE
 
 MODES = ("include", "exclude")
 
