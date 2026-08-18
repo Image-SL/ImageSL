@@ -1,0 +1,4 @@
+# Canonical identity for this project's history. Git uses this to collapse the
+# several names and addresses the same author committed under over time, so
+# `git shortlog -sn` and GitHub's contributor list show one person once.
+Sam Li <304571853+solvergent@users.noreply.github.com>
