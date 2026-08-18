@@ -1,0 +1,32 @@
+{
+  "title": "ImageSL: DAB immunohistochemistry staining quantification",
+  "description": "<p>ImageSL measures the area of DAB-positive staining in immunohistochemistry images of tissue sections. It segments tissue from slide background, separates the chromogen from the counterstain by colour deconvolution against the Ruifrok stain vectors, and reports positive area as a percentage of the imaged field together with the settings used to produce it.</p><p>Analysis runs entirely on the local machine; images are never transmitted. An adjustable sensitivity ladder and optional manual include/exclude regions allow a measurement to be corrected by hand, and every export records the settings so a result can be reproduced.</p><p><strong>Research use only. ImageSL is not a medical device and must not be used for clinical diagnosis or patient management.</strong></p>",
+  "upload_type": "software",
+  "license": "Apache-2.0",
+  "access_right": "open",
+  "creators": [
+    { "name": "Li, Sam" }
+  ],
+  "keywords": [
+    "immunohistochemistry",
+    "DAB",
+    "digital pathology",
+    "image analysis",
+    "quantification",
+    "colour deconvolution",
+    "histology",
+    "research software"
+  ],
+  "related_identifiers": [
+    {
+      "identifier": "https://github.com/ImageSL/ImageSL",
+      "relation": "isSupplementTo",
+      "scheme": "url"
+    },
+    {
+      "identifier": "https://imagesl.com",
+      "relation": "isDocumentedBy",
+      "scheme": "url"
+    }
+  ]
+}
