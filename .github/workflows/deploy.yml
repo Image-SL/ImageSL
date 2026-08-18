@@ -229,6 +229,18 @@ jobs:
               exit 0
             fi
             echo "$err" >&2
+            # "a deployment is in progress" arrives as InvalidInputException, which
+            # the classifier below calls permanent. It is the opposite: it is the
+            # exact condition this loop exists to wait out, and it happens whenever
+            # two pushes land close together. Matching it first stops a routine race
+            # from failing the deploy outright.
+            case "$err" in
+              *"is in progress"*|*"Please wait for it to complete"*)
+                echo "A deployment is already rolling out (attempt $i) - waiting 20s..."
+                sleep 20
+                continue
+                ;;
+            esac
             case "$err" in
               *InvalidInputException*|*ValidationException*|*ValidationError*|\
               *AccessDenied*|*UnauthorizedOperation*|*NotFoundException*|\
