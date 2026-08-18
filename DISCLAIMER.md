@@ -33,8 +33,9 @@ diagnose, grade, stage, or classify.
 ## Data handling
 
 The desktop application performs all analysis locally. Images are not
-transmitted. The only network request it makes is an update check. See
-`server/web/privacy.html` for details.
+transmitted, and no analysis leaves the machine. The only network request it
+makes is a best-effort check for a newer release, which fails silently when
+offline and can be disabled in Settings.
 
 ## No warranty
 

@@ -33,7 +33,7 @@ and/or `ImageSL-macOS.dmg` in `downloads/` at the repo root first.
 
 ## C. Deploy your own
 
-See **[DEPLOY.md](DEPLOY.md)**. Short version: the `Dockerfile` is the whole
+Short version: the `Dockerfile` is the whole
 deployment, and pushing to `main` ships it.
 
 ---

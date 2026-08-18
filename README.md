@@ -170,7 +170,7 @@ ImageSL/
 │   │                        #   objects → per-object area → level map
 │   ├── ihc/regions.py       # manual focus / ignore shapes (exact, centre-in-pixel)
 │   ├── ihc/stains.py        # stain registry + ENABLED_KEYS (what is shipped)
-│   ├── web/                 # plain single-page UI — landing.html at "/",
+│   ├── web/                 # plain single-page UI — index.html at "/",
 │   │                        #   index.html (the analyzer) at "/app", styles.css, app.js
 │   └── requirements.txt
 ├── desktop/                 # the offline app: launcher.py starts the bundled
@@ -185,7 +185,7 @@ ImageSL/
 ├── scripts/synthetic_cases.py  # constructed scenes with a known answer
 ├── scripts/synthetic_matrix.py # parameter grid: recall/precision vs ground truth
 ├── Dockerfile, .env.example
-└── docs/                    # ARCHITECTURE.md, SECURITY.md, DEPLOY.md
+└── docs/                    # ARCHITECTURE.md, DESIGN.md, THREAT_MODEL.md
 ```
 
 ## Regression testing
