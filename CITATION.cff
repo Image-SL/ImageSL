@@ -3,11 +3,8 @@ title: "ImageSL: DAB immunohistochemistry staining quantification"
 message: "If you use this software in research, please cite it."
 type: software
 authors:
-  # TODO before publishing: replace with the real author list.
-  - family-names: "REPLACE-ME"
-    given-names: "REPLACE-ME"
-    # orcid: "https://orcid.org/0000-0000-0000-0000"
-    # affiliation: "REPLACE-ME"
+  - family-names: "Li"
+    given-names: "Sam"
 repository-code: "https://github.com/solvergent/ImageSL"
 url: "https://imagesl.com"
 abstract: >-
